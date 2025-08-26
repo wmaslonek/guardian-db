@@ -1,4 +1,4 @@
-# Guardian DB
+# Guardian DB: The Rust Implementation of OrbitDB
 
 Uma implementação em Rust do OrbitDB, uma base de dados peer-to-peer descentralizada construída sobre IPFS.
 
@@ -8,7 +8,8 @@ Uma implementação em Rust do OrbitDB, uma base de dados peer-to-peer descentra
 
 ## 🎯 Visão Geral
 
-Guardian DB é uma reimplementação moderna e segura do OrbitDB em Rust, oferecendo:
+Introduzindo: GuardianDB. The Rust Implementation of OrbitDB.
+Oferecendo:
 
 - **🔒 Type Safety**: Garantias de segurança de tipos em tempo de compilação
 - **⚡ Performance**: Alta performance com async/await nativo
