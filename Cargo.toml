@@ -1,0 +1,56 @@
+[package]
+name = "guardian-db"
+version = "0.8.26"
+authors = ["William Maslonek <wmaslonek@icloud.com>"]
+edition = "2024"
+
+[dependencies]
+async-trait = "0.1.89"
+base64.workspace = true
+byteorder = "1.5.0"
+cid = "0.11.1"
+env_logger = "0.11.8"
+futures = "0.3.31"
+libp2p.workspace = true
+libp2p-identity.workspace = true
+log = "0.4.27"
+opentelemetry = "0.30.0"
+parking_lot = "0.12.4"
+path-slash = "0.2.1"
+reqwest = "0.12.23"
+serde.workspace = true
+serde_cbor = "0.11.1"
+serde_json.workspace = true
+slog = "2.7.0"
+slog-term = "2.9.0"
+tempfile.workspace = true
+thiserror = "2.0.14"
+tokio.workspace = true
+tokio-stream = "0.1.17"
+tokio-util = "0.7.16"
+tracing.workspace = true
+ipfs-api-backend-hyper = "0.6.0"
+sha2 = "0.10.9"
+rand.workspace = true
+hex.workspace = true
+secp256k1 = "0.31.1"
+libipld = "0.16.0"
+datastore = "0.1.5"
+unsigned-varint = "0.8.0"
+sled = "0.34.7"
+
+# Dependências condicionais para futuras implementações nativas
+rust-ipfs = { version = "0.14.1", optional = true }
+tracing-subscriber = { version = "0.3", optional = true }
+async-stream = "0.3"
+
+[features]
+default = ["native-ipfs"]
+native-ipfs = ["dep:rust-ipfs", "dep:tracing-subscriber"]
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+[[example]]
+name = "kubo_core_api_usage"
+required-features = ["native-ipfs"]
