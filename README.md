@@ -12,6 +12,9 @@
 ## 💬 Join Our Community
 Join our Discord to collaborate: [Join Discord](https://discord.gg/Ezzk8PnGR5)
 
+## 🔥 What is GuardianDB?
+GuardianDB is a P2P database built on top of IPFS. It allows apps to store and share data without relying on servers, using CRDTs to synchronize and prevent conflicts. GuardianDB is like having a "MongoDB" or "CouchDB", but without a central server, running on IPFS, where each participant keeps a copy and shares changes. 
+
 ## 🎯 Overview
 
 **GuardianDB** is the definitive evolution of the OrbitDB concept, reimplemented from scratch in Rust to overcome the limitations of previous implementations in JavaScript and Go.
