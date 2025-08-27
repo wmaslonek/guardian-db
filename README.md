@@ -1,7 +1,7 @@
 # Guardian DB: The Rust Implementation of OrbitDB
 
 <p align="left">
-  <img src="docs/guardian-db-logo.png" alt="GuardianDB Logo" width="450" height="450"/>
+  <img src="docs/guardian-db-logo.png" alt="GuardianDB Logo" width="300" height="300"/>
 </p>
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
