@@ -9,93 +9,93 @@
 ![Version](https://img.shields.io/badge/version-0.8.26-brightgreen.svg)
 ![Build Status](https://img.shields.io/badge/build-passing-green.svg)
 
-## 💬 Junte-se à Comunidade
-Participe do nosso Discord para colaborar: [Entrar no Discord](https://discord.gg/Ezzk8PnGR5)
+## 💬 Join Our Community
+Join our Discord to collaborate: [Join Discord](https://discord.gg/Ezzk8PnGR5)
 
-## 🎯 Visão Geral
+## 🎯 Overview
 
-**Guardian DB** é a evolução definitiva do conceito OrbitDB, reimplementado do zero em Rust para superar as limitações das implementações anteriores em JavaScript e Go.
+**Guardian DB** is the definitive evolution of the OrbitDB concept, reimplemented from scratch in Rust to overcome the limitations of previous implementations in JavaScript and Go.
 
-### 🚀 Por que Guardian DB é Superior?
+### 🚀 Why Guardian DB is Superior?
 
-**Comparado ao OrbitDB Original (JavaScript):**
-- **🔒 Memory Safety**: Zero vulnerabilidades de memória graças ao sistema de ownership do Rust
-- **⚡ Performance 10-100x**: Eliminação do overhead do V8 e garbage collection
-- **🛡️ Type Safety**: Prevenção de bugs em tempo de compilação vs runtime errors do JS
-- **📦 Binary Nativo**: Executáveis standalone sem dependências de runtime Node.js
-- **🔄 Concorrência Real**: Async/await verdadeiramente paralelo sem blocking do event loop
+**Compared to Original OrbitDB (JavaScript):**
+- **🔒 Memory Safety**: Zero memory vulnerabilities thanks to Rust's ownership system
+- **⚡ 10-100x Performance**: Elimination of V8 overhead and garbage collection
+- **🛡️ Type Safety**: Bug prevention at compile time vs JS runtime errors
+- **📦 Native Binary**: Standalone executables without Node.js runtime dependencies
+- **🔄 True Concurrency**: Truly parallel async/await without event loop blocking
 
-**Comparado ao go-orbit-db:**
-- **🎯 Zero-Cost Abstractions**: Abstrações de alto nível sem overhead de performance
-- **🔐 Borrowing System**: Gerenciamento de memória determinístico vs garbage collector do Go
-- **⚙️ LLVM Optimization**: Compilação para código máquina altamente otimizado
-- **🧵 Fearless Concurrency**: Sistema de threads seguro por design vs goroutines com data races
-- **📊 Predictable Performance**: Sem pauses de GC, latência consistente
+**Compared to go-orbit-db:**
+- **🎯 Zero-Cost Abstractions**: High-level abstractions without performance overhead
+- **🔐 Borrowing System**: Deterministic memory management vs Go's garbage collector
+- **⚙️ LLVM Optimization**: Compilation to highly optimized machine code
+- **🧵 Fearless Concurrency**: Thread system safe by design vs goroutines with data races
+- **📊 Predictable Performance**: No GC pauses, consistent latency
 
-### 💎 Vantagens Exclusivas do Rust
+### 💎 Exclusive Rust Advantages
 
-Introduzindo: GuardianDB. The Rust Implementation of OrbitDB.
-Uma base de dados peer-to-peer descentralizada construída sobre IPFS, oferecendo:
+Introducing: GuardianDB. The Rust Implementation of OrbitDB.
+A decentralized peer-to-peer database built on IPFS, offering:
 
-- **🔒 Type Safety**: Garantias de segurança de tipos em tempo de compilação (vs runtime do JS/Go)
-- **⚡ Performance**: Zero-cost abstractions e otimizações LLVM para máxima velocidade
-- **🛡️ Memory Safety**: Sistema de ownership previne leaks e use-after-free
-- **🌐 Descentralização**: Sistema peer-to-peer sem pontos únicos de falha
-- **📦 IPFS Nativo**: Implementação 100% Rust sem dependências HTTP ou FFI
-- **🔄 Replicação**: Sincronização automática com concorrência segura
-- **🎪 Event Bus**: Sistema de eventos reativo, type-safe e lock-free
-- **⚙️ Zero Runtime**: Binários standalone sem necessidade de VM ou interpretador
+- **🔒 Type Safety**: Compile-time type safety guarantees (vs JS/Go runtime)
+- **⚡ Performance**: Zero-cost abstractions and LLVM optimizations for maximum speed
+- **🛡️ Memory Safety**: Ownership system prevents leaks and use-after-free
+- **🌐 Decentralization**: Peer-to-peer system without single points of failure
+- **📦 Native IPFS**: 100% Rust implementation without HTTP dependencies or FFI
+- **🔄 Replication**: Automatic synchronization with safe concurrency
+- **🎪 Event Bus**: Reactive, type-safe and lock-free event system
+- **⚙️ Zero Runtime**: Standalone binaries without VM or interpreter requirements
 
-### 📈 Benchmarks de Performance
+### 📈 Performance Benchmarks
 
-| Operação | OrbitDB (JS) | go-orbit-db | Guardian DB | Melhoria |
-|----------|--------------|-------------|-------------|----------|
-| Inserção de documentos | 1,200 ops/s | 3,500 ops/s | **12,000 ops/s** | 🚀 **10x vs JS** |
-| Consultas complexas | 800 ops/s | 2,100 ops/s | **8,500 ops/s** | 🚀 **4x vs Go** |
-| Replicação entre peers | 45 MB/s | 120 MB/s | **380 MB/s** | 🚀 **3x vs Go** |
-| Uso de memória | 85 MB | 32 MB | **18 MB** | 🚀 **43% menor** |
-| Tempo de inicialização | 2.1s | 800ms | **250ms** | 🚀 **3x mais rápido** |
+| Operation | OrbitDB (JS) | go-orbit-db | Guardian DB | Improvement |
+|-----------|--------------|-------------|-------------|-------------|
+| Document insertion | 1,200 ops/s | 3,500 ops/s | **12,000 ops/s** | 🚀 **10x vs JS** |
+| Complex queries | 800 ops/s | 2,100 ops/s | **8,500 ops/s** | 🚀 **4x vs Go** |
+| Peer replication | 45 MB/s | 120 MB/s | **380 MB/s** | 🚀 **3x vs Go** |
+| Memory usage | 85 MB | 32 MB | **18 MB** | 🚀 **43% less** |
+| Startup time | 2.1s | 800ms | **250ms** | 🚀 **3x faster** |
 
-*Benchmarks realizados em AMD Ryzen 7 com SSD NVMe*
+*Benchmarks performed on AMD Ryzen 7 with NVMe SSD*
 
-## 🏗️ Arquitetura
+## 🏗️ Architecture
 
 ```
 Guardian DB
 ├── Core (guardian.rs)
 ├── Stores
-│   ├── Event Log Store    # Log de eventos imutável
-│   ├── Key-Value Store    # Armazenamento chave-valor
-│   └── Document Store     # Documentos JSON
+│   ├── Event Log Store    # Immutable event log
+│   ├── Key-Value Store    # Key-value storage
+│   └── Document Store     # JSON documents
 ├── IPFS Integration
-│   ├── Kubo Core API      # Interface IPFS nativa
-│   └── PubSub System      # Comunicação peer-to-peer
+│   ├── Kubo Core API      # Native IPFS interface
+│   └── PubSub System      # Peer-to-peer communication
 ├── Access Control
-│   ├── Guardian AC        # Controle de acesso customizado
-│   ├── IPFS AC           # Baseado em assinaturas IPFS
-│   └── Simple AC         # Acesso aberto
+│   ├── Guardian AC        # Custom access control
+│   ├── IPFS AC           # IPFS signature-based
+│   └── Simple AC         # Open access
 └── Event System
-    ├── Event Bus          # Sistema de eventos centralizado
-    └── Replicator         # Sincronização automática
+    ├── Event Bus          # Centralized event system
+    └── Replicator         # Automatic synchronization
 ```
 
-## 🚀 Funcionalidades
+## 🚀 Features
 
-### Tipos de Store
+### Store Types
 
 #### Event Log Store
 ```rust
 use guardian_db::{GuardianDB, CreateDBOptions};
 
-// Criar um event log
+// Create an event log
 let db = GuardianDB::new(ipfs_client, None).await?;
 let log = db.log("my-log", None).await?;
 
-// Adicionar eventos
+// Add events
 log.add(b"Hello, World!").await?;
 log.add(b"Second event").await?;
 
-// Iterar sobre eventos
+// Iterate over events
 for entry in log.iterator(None).await? {
     println!("Hash: {}, Data: {:?}", entry.hash, entry.payload);
 }
@@ -103,17 +103,17 @@ for entry in log.iterator(None).await? {
 
 #### Key-Value Store
 ```rust
-// Criar um key-value store
+// Create a key-value store
 let kv = db.key_value("my-store", None).await?;
 
-// Operações CRUD
+// CRUD operations
 kv.put("name", b"Guardian DB").await?;
 kv.put("version", b"0.8.26").await?;
 
 let value = kv.get("name").await?;
 println!("Name: {:?}", value);
 
-// Deletar
+// Delete
 kv.del("version").await?;
 ```
 
@@ -121,10 +121,10 @@ kv.del("version").await?;
 ```rust
 use serde_json::json;
 
-// Criar um document store
+// Create a document store
 let docs = db.docs("my-docs", None).await?;
 
-// Adicionar documentos
+// Add documents
 let doc = json!({
     "name": "Guardian DB",
     "type": "database",
@@ -133,44 +133,44 @@ let doc = json!({
 
 docs.put(doc).await?;
 
-// Buscar documentos
+// Search documents
 let results = docs.query(|doc| {
     doc["type"] == "database"
 }).await?;
 ```
 
-### Sistema de Eventos
+### Event System
 
 ```rust
 use guardian_db::events::EventBus;
 
-// Criar event bus
+// Create event bus
 let event_bus = EventBus::new();
 
-// Criar emitter
+// Create emitter
 let emitter = event_bus.emitter::<DatabaseEvent>().await?;
 
-// Subscrever eventos
+// Subscribe to events
 let mut receiver = event_bus.subscribe::<DatabaseEvent>().await?;
 
-// Emitir evento
+// Emit event
 emitter.emit(DatabaseEvent {
     action: "created".to_string(),
     data: b"new database".to_vec(),
 })?;
 
-// Receber eventos
+// Receive events
 while let Ok(event) = receiver.recv().await {
-    println!("Evento recebido: {:?}", event);
+    println!("Event received: {:?}", event);
 }
 ```
 
-### IPFS Nativo
+### Native IPFS
 
 ```rust
 use guardian_db::kubo_core_api::{KuboCoreApiClient, ClientConfig};
 
-// Configuração customizada
+// Custom configuration
 let config = ClientConfig {
     enable_pubsub: true,
     enable_swarm: true,
@@ -183,13 +183,13 @@ let config = ClientConfig {
 
 let ipfs = KuboCoreApiClient::new(config).await?;
 
-// Usar com Guardian DB
+// Use with Guardian DB
 let db = GuardianDB::new_with_ipfs(ipfs, None).await?;
 ```
 
-## 📦 Instalação
+## 📦 Installation
 
-Adicione ao seu `Cargo.toml`:
+Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
@@ -199,9 +199,9 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 ```
 
-## 🔧 Configuração
+## 🔧 Configuration
 
-### Configuração Básica
+### Basic Configuration
 
 ```rust
 use guardian_db::{GuardianDB, NewGuardianDBOptions};
@@ -209,10 +209,10 @@ use guardian_db::kubo_core_api::KuboCoreApiClient;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Configurar IPFS cliente
+    // Configure IPFS client
     let ipfs = KuboCoreApiClient::default().await?;
     
-    // Configurar Guardian DB
+    // Configure Guardian DB
     let options = NewGuardianDBOptions {
         directory: Some("./GuardianDB".to_string()),
         ..Default::default()
@@ -224,7 +224,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### Configuração Avançada
+### Advanced Configuration
 
 ```rust
 use guardian_db::{
@@ -260,23 +260,23 @@ let orbit_options = NewGuardianDBOptions {
 let db = GuardianDB::new(ipfs, Some(orbit_options)).await?;
 ```
 
-## 🧪 Exemplos
+## 🧪 Examples
 
-Veja a pasta `examples/` para exemplos completos:
+See the `examples/` folder for complete examples:
 
-- **`event_bus_usage.rs`** - Sistema de eventos
-- **`kubo_core_api_usage.rs`** - IPFS nativo
-- **`kubo_core_api_simple.rs`** - Uso básico
+- **`event_bus_usage.rs`** - Event system
+- **`kubo_core_api_usage.rs`** - Native IPFS
+- **`kubo_core_api_simple.rs`** - Basic usage
 
-Execute um exemplo:
+Run an example:
 
 ```bash
 cargo run --example kubo_core_api_usage
 ```
 
-## 🛠️ Desenvolvimento
+## 🛠️ Development
 
-### Pré-requisitos
+### Prerequisites
 
 - Rust 1.70+
 - Git
@@ -289,110 +289,110 @@ cd guardian-db
 cargo build
 ```
 
-### Testes
+### Tests
 
 ```bash
-# Todos os testes
+# All tests
 cargo test
 
-# Testes específicos
+# Specific tests
 cargo test --lib
 cargo test --test cli
 
-# Com logs
+# With logs
 RUST_LOG=debug cargo test
 ```
 
 ### Features
 
 ```bash
-# Build com features específicas
+# Build with specific features
 cargo build --features native-ipfs
 cargo build --no-default-features
 ```
 
-## 📚 Documentação
+## 📚 Documentation
 
-- **[API Documentation](docs/)** - Documentação completa da API
-- **[Event Bus](docs/event_bus_implementation.md)** - Sistema de eventos
-- **[IPFS Migration](docs/kubo_migration_analysis.md)** - Migração para IPFS nativo
-- **[Kubo Core API](docs/kubo_core_api_readme.md)** - Interface IPFS
+- **[API Documentation](docs/)** - Complete API documentation
+- **[Event Bus](docs/event_bus_implementation.md)** - Event system
+- **[IPFS Migration](docs/kubo_migration_analysis.md)** - Native IPFS migration
+- **[Kubo Core API](docs/kubo_core_api_readme.md)** - IPFS interface
 
-### Gerando Documentação
+### Generating Documentation
 
 ```bash
 cargo doc --open
 ```
 
-## 🔧 Status do Projeto
+## 🔧 Project Status
 
-### ✅ Implementado
+### ✅ Implemented
 
 - Core Guardian DB
 - Event Log Store
 - Key-Value Store  
 - Document Store
 - Event Bus System
-- IPFS Core API nativo
+- Native IPFS Core API
 - Access Controllers
-- Replicação básica
+- Basic replication
 
-### 🚧 Em Desenvolvimento
+### 🚧 In Development
 
-- Document Store queries avançadas
-- Access Controller customizado
-- Otimizações de performance
-- Testes de integração
+- Advanced Document Store queries
+- Custom Access Controller
+- Performance optimizations
+- Integration tests
 
-### 📋 Planejado
+### 📋 Planned
 
-- Suporte a sharding
-- Compactação automática
-- Interface gráfica
-- Bindings para outras linguagens
+- Sharding support
+- Automatic compaction
+- Graphical interface
+- Bindings for other languages
 
-## 🤝 Contribuindo
+## 🤝 Contributing
 
-Veja [CONTRIBUTING.md](CONTRIBUTING.md) para instruções de contribuição.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution instructions.
 
-### Passos Rápidos
+### Quick Steps
 
-1. Fork o projeto
-2. Crie uma branch (`git checkout -b feature/nova-funcionalidade`)
-3. Commit suas mudanças (`git commit -am 'Adiciona nova funcionalidade'`)
-4. Push para a branch (`git push origin feature/nova-funcionalidade`)
-5. Abra um Pull Request
+1. Fork the project
+2. Create a branch (`git checkout -b feature/new-feature`)
+3. Commit your changes (`git commit -am 'Add new feature'`)
+4. Push to the branch (`git push origin feature/new-feature`)
+5. Open a Pull Request
 
-## 📄 Licença
+## 📄 License
 
-Este projeto está licenciado sob a Licença MIT - veja o arquivo [LICENSE](LICENSE) para detalhes.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## 🙏 Reconhecimentos
+## 🙏 Acknowledgments
 
-- **[OrbitDB](https://github.com/orbitdb/orbit-db)** - Inspiração e referência
-- **[go-orbit-db](https://github.com/berty/go-orbit-db)** - Inspiração e referência
-- **[ipfs-log-rs](https://github.com/eqlabs/ipfs-log-rs)** - Implementação de logs IPFS
-- **[rust-ipfs](https://github.com/rs-ipfs/rust-ipfs)** - Cliente IPFS nativo
-- **Comunidade Rust** - Ferramentas e bibliotecas incríveis
+- **[OrbitDB](https://github.com/orbitdb/orbit-db)** - Inspiration and reference
+- **[go-orbit-db](https://github.com/berty/go-orbit-db)** - Inspiration and reference
+- **[ipfs-log-rs](https://github.com/eqlabs/ipfs-log-rs)** - IPFS logs implementation
+- **[rust-ipfs](https://github.com/rs-ipfs/rust-ipfs)** - Native IPFS client
+- **Rust Community** - Amazing tools and libraries
 
-Este projeto incorpora código do [ipfs-log-rs](https://github.com/eqlabs/ipfs-log-rs),
-licenciado sob a MIT License © EQLabs.
+This project incorporates code from [ipfs-log-rs](https://github.com/eqlabs/ipfs-log-rs),
+licensed under the MIT License © EQLabs.
 
-## 🔗 Links Úteis
+## 🔗 Useful Links
 
-- **[OrbitDB Original](https://orbitdb.org/)**
+- **[Original OrbitDB](https://orbitdb.org/)**
 - **[OrbitDB Golang](https://berty.tech/docs/go-orbit-db/)**
 - **[IPFS](https://ipfs.io/)**
 - **[libp2p](https://libp2p.io/)**
 - **[Rust](https://www.rust-lang.org/)**
 
-## 📊 Estatísticas
+## 📊 Statistics
 
-- **Linguagem**: Rust 100%
-- **Linhas de código**: ~10,000+
-- **Dependências**: Mínimas e seguras
-- **Cobertura de testes**: 85%+
+- **Language**: 100% Rust
+- **Lines of code**: ~10,000+
+- **Dependencies**: Minimal and secure
+- **Test coverage**: 85%+
 
 ---
 
-**Guardian DB** - Uma base de dados peer-to-peer segura e performante para a Web descentralizada.
+**Guardian DB** - A secure and performant peer-to-peer database for the decentralized Web.
