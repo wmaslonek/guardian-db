@@ -87,11 +87,11 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 # 1. Fork o repositório no GitHub
 
 # 2. Clone seu fork
-git clone https://github.com/seu-usuario/guardian-db.git
+git clone https://github.com/wmaslonek/guardian-db.git
 cd guardian-db
 
 # 3. Adicione o repositório original como remote
-git remote add upstream https://github.com/original-org/guardian-db.git
+git remote add upstream https://github.com/wmaslonek/guardian-db.git
 
 # 4. Instale dependências e verifique se compila
 cargo build
@@ -220,7 +220,7 @@ pub trait Replicatable;
 ///
 /// # Returns
 ///
-/// Retorna `Result<EventLogStore, GuardianDbError>`
+/// Retorna `Result<EventLogStore, GuardianError>`
 ///
 /// # Examples
 ///
@@ -245,7 +245,7 @@ pub fn new(name: &str, options: Option<StoreOptions>) -> Result<Self> {
 ```rust
 // Use thiserror para errors customizados
 #[derive(Debug, thiserror::Error)]
-pub enum GuardianDbError {
+pub enum GuardianError {
     #[error("Database not found: {name}")]
     DatabaseNotFound { name: String },
     
@@ -259,7 +259,7 @@ pub enum GuardianDbError {
 // Prefira Result<T> sobre unwrap/expect
 pub fn get_database(name: &str) -> Result<Database> {
     databases.get(name)
-        .ok_or_else(|| GuardianDbError::DatabaseNotFound { 
+        .ok_or_else(|| GuardianError::DatabaseNotFound { 
             name: name.to_string() 
         })
 }
@@ -323,7 +323,7 @@ mod tests {
 
     #[test]
     fn test_error_handling() {
-        let error = GuardianDbError::DatabaseNotFound { 
+        let error = GuardianError::DatabaseNotFound { 
             name: "missing".to_string() 
         };
         assert_eq!(error.to_string(), "Database not found: missing");
@@ -528,7 +528,7 @@ Screenshots, mockups, etc.
 ```markdown
 # ✅ Bom feedback
 "Este método poderia beneficiar de error handling mais específico. 
-Considere usar `GuardianDbError::InvalidInput` em vez de genérico."
+Considere usar `GuardianError::InvalidInput` em vez de genérico."
 
 # ❌ Feedback ruim  
 "Este código está errado."

@@ -1,15 +1,21 @@
 # Guardian DB: The Rust Implementation of OrbitDB
 
-Uma implementação em Rust do OrbitDB, uma base de dados peer-to-peer descentralizada construída sobre IPFS.
+<p align="left">
+  <img src="docs/guardian-db-logo.png" alt="GuardianDB Logo" width="450" height="450"/>
+</p>
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)
+![Version](https://img.shields.io/badge/version-0.8.26-brightgreen.svg)
 ![Build Status](https://img.shields.io/badge/build-passing-green.svg)
+
+## 💬 Junte-se à Comunidade
+Participe do nosso Discord para colaborar: [Entrar no Discord](https://discord.gg/Ezzk8PnGR5)
 
 ## 🎯 Visão Geral
 
 Introduzindo: GuardianDB. The Rust Implementation of OrbitDB.
-Oferecendo:
+Uma base de dados peer-to-peer descentralizada construída sobre IPFS.Oferecendo:
 
 - **🔒 Type Safety**: Garantias de segurança de tipos em tempo de compilação
 - **⚡ Performance**: Alta performance com async/await nativo
@@ -68,7 +74,7 @@ let kv = db.key_value("my-store", None).await?;
 
 // Operações CRUD
 kv.put("name", b"Guardian DB").await?;
-kv.put("version", b"0.1.0").await?;
+kv.put("version", b"0.8.26").await?;
 
 let value = kv.get("name").await?;
 println!("Name: {:?}", value);
@@ -153,7 +159,7 @@ Adicione ao seu `Cargo.toml`:
 
 ```toml
 [dependencies]
-guardian-db = "0.1.0"
+guardian-db = "0.8.26"
 tokio = { version = "1.0", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -244,7 +250,7 @@ cargo run --example kubo_core_api_usage
 ### Build
 
 ```bash
-git clone https://github.com/your-org/guardian-db.git
+git clone https://github.com/wmaslonek/guardian-db.git
 cd guardian-db
 cargo build
 ```
@@ -330,6 +336,7 @@ Este projeto está licenciado sob a Licença MIT - veja o arquivo [LICENSE](LICE
 ## 🙏 Reconhecimentos
 
 - **[OrbitDB](https://github.com/orbitdb/orbit-db)** - Inspiração e referência
+- **[go-orbit-db](https://github.com/berty/go-orbit-db)** - Inspiração e referência
 - **[ipfs-log-rs](https://github.com/eqlabs/ipfs-log-rs)** - Implementação de logs IPFS
 - **[rust-ipfs](https://github.com/rs-ipfs/rust-ipfs)** - Cliente IPFS nativo
 - **Comunidade Rust** - Ferramentas e bibliotecas incríveis
@@ -340,6 +347,7 @@ licenciado sob a MIT License © EQLabs.
 ## 🔗 Links Úteis
 
 - **[OrbitDB Original](https://orbitdb.org/)**
+- **[OrbitDB Golang](https://berty.tech/docs/go-orbit-db/)**
 - **[IPFS](https://ipfs.io/)**
 - **[libp2p](https://libp2p.io/)**
 - **[Rust](https://www.rust-lang.org/)**
