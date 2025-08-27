@@ -1,4 +1,4 @@
-# Guardian DB: The Rust Implementation of OrbitDB
+# GuardianDB: The Rust Implementation of OrbitDB
 
 <p align="left">
   <img src="docs/guardian-db-logo.png" alt="GuardianDB Logo" width="300" height="300"/>
@@ -14,9 +14,9 @@ Join our Discord to collaborate: [Join Discord](https://discord.gg/Ezzk8PnGR5)
 
 ## 🎯 Overview
 
-**Guardian DB** is the definitive evolution of the OrbitDB concept, reimplemented from scratch in Rust to overcome the limitations of previous implementations in JavaScript and Go.
+**GuardianDB** is the definitive evolution of the OrbitDB concept, reimplemented from scratch in Rust to overcome the limitations of previous implementations in JavaScript and Go.
 
-### 🚀 Why Guardian DB is Superior?
+### 🚀 Why GuardianDB is Superior?
 
 **Compared to Original OrbitDB (JavaScript):**
 - **🔒 Memory Safety**: Zero memory vulnerabilities thanks to Rust's ownership system
@@ -25,7 +25,7 @@ Join our Discord to collaborate: [Join Discord](https://discord.gg/Ezzk8PnGR5)
 - **📦 Native Binary**: Standalone executables without Node.js runtime dependencies
 - **🔄 True Concurrency**: Truly parallel async/await without event loop blocking
 
-**Compared to go-orbit-db:**
+**Compared to OrbitDB (GO):**
 - **🎯 Zero-Cost Abstractions**: High-level abstractions without performance overhead
 - **🔐 Borrowing System**: Deterministic memory management vs Go's garbage collector
 - **⚙️ LLVM Optimization**: Compilation to highly optimized machine code
@@ -48,7 +48,7 @@ A decentralized peer-to-peer database built on IPFS, offering:
 
 ### 📈 Performance Benchmarks
 
-| Operation | OrbitDB (JS) | go-orbit-db | Guardian DB | Improvement |
+| Operation | OrbitDB (JS) | OrbitDB (GO) | GuardianDB | Improvement |
 |-----------|--------------|-------------|-------------|-------------|
 | Document insertion | 1,200 ops/s | 3,500 ops/s | **12,000 ops/s** | 🚀 **10x vs JS** |
 | Complex queries | 800 ops/s | 2,100 ops/s | **8,500 ops/s** | 🚀 **4x vs Go** |
@@ -61,7 +61,7 @@ A decentralized peer-to-peer database built on IPFS, offering:
 ## 🏗️ Architecture
 
 ```
-Guardian DB
+GuardianDB
 ├── Core (guardian.rs)
 ├── Stores
 │   ├── Event Log Store    # Immutable event log
@@ -328,7 +328,7 @@ cargo doc --open
 
 ### ✅ Implemented
 
-- Core Guardian DB
+- Core GuardianDB
 - Event Log Store
 - Key-Value Store  
 - Document Store
@@ -343,6 +343,7 @@ cargo doc --open
 - Custom Access Controller
 - Performance optimizations
 - Integration tests
+- GuardianKCA (Kubo Core API)
 
 ### 📋 Planned
 
@@ -395,4 +396,4 @@ licensed under the MIT License © EQLabs.
 
 ---
 
-**Guardian DB** - A secure and performant peer-to-peer database for the decentralized Web.
+**GuardianDB** - A secure and performant peer-to-peer database for the decentralized Web.
