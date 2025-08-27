@@ -1,226 +1,226 @@
-# Contribuindo para Guardian DB
+# Contributing to GuardianDB
 
-Obrigado por considerar contribuir para o Guardian DB! Este documento fornece diretrizes para contribuições que ajudarão a manter a qualidade e consistência do projeto.
+Thank you for considering contributing to GuardianDB! This document provides guidelines for contributions that will help maintain the quality and consistency of the project.
 
-## 📋 Índice
+## 📋 Table of Contents
 
-- [Código de Conduta](#código-de-conduta)
-- [Como Contribuir](#como-contribuir)
-- [Configuração do Ambiente](#configuração-do-ambiente)
-- [Processo de Desenvolvimento](#processo-de-desenvolvimento)
-- [Padrões de Código](#padrões-de-código)
-- [Testes](#testes)
-- [Documentação](#documentação)
+- [Code of Conduct](#code-of-conduct)
+- [How to Contribute](#how-to-contribute)
+- [Environment Setup](#environment-setup)
+- [Development Process](#development-process)
+- [Code Standards](#code-standards)
+- [Testing](#testing)
+- [Documentation](#documentation)
 - [Pull Requests](#pull-requests)
 - [Issues](#issues)
-- [Revisão de Código](#revisão-de-código)
+- [Code Review](#code-review)
 
-## 🤝 Código de Conduta
+## 🤝 Code of Conduct
 
-Este projeto adota o [Contributor Covenant](https://www.contributor-covenant.org/) como código de conduta. Ao participar, você concorda em manter um ambiente respeitoso e inclusivo para todos.
+This project adopts the [Contributor Covenant](https://www.contributor-covenant.org/) as its code of conduct. By participating, you agree to maintain a respectful and inclusive environment for everyone.
 
-### Comportamento Esperado
+### Expected Behavior
 
-- Use linguagem acolhedora e inclusiva
-- Respeite diferentes pontos de vista e experiências
-- Aceite críticas construtivas com graciosidade
-- Foque no que é melhor para a comunidade
-- Demonstre empatia com outros membros da comunidade
+- Use welcoming and inclusive language
+- Respect different viewpoints and experiences
+- Accept constructive criticism gracefully
+- Focus on what is best for the community
+- Show empathy towards other community members
 
-### Comportamento Inaceitável
+### Unacceptable Behavior
 
-- Linguagem ou imagens sexualizadas
-- Trolling, comentários insultuosos ou depreciativos
-- Assédio público ou privado
-- Publicação de informações privadas sem permissão
-- Outra conduta inadequada em um ambiente profissional
+- Sexualized language or imagery
+- Trolling, insulting or derogatory comments
+- Public or private harassment
+- Publishing private information without permission
+- Other conduct inappropriate in a professional environment
 
-## 🚀 Como Contribuir
+## 🚀 How to Contribute
 
-Existem várias maneiras de contribuir para o Guardian DB:
+There are several ways to contribute to GuardianDB:
 
-### 🐛 Reportar Bugs
+### 🐛 Report Bugs
 
-- Use o template de issue para bugs
-- Inclua passos para reproduzir o problema
-- Forneça informações do ambiente (Rust version, OS, etc.)
-- Adicione logs relevantes
+- Use the bug issue template
+- Include steps to reproduce the problem
+- Provide environment information (Rust version, OS, etc.)
+- Add relevant logs
 
-### 💡 Sugerir Funcionalidades
+### 💡 Suggest Features
 
-- Use o template de issue para feature requests
-- Descreva claramente o problema que resolve
-- Explique por que seria útil para outros usuários
-- Considere múltiplas soluções possíveis
+- Use the feature request issue template
+- Clearly describe the problem it solves
+- Explain why it would be useful for other users
+- Consider multiple possible solutions
 
-### 📝 Melhorar Documentação
+### 📝 Improve Documentation
 
-- Corrija erros de digitação ou gramática
-- Adicione exemplos de código
-- Melhore explicações existentes
-- Traduza documentação
+- Fix typos or grammar errors
+- Add code examples
+- Improve existing explanations
+- Translate documentation
 
-### 💻 Contribuir com Código
+### 💻 Contribute Code
 
-- Implemente novas funcionalidades
-- Corrija bugs existentes
-- Melhore performance
-- Adicione testes
+- Implement new features
+- Fix existing bugs
+- Improve performance
+- Add tests
 
-## ⚙️ Configuração do Ambiente
+## ⚙️ Environment Setup
 
-### Pré-requisitos
+### Prerequisites
 
 ```bash
-# Rust 1.70 ou superior
+# Rust 1.70 or higher
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 # Git
-# Instale pelo gerenciador de pacotes do seu OS
+# Install via your OS package manager
 
-# Editor recomendado: VS Code com rust-analyzer
+# Recommended editor: VS Code with rust-analyzer
 ```
 
-### Configuração Inicial
+### Initial Setup
 
 ```bash
-# 1. Fork o repositório no GitHub
+# 1. Fork the repository on GitHub
 
-# 2. Clone seu fork
+# 2. Clone your fork
 git clone https://github.com/wmaslonek/guardian-db.git
 cd guardian-db
 
-# 3. Adicione o repositório original como remote
+# 3. Add the original repository as upstream remote
 git remote add upstream https://github.com/wmaslonek/guardian-db.git
 
-# 4. Instale dependências e verifique se compila
+# 4. Install dependencies and verify compilation
 cargo build
 
-# 5. Execute os testes
+# 5. Run tests
 cargo test
 
-# 6. Verifique formatação
+# 6. Check formatting
 cargo fmt --check
 
-# 7. Execute clippy
+# 7. Run clippy
 cargo clippy -- -D warnings
 ```
 
-### Ferramentas Recomendadas
+### Recommended Tools
 
 ```bash
-# Instalar ferramentas de desenvolvimento
+# Install development tools
 rustup component add rustfmt clippy
 
-# Para testes de benchmark
+# For benchmark tests
 cargo install cargo-criterion
 
-# Para análise de cobertura
+# For coverage analysis
 cargo install cargo-tarpaulin
 
-# Para documentação
+# For documentation
 cargo install mdbook
 ```
 
-## 🔄 Processo de Desenvolvimento
+## 🔄 Development Process
 
-### 1. Planejamento
+### 1. Planning
 
-1. Discuta grandes mudanças em issues primeiro
-2. Verifique se não há work in progress similar
-3. Entenda o impacto da mudança no projeto
+1. Discuss major changes in issues first
+2. Check if there's no similar work in progress
+3. Understand the impact of the change on the project
 
-### 2. Desenvolvimento
+### 2. Development
 
 ```bash
-# 1. Crie uma branch para sua feature
-git checkout -b feature/nova-funcionalidade
+# 1. Create a branch for your feature
+git checkout -b feature/new-functionality
 
-# 2. Faça commits pequenos e focados
-git commit -m "tipo: descrição concisa"
+# 2. Make small, focused commits
+git commit -m "type: concise description"
 
-# 3. Mantenha sua branch atualizada
+# 3. Keep your branch updated
 git fetch upstream
 git rebase upstream/main
 
-# 4. Execute testes frequentemente
+# 4. Run tests frequently
 cargo test
 ```
 
-### 3. Tipos de Commit
+### 3. Commit Types
 
 Use [Conventional Commits](https://www.conventionalcommits.org/):
 
-- `feat:` - Nova funcionalidade
-- `fix:` - Correção de bug
-- `docs:` - Mudanças na documentação
-- `style:` - Formatação (sem mudança de código)
-- `refactor:` - Refatoração de código
-- `test:` - Adicionar ou modificar testes
-- `chore:` - Mudanças em ferramentas, configs, etc.
+- `feat:` - New functionality
+- `fix:` - Bug fix
+- `docs:` - Documentation changes
+- `style:` - Formatting (no code changes)
+- `refactor:` - Code refactoring
+- `test:` - Add or modify tests
+- `chore:` - Changes to tools, configs, etc.
 
-Exemplos:
+Examples:
 ```bash
-git commit -m "feat: adiciona suporte a document queries"
-git commit -m "fix: corrige memory leak no replicator"
-git commit -m "docs: atualiza exemplos do README"
+git commit -m "feat: add support for document queries"
+git commit -m "fix: resolve memory leak in replicator"
+git commit -m "docs: update README examples"
 ```
 
-## 📏 Padrões de Código
+## 📏 Code Standards
 
-### Formatação
+### Formatting
 
 ```bash
-# Formate todo o código antes de commitar
+# Format all code before committing
 cargo fmt
 
-# Verifique se está formatado
+# Check if formatted
 cargo fmt --check
 ```
 
 ### Linting
 
 ```bash
-# Execute clippy para verificar problemas
+# Run clippy to check for issues
 cargo clippy -- -D warnings
 
-# Para código mais rigoroso
+# For more rigorous code
 cargo clippy -- -D clippy::all
 ```
 
-### Convenções Rust
+### Rust Conventions
 
-#### Nomenclatura
+#### Naming
 
 ```rust
 // Structs: PascalCase
 pub struct EventLogStore;
 
-// Functions e variables: snake_case
+// Functions and variables: snake_case
 pub fn create_database() -> Result<()>;
 let database_name = "my-db";
 
 // Constants: SCREAMING_SNAKE_CASE
 const MAX_RETRIES: usize = 3;
 
-// Traits: PascalCase, preferencialmente com sufixo descritivo
+// Traits: PascalCase, preferably with descriptive suffix
 pub trait StorageProvider;
 pub trait Replicatable;
 ```
 
-#### Documentação
+#### Documentation
 
 ```rust
-/// Cria uma nova instância de EventLogStore.
+/// Creates a new instance of EventLogStore.
 ///
 /// # Arguments
 ///
-/// * `name` - Nome único para o store
-/// * `options` - Opções de configuração
+/// * `name` - Unique name for the store
+/// * `options` - Configuration options
 ///
 /// # Returns
 ///
-/// Retorna `Result<EventLogStore, GuardianError>`
+/// Returns `Result<EventLogStore, GuardianError>`
 ///
 /// # Examples
 ///
@@ -232,18 +232,18 @@ pub trait Replicatable;
 ///
 /// # Errors
 ///
-/// Retorna erro se:
-/// - Nome já existe
-/// - Configuração inválida
+/// Returns error if:
+/// - Name already exists
+/// - Invalid configuration
 pub fn new(name: &str, options: Option<StoreOptions>) -> Result<Self> {
-    // implementação
+    // implementation
 }
 ```
 
 #### Error Handling
 
 ```rust
-// Use thiserror para errors customizados
+// Use thiserror for custom errors
 #[derive(Debug, thiserror::Error)]
 pub enum GuardianError {
     #[error("Database not found: {name}")]
@@ -256,7 +256,7 @@ pub enum GuardianError {
     Ipfs(String),
 }
 
-// Prefira Result<T> sobre unwrap/expect
+// Prefer Result<T> over unwrap/expect
 pub fn get_database(name: &str) -> Result<Database> {
     databases.get(name)
         .ok_or_else(|| GuardianError::DatabaseNotFound { 
@@ -268,45 +268,45 @@ pub fn get_database(name: &str) -> Result<Database> {
 #### Async/Await
 
 ```rust
-// Use async/await consistentemente
+// Use async/await consistently
 pub async fn replicate_data(&self) -> Result<()> {
-    // operações assíncronas
+    // asynchronous operations
 }
 
-// Para traits, use async-trait
+// For traits, use async-trait
 #[async_trait]
 pub trait Replicator {
     async fn start_replication(&self) -> Result<()>;
 }
 ```
 
-## 🧪 Testes
+## 🧪 Tests
 
-### Executando Testes
+### Running Tests
 
 ```bash
-# Todos os testes
+# All tests
 cargo test
 
-# Testes específicos
+# Specific tests
 cargo test test_event_log
 
-# Testes com output
+# Tests with output
 cargo test -- --nocapture
 
-# Testes com logs
+# Tests with logs
 RUST_LOG=debug cargo test
 
-# Testes de integração
+# Integration tests
 cargo test --test integration
 
 # Benchmarks
 cargo bench
 ```
 
-### Escrevendo Testes
+### Writing Tests
 
-#### Testes Unitários
+#### Unit Tests
 
 ```rust
 #[cfg(test)]
@@ -331,7 +331,7 @@ mod tests {
 }
 ```
 
-#### Testes de Integração
+#### Integration Tests
 
 ```rust
 // tests/integration.rs
@@ -342,14 +342,14 @@ async fn test_full_replication_flow() {
     let node1 = setup_node("node1").await;
     let node2 = setup_node("node2").await;
     
-    // Criar database no node1
+    // Create database on node1
     let db1 = node1.log("shared-log", None).await.unwrap();
     db1.add(b"test data").await.unwrap();
     
-    // Conectar nodes
+    // Connect nodes
     node1.connect_peer(&node2.peer_id()).await.unwrap();
     
-    // Verificar replicação
+    // Verify replication
     let db2 = node2.log("shared-log", None).await.unwrap();
     wait_for_replication(&db2, 1).await;
     
@@ -357,46 +357,46 @@ async fn test_full_replication_flow() {
 }
 ```
 
-### Cobertura de Testes
+### Test Coverage
 
 ```bash
-# Instalar tarpaulin
+# Install tarpaulin
 cargo install cargo-tarpaulin
 
-# Executar com cobertura
+# Run with coverage
 cargo tarpaulin --out Html
 
-# Ver relatório
+# View report
 open tarpaulin-report.html
 ```
 
-## 📚 Documentação
+## 📚 Documentation
 
-### Documentação de Código
+### Code Documentation
 
-- Documente todas as funções públicas
-- Use exemplos de código nos comentários
-- Explique parâmetros complexos
-- Documente comportamento de erro
+- Document all public functions
+- Use code examples in comments
+- Explain complex parameters
+- Document error behavior
 
-### Documentação Externa
+### External Documentation
 
 ```bash
-# Gerar documentação
+# Generate documentation
 cargo doc --open
 
-# Verificar links quebrados
+# Check broken links
 cargo doc --document-private-items
 
-# Atualizar README
-# Mantenha exemplos sincronizados com o código
+# Update README
+# Keep examples synchronized with code
 ```
 
-### Exemplos
+### Examples
 
-- Adicione exemplos na pasta `examples/`
-- Mantenha exemplos simples e focados
-- Teste exemplos como parte do CI
+- Add examples in the `examples/` folder
+- Keep examples simple and focused
+- Test examples as part of CI
 
 ```rust
 // examples/basic_usage.rs
@@ -404,245 +404,245 @@ use guardian_db::*;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Exemplo simples e funcional
+    // Simple and functional example
     let db = GuardianDB::new_mock().await?;
     let log = db.log("example", None).await?;
-    log.add(b"Hello, Guardian DB!").await?;
+    log.add(b"Hello, GuardianDB!").await?;
     Ok(())
 }
 ```
 
 ## 🔀 Pull Requests
 
-### Antes de Submeter
+### Before Submitting
 
-- [ ] Código compila sem warnings
-- [ ] Todos os testes passam
-- [ ] Código está formatado (`cargo fmt`)
-- [ ] Clippy não reporta issues (`cargo clippy`)
-- [ ] Documentação atualizada
-- [ ] Testes adicionados para novas funcionalidades
-- [ ] CHANGELOG.md atualizado (se aplicável)
+- [ ] Code compiles without warnings
+- [ ] All tests pass
+- [ ] Code is formatted (`cargo fmt`)
+- [ ] Clippy reports no issues (`cargo clippy`)
+- [ ] Documentation updated
+- [ ] Tests added for new features
+- [ ] CHANGELOG.md updated (if applicable)
 
-### Template de PR
+### PR Template
 
 ```markdown
-## Descrição
+## Description
 
-Descrição clara do que este PR faz.
+Clear description of what this PR does.
 
-## Tipo de Mudança
+## Type of Change
 
-- [ ] Bug fix (mudança que corrige um issue)
-- [ ] Nova funcionalidade (mudança que adiciona funcionalidade)
-- [ ] Breaking change (mudança que quebra compatibilidade)
-- [ ] Documentação (mudança apenas na documentação)
+- [ ] Bug fix (change that fixes an issue)
+- [ ] New feature (change that adds functionality)
+- [ ] Breaking change (change that breaks compatibility)
+- [ ] Documentation (documentation-only change)
 
-## Como Testar
+## How to Test
 
-1. Compile o projeto
-2. Execute `cargo test`
-3. Teste específico: `cargo test test_nova_funcionalidade`
+1. Compile the project
+2. Run `cargo test`
+3. Specific test: `cargo test test_new_functionality`
 
 ## Checklist
 
-- [ ] Código segue padrões do projeto
-- [ ] Testes passam localmente
-- [ ] Documentação atualizada
-- [ ] Sem warnings do clippy
+- [ ] Code follows project standards
+- [ ] Tests pass locally
+- [ ] Documentation updated
+- [ ] No clippy warnings
 ```
 
-### Processo de Review
+### Review Process
 
-1. **Automated Checks**: CI deve passar
-2. **Code Review**: Pelo menos um maintainer aprova
-3. **Testing**: Testes manuais se necessário
-4. **Documentation**: Verificar se docs estão atualizadas
-5. **Merge**: Squash commits se necessário
+1. **Automated Checks**: CI must pass
+2. **Code Review**: At least one maintainer approves
+3. **Testing**: Manual tests if necessary
+4. **Documentation**: Verify docs are updated
+5. **Merge**: Squash commits if necessary
 
 ## 🐛 Issues
 
-### Reportando Bugs
+### Reporting Bugs
 
-Use o template de bug report:
+Use the bug report template:
 
 ```markdown
-**Descreva o bug**
-Descrição clara do problema.
+**Describe the bug**
+Clear description of the problem.
 
-**Passos para Reproduzir**
-1. Vá para '...'
-2. Clique em '....'
+**Steps to Reproduce**
+1. Go to '...'
+2. Click on '....'
 3. Execute '....'
-4. Veja o erro
+4. See error
 
-**Comportamento Esperado**
-O que deveria acontecer.
+**Expected Behavior**
+What should happen.
 
 **Screenshots**
-Se aplicável, adicione screenshots.
+If applicable, add screenshots.
 
-**Ambiente:**
+**Environment:**
  - OS: [e.g. Ubuntu 20.04]
  - Rust Version: [e.g. 1.70.0]
- - Guardian DB Version: [e.g. 0.1.0]
+ - GuardianDB Version: [e.g. 0.8.26]
 
-**Contexto Adicional**
-Qualquer outra informação relevante.
+**Additional Context**
+Any other relevant information.
 ```
 
-### Sugerindo Funcionalidades
+### Suggesting Features
 
 ```markdown
-**Funcionalidade Desejada**
-Descrição clara da funcionalidade.
+**Desired Feature**
+Clear description of the feature.
 
-**Problema Resolvido**
-Que problema esta funcionalidade resolve?
+**Problem Solved**
+What problem does this feature solve?
 
-**Solução Proposta**
-Como você gostaria que funcionasse?
+**Proposed Solution**
+How would you like it to work?
 
-**Alternativas Consideradas**
-Outras soluções que você considerou?
+**Alternatives Considered**
+Other solutions you considered?
 
-**Contexto Adicional**
+**Additional Context**
 Screenshots, mockups, etc.
 ```
 
-## 👥 Revisão de Código
+## 👥 Code Review
 
-### Para Reviewers
+### For Reviewers
 
-#### O que Verificar
+#### What to Check
 
-- **Funcionalidade**: O código faz o que deveria?
-- **Testes**: Mudanças estão testadas adequadamente?
-- **Performance**: Há impactos de performance?
-- **Security**: Há vulnerabilidades de segurança?
-- **Design**: O design está bem pensado?
-- **Documentação**: Está bem documentado?
+- **Functionality**: Does the code do what it should?
+- **Tests**: Are changes adequately tested?
+- **Performance**: Are there performance impacts?
+- **Security**: Are there security vulnerabilities?
+- **Design**: Is the design well thought out?
+- **Documentation**: Is it well documented?
 
-#### Como Dar Feedback
+#### How to Give Feedback
 
 ```markdown
-# ✅ Bom feedback
-"Este método poderia beneficiar de error handling mais específico. 
-Considere usar `GuardianError::InvalidInput` em vez de genérico."
+# ✅ Good feedback
+"This method could benefit from more specific error handling. 
+Consider using `GuardianError::InvalidInput` instead of generic."
 
-# ❌ Feedback ruim  
-"Este código está errado."
+# ❌ Bad feedback  
+"This code is wrong."
 ```
 
-#### Checklist de Review
+#### Review Checklist
 
-- [ ] Código compila e teste passam
-- [ ] Lógica está correta
-- [ ] Error handling adequado
-- [ ] Documentação clara
-- [ ] Performance aceitável
-- [ ] Sem vazamentos de memória
-- [ ] Thread safety (se aplicável)
+- [ ] Code compiles and tests pass
+- [ ] Logic is correct
+- [ ] Adequate error handling
+- [ ] Clear documentation
+- [ ] Acceptable performance
+- [ ] No memory leaks
+- [ ] Thread safety (if applicable)
 
-### Para Autores
+### For Authors
 
-#### Respondendo a Feedback
+#### Responding to Feedback
 
-- Seja receptivo a sugestões
-- Faça perguntas se não entender
-- Explique decisões de design quando relevante
-- Atualize o código baseado no feedback
+- Be receptive to suggestions
+- Ask questions if you don't understand
+- Explain design decisions when relevant
+- Update code based on feedback
 
-#### Após Aprovação
+#### After Approval
 
 ```bash
-# Rebasing se necessário
+# Rebasing if necessary
 git rebase -i upstream/main
 
-# Squash commits relacionados
-# Force push se necessário (em sua branch)
-git push --force-with-lease origin feature/minha-feature
+# Squash related commits
+# Force push if necessary (on your branch)
+git push --force-with-lease origin feature/my-feature
 ```
 
-## 📊 Métricas e Qualidade
+## 📊 Metrics and Quality
 
-### Objetivos de Qualidade
+### Quality Goals
 
-- **Cobertura de testes**: > 85%
-- **Performance**: Sem regressões significativas
-- **Documentação**: Todas as APIs públicas documentadas
+- **Test coverage**: > 85%
+- **Performance**: No significant regressions
+- **Documentation**: All public APIs documented
 - **Clippy warnings**: Zero warnings
-- **Memory leaks**: Zero vazamentos
+- **Memory leaks**: Zero leaks
 
-### Ferramentas de Monitoramento
+### Monitoring Tools
 
 ```bash
-# Benchmark contínuo
+# Continuous benchmarking
 cargo bench
 
-# Profile de memória
+# Memory profiling
 valgrind --tool=memcheck target/debug/guardian-db
 
-# Análise de dependências
+# Dependency analysis
 cargo audit
 
-# Verificação de licenças
+# License verification
 cargo license
 ```
 
-## 🎯 Áreas Prioritárias
+## 🎯 Priority Areas
 
-### Para Novos Contribuidores
+### For New Contributors
 
-1. **Documentação**: Melhorar exemplos e tutoriais
-2. **Testes**: Adicionar testes de integração
-3. **Error handling**: Melhorar mensagens de erro
-4. **Performance**: Benchmarks e otimizações
+1. **Documentation**: Improve examples and tutorials
+2. **Tests**: Add integration tests
+3. **Error handling**: Improve error messages
+4. **Performance**: Benchmarks and optimizations
 
-### Para Contribuidores Experientes
+### For Experienced Contributors
 
-1. **Core features**: Novas funcionalidades do store
-2. **IPFS integration**: Melhorar integração nativa
-3. **P2P networking**: Otimizar comunicação entre peers
-4. **Security**: Auditoria e melhorias de segurança
+1. **Core features**: New store functionalities
+2. **IPFS integration**: Improve native integration
+3. **P2P networking**: Optimize peer communication
+4. **Security**: Security audits and improvements
 
-## 📞 Comunicação
+## 📞 Communication
 
-### Canais
+### Channels
 
-- **GitHub Issues**: Bugs, features, discussões técnicas
-- **GitHub Discussions**: Perguntas gerais, ideias
-- **Discord**: Chat em tempo real (link no README)
+- **GitHub Issues**: Bugs, features, technical discussions
+- **GitHub Discussions**: General questions, ideas
+- **Discord**: Real-time chat (link in README)
 
-### Respondendo Issues
+### Responding to Issues
 
-- Responda dentro de 48 horas quando possível
-- Seja helpful e construtivo
-- Encaminhe para experts quando necessário
-- Use labels apropriados
+- Respond within 48 hours when possible
+- Be helpful and constructive
+- Forward to experts when necessary
+- Use appropriate labels
 
-## 🏆 Reconhecimento
+## 🏆 Recognition
 
-Contribuidores são reconhecidos através de:
+Contributors are recognized through:
 
-- **All Contributors**: Bot que adiciona contribuidores ao README
-- **Release Notes**: Menção em changelogs
-- **Hall of Fame**: Seção especial para contribuidores frequentes
+- **All Contributors**: Bot that adds contributors to README
+- **Release Notes**: Mention in changelogs
+- **Hall of Fame**: Special section for frequent contributors
 
-## 📝 Conclusão
+## 📝 Conclusion
 
-Obrigado por contribuir para o Guardian DB! Sua ajuda é essencial para tornar este projeto melhor para toda a comunidade.
+Thank you for contributing to GuardianDB! Your help is essential to make this project better for the entire community.
 
-### Recursos Úteis
+### Useful Resources
 
 - [Rust Book](https://doc.rust-lang.org/book/)
 - [Async Programming in Rust](https://rust-lang.github.io/async-book/)
 - [API Guidelines](https://rust-lang.github.io/api-guidelines/)
-- [OrbitDB Docs](https://orbitdb.org/) (referência)
+- [OrbitDB Docs](https://orbitdb.org/) (reference)
 
-### Dúvidas?
+### Questions?
 
-Se tiver alguma dúvida sobre contribuições, abra uma issue com a label `question` ou entre em contato através dos canais de comunicação.
+If you have any questions about contributions, open an issue with the `question` label or contact us through the communication channels.
 
 ---
 
