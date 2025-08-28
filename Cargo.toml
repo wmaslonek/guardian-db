@@ -1,48 +1,49 @@
 [package]
 name = "guardian-db"
-version = "0.8.26"
+version = "0.8.28"
 authors = ["William Maslonek <wmaslonek@icloud.com>"]
 edition = "2024"
 
+# Replace workspace dependencies with their corresponding versions
 [dependencies]
 async-trait = "0.1.89"
-base64.workspace = true
+base64.workspace = true #base64 = "0.22.1"
 byteorder = "1.5.0"
 cid = "0.11.1"
 env_logger = "0.11.8"
 futures = "0.3.31"
-libp2p.workspace = true
-libp2p-identity.workspace = true
+libp2p.workspace = true #libp2p = { version = "0.56.0", features = ["tokio", "tcp", "quic", "noise", "yamux", "relay", "identify", "ping", "kad", "gossipsub"] }
+libp2p-identity.workspace = true #libp2p-identity = "0.2.12"
 log = "0.4.27"
 opentelemetry = "0.30.0"
 parking_lot = "0.12.4"
 path-slash = "0.2.1"
 reqwest = "0.12.23"
-serde.workspace = true
+serde.workspace = true #serde = { version = "1.0.219", features = ["derive"] }
 serde_cbor = "0.11.1"
-serde_json.workspace = true
+serde_json.workspace = true #serde_json = "1.0.143"
 slog = "2.7.0"
 slog-term = "2.9.0"
-tempfile.workspace = true
+tempfile.workspace = true #tempfile = "3.21.0"
 thiserror = "2.0.14"
-tokio.workspace = true
+tokio.workspace = true #tokio = { version = "1.47.1", features = ["full"] }
 tokio-stream = "0.1.17"
 tokio-util = "0.7.16"
-tracing.workspace = true
+tracing.workspace = true #tracing = "0.1.41"
 ipfs-api-backend-hyper = "0.6.0"
 sha2 = "0.10.9"
-rand.workspace = true
-hex.workspace = true
+rand.workspace = true #rand = "0.9.2"
+hex.workspace = true #hex = "0.4.3"
 secp256k1 = "0.31.1"
 libipld = "0.16.0"
 datastore = "0.1.5"
 unsigned-varint = "0.8.0"
 sled = "0.34.7"
 
-# Dependências condicionais para futuras implementações nativas
+# Conditional dependencies for future native implementations
 rust-ipfs = { version = "0.14.1", optional = true }
-tracing-subscriber = { version = "0.3", optional = true }
-async-stream = "0.3"
+tracing-subscriber = { version = "0.3.19", optional = true }
+async-stream = "0.3.6"
 
 [features]
 default = ["native-ipfs"]
