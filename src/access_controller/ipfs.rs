@@ -7,7 +7,7 @@ use log::debug;
 use slog::Logger;
 use ipfs_api_backend_hyper::{IpfsClient, IpfsApi};
 use cid::Cid;
-use futures::TryStreamExt; // Para collect em streams
+use futures::TryStreamExt;
 use crate::access_controller::{manifest::Manifest, manifest::ManifestParams, manifest::CreateAccessControllerOptions};
 use crate::address::Address;
 use crate::eqlabs_ipfs_log::{access_controller::LogEntry, identity_provider::IdentityProvider};
