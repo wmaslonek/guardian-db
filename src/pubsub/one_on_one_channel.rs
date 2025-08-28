@@ -35,7 +35,6 @@ struct PubsubMessage {
 struct IdResponse {
     id: PeerId,
 }
-
 pub struct Channel {
     pub id: String,
     pub cancel_tx: broadcast::Sender<()>,
