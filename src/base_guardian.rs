@@ -238,15 +238,21 @@ impl GuardianDB {
         // 3. Inicialização de componentes
         // TODO: Implementar a chamada real para make_direct_channel
         // let direct_channel = make_direct_channel(/* &event_bus, &direct_channel_factory, ... */)?;
-        // Placeholder temporário usando a implementação real do DirectChannel
+        // Usando a implementação melhorada do DirectChannel
         let emitter = crate::pubsub::event::PayloadEmitter::new(&event_bus).await
             .map_err(|e| GuardianError::Other(format!("Erro ao criar emitter: {}", e)))?;
+        
+        // Cria um peer ID para o DirectChannel
+        let own_peer_id = crate::pubsub::direct_channel::create_test_peer_id();
+        let libp2p_interface = Arc::new(crate::pubsub::direct_channel::GossipsubInterface::new(logger.clone()));
+        
         let direct_channel: Arc<dyn DirectChannel<Error = GuardianError> + Send + Sync> = 
-            Arc::new(crate::pubsub::direct_channel::DirectChannel::new(
+            Arc::new(crate::pubsub::direct_channel::create_direct_channel_with_libp2p(
+                libp2p_interface,
+                Arc::new(emitter),
                 logger.clone(),
-                Arc::new(()),
-                Arc::new(emitter), // Changed from Box::new to Arc::new
-            ));
+                own_peer_id,
+            ).await?);
         
         let message_marshaler = options.message_marshaler.unwrap_or_else(|| {
             // Criar um placeholder para o MessageMarshaler
@@ -918,10 +924,15 @@ pub async fn make_direct_channel(
     let emitter = crate::pubsub::event::PayloadEmitter::new(event_bus).await
         .map_err(|e| GuardianError::Other(format!("não foi possível inicializar o emitter do pubsub: {}", e)))?;
     
+    // Cria um peer ID para o DirectChannel
+    let own_peer_id = crate::pubsub::direct_channel::create_test_peer_id();
+    let libp2p_interface = Arc::new(crate::pubsub::direct_channel::GossipsubInterface::new(logger.clone()));
+    
     // TODO: Implementar factory.create quando a interface estiver correta
-    Ok(Arc::new(crate::pubsub::direct_channel::DirectChannel::new(
+    Ok(Arc::new(crate::pubsub::direct_channel::create_direct_channel_with_libp2p(
+        libp2p_interface,
+        Arc::new(emitter),
         logger.clone(),
-        Arc::new(()),
-        Arc::new(emitter), // Changed from Box::new to Arc::new
-    )))
+        own_peer_id,
+    ).await?))
 }
