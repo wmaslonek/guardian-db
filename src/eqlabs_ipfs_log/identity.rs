@@ -1,14 +1,17 @@
 use std::collections::HashMap;
 use std::cmp::Ordering;
 use std::str::FromStr;
-
 use sha2::{Sha256,Digest};
 use secp256k1::{Secp256k1, Message, All, ecdsa::Signature, PublicKey, SecretKey};
-use rand::{rngs::OsRng, RngCore};
+use rand::RngCore;
 use hex;
+use libp2p_identity::PublicKey as Libp2pPublicKey;
+
+/// Size of a secp256k1 secret key in bytes
+const SECRET_KEY_SIZE: usize = 32;
 
 /// A struct holding identifier and public key signatures for an identity.
-#[derive(Eq,PartialEq,Clone)]
+#[derive(Debug,Eq,PartialEq,Clone)]
 pub struct Signatures {
 	id: String,
 	pub_key: String,
@@ -42,7 +45,7 @@ impl Signatures {
 }
 
 /// An identity to determine ownership of the data stored in the log.
-#[derive(Eq,PartialEq,Clone)]
+#[derive(Debug,Eq,PartialEq,Clone)]
 pub struct Identity {
 	pub id: String,
 	pub pub_key: String,
@@ -82,6 +85,29 @@ impl Identity {
 	pub fn signatures (&self) -> &Signatures {
 		&self.signatures
 	}
+
+	/// Retorna o tipo da identidade (compatibilidade com IdentityProvider)
+	pub fn r#type(&self) -> &str {
+		"GuardianDB" // Tipo padrão
+	}
+
+	/// Retorna as assinaturas como HashMap para compatibilidade
+	pub fn signatures_map(&self) -> HashMap<String, Vec<u8>> {
+		let mut map = HashMap::new();
+		map.insert("id".to_string(), self.signatures.id().as_bytes().to_vec());
+		map.insert("publicKey".to_string(), self.signatures.pub_key().as_bytes().to_vec());
+		map
+	}
+
+	/// Retorna a chave pública como libp2p PublicKey (se possível)
+	pub fn public_key(&self) -> Option<Libp2pPublicKey> {
+		// Tenta decodificar a chave pública do formato hex para libp2p
+		if let Ok(key_bytes) = hex::decode(&self.pub_key) {
+			Libp2pPublicKey::try_decode_protobuf(&key_bytes).ok()
+		} else {
+			None
+		}
+	}
 }
 
 impl Ord for Identity {
@@ -96,14 +122,14 @@ impl PartialOrd for Identity {
 	}
 }
 
-///A secret key&mdash;public key pair.
+/// A secret key—public key pair.
 pub struct Keys {
 	sec_key: String,
 	pub_key: String,
 }
 
 impl Keys {
-	/// Construct a new secret key&mdash;public key pair.
+	/// Construct a new secret key—public key pair.
 	pub fn new (sk: &str, pk: &str) -> Keys {
 		Keys {
 			sec_key: sk.to_owned(),
@@ -130,17 +156,17 @@ pub trait Identificator {
 	/// Currently **does not store the created identity** anywhere.
 	fn create (&mut self, id: &str) -> Identity;
 
-	/// Return the secret key&mdash;public key pair stored under the store key `key`.
+	/// Return the secret key—public key pair stored under the store key `key`.
 	fn get (&self, key: &str) -> Option<&Keys>;
-
-	/// Sign the message `msg` with the secret key in `keys`.
-	///
-	/// Returns the produced signature as a string.
-	fn verify (&self, msg: &str, sig: &str, pk: &str) -> bool;
 
 	/// Verify from the signature `sig` that the message `msg` was signed with the public key `pk`.
 	///
-	/// Returns `true` if it was, otherwise returns `false`.
+	/// Returns `true` if the signature is valid, otherwise returns `false`.
+	fn verify (&self, msg: &str, sig: &str, pk: &str) -> bool;
+
+	/// Sign the message `msg` with the secret key in `keys`.
+	///
+	/// Returns the produced signature as a string, or an empty string if signing fails.
 	fn sign (&self, msg: &str, keys: &Keys) -> String;
 }
 
@@ -163,6 +189,15 @@ impl DefaultIdentificator {
 		}
 	}
 
+	/// Helper function to create a SHA256 hash message for signing/verification
+	fn create_message(data: &str) -> Message {
+		let mut hasher = Sha256::new();
+		Digest::update(&mut hasher, data.as_bytes());
+		let dig = hasher.finalize();
+		let dig_array: [u8; 32] = dig.into();
+		Message::from_digest(dig_array)
+	}
+
 	fn put (&mut self, k: &str, v: Keys) {
 		self.keystore.insert(k.to_owned(),v);
 	}
@@ -171,34 +206,26 @@ impl DefaultIdentificator {
 impl Identificator for DefaultIdentificator {
 	fn create (&mut self, id: &str) -> Identity {
 		// Generate first keypair 
-		let mut secret_bytes = [0u8; 32];
-		OsRng.fill_bytes(&mut secret_bytes);
+		let mut secret_bytes = [0u8; SECRET_KEY_SIZE];
+		rand::rng().fill_bytes(&mut secret_bytes);
 		let secret_key = SecretKey::from_byte_array(secret_bytes).expect("Valid secret key");
 		let public_key = PublicKey::from_secret_key(&self.secp, &secret_key);
 		let (sk,ih) = (&secret_key.display_secret().to_string(),&public_key.serialize_uncompressed().iter().map(|&x| format!("{:02x}",x)).collect::<String>());
 		self.put(id,Keys::new(sk,ih));
 
 		// Generate second keypair
-		let mut middle_bytes = [0u8; 32];
-		OsRng.fill_bytes(&mut middle_bytes);
+		let mut middle_bytes = [0u8; SECRET_KEY_SIZE];
+		rand::rng().fill_bytes(&mut middle_bytes);
 		let middle_key = SecretKey::from_byte_array(middle_bytes).expect("Valid secret key");
 		let public_key2 = PublicKey::from_secret_key(&self.secp, &middle_key);
 		let (mk,pk) = (&middle_key.display_secret().to_string(),&public_key2.serialize_uncompressed().iter().map(|&x| format!("{:02x}",x)).collect::<String>());
 		self.put(ih,Keys::new(mk,pk));
 
-		let mut hasher = Sha256::new();
-		Digest::update(&mut hasher, ih.as_bytes());
-		let dig = hasher.finalize();
-		let dig_array: [u8; 32] = dig.into();
-		let message = Message::from_digest(dig_array);
+		let message = Self::create_message(ih);
 		let id_sign = self.secp.sign_ecdsa(message, &middle_key);
 		let mut pkis = pk.to_owned();
 		pkis.push_str(&id_sign.to_string());
-		let mut hasher = Sha256::new();
-		Digest::update(&mut hasher, pkis.as_bytes());
-		let dig = hasher.finalize();
-		let dig_array: [u8; 32] = dig.into();
-		let message = Message::from_digest(dig_array);
+		let message = Self::create_message(&pkis);
 		let pub_sign = self.secp.sign_ecdsa(message, &secret_key);
 
 		Identity::new(ih,pk,Signatures::new(&id_sign.to_string(),&pub_sign.to_string()))
@@ -209,28 +236,46 @@ impl Identificator for DefaultIdentificator {
 	}
 
 	fn verify (&self, msg: &str, sig: &str, pk: &str) -> bool {
-		let mut hasher = Sha256::new();
-		Digest::update(&mut hasher, msg.as_bytes());
-		let dig = hasher.finalize();
-		let dig_array: [u8; 32] = dig.into();
-		let message = Message::from_digest(dig_array);
-		match self.secp.verify_ecdsa(message,
-		&Signature::from_str(sig).unwrap(),
-		&PublicKey::from_slice(&hex::decode(pk).unwrap()).unwrap()) {
-			Ok(_)	=>	true,
-			_		=>	false,
-		}
+		let message = Self::create_message(msg);
+		
+		// Safe parsing of signature and public key
+		let signature = match Signature::from_str(sig) {
+			Ok(s) => s,
+			Err(_) => return false,
+		};
+		
+		let pk_bytes = match hex::decode(pk) {
+			Ok(bytes) => bytes,
+			Err(_) => return false,
+		};
+		
+		let public_key = match PublicKey::from_slice(&pk_bytes) {
+			Ok(pk) => pk,
+			Err(_) => return false,
+		};
+		
+		self.secp.verify_ecdsa(message, &signature, &public_key).is_ok()
 	}
 
 	fn sign (&self, msg: &str, keys: &Keys) -> String {
-		let mut hasher = Sha256::new();
-		Digest::update(&mut hasher, msg.as_bytes());
-		let dig = hasher.finalize();
-		let dig_array: [u8; 32] = dig.into();
-		let message = Message::from_digest(dig_array);
-		let hex_decoded = hex::decode(keys.sec_key()).unwrap();
-		let byte_array: [u8; 32] = hex_decoded.try_into().unwrap();
-		let secret_key = SecretKey::from_byte_array(byte_array).unwrap();
+		let message = Self::create_message(msg);
+		
+		// Safe parsing of secret key
+		let hex_decoded = match hex::decode(keys.sec_key()) {
+			Ok(bytes) => bytes,
+			Err(_) => return String::new(), // Return empty string on error
+		};
+		
+		let byte_array: [u8; SECRET_KEY_SIZE] = match hex_decoded.try_into() {
+			Ok(arr) => arr,
+			Err(_) => return String::new(), // Return empty string on error
+		};
+		
+		let secret_key = match SecretKey::from_byte_array(byte_array) {
+			Ok(sk) => sk,
+			Err(_) => return String::new(), // Return empty string on error
+		};
+		
 		self.secp.sign_ecdsa(message, &secret_key).to_string()
 	}
 }
