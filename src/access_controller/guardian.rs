@@ -18,7 +18,7 @@ pub struct GuardianDBAccessController {
     event_sender: broadcast::Sender<EventUpdated>,
     
     /// Uma referência compartilhada à instância principal do GuardianDB.
-    GuardianDB: Arc<dyn GuardianDBKVStoreProvider<Error = GuardianError>>,
+    guardian_db: Arc<dyn GuardianDBKVStoreProvider<Error = GuardianError>>,
     
     /// O armazém de chave-valor para as permissões. Envolto em RwLock e Option 
     /// porque pode ser substituído dinamicamente pela função `load`.
@@ -267,7 +267,7 @@ impl GuardianDBAccessController {
     /// equivalente a NewGuardianDBAccessController em go
     /// Em Rust, é idiomático usar uma função `new` associada para construtores.
     pub async fn new(
-        GuardianDB: Arc<dyn GuardianDBKVStoreProvider<Error = GuardianError>>,
+        guardian_db: Arc<dyn GuardianDBKVStoreProvider<Error = GuardianError>>,
         params: Box<dyn ManifestParams>,
         // Em Rust, opções funcionais podem ser implementadas com o padrão builder ou closures.
     ) -> Result<Self> {
@@ -291,7 +291,7 @@ impl GuardianDBAccessController {
 
         let controller = Self {
             event_sender: tx,
-            GuardianDB,
+            guardian_db,
             kv_store: RwLock::new(None), // Por enquanto inicializa como None até resolver trait bounds
             options: params,
             // Inicializa com um logger padrão. Pode ser substituído com `set_logger`.
@@ -304,3 +304,6 @@ impl GuardianDBAccessController {
         Ok(controller)
     }
 }
+
+// TODO: Implement AccessController trait for GuardianDBAccessController when trait bounds are resolved
+// The GuardianDBAccessController has complex dependencies that need Send + Sync bounds
