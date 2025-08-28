@@ -175,6 +175,35 @@ fn default_sort_fn(a: &Entry, b: &Entry) -> std::cmp::Ordering {
 }
 
 impl BaseStore {
+    /// Cria um cache real baseado em sled em vez do DummyDatastore
+    fn create_real_cache(address: &dyn Address) -> Result<Arc<dyn Datastore>> {
+        use crate::cache::level_down::LevelDownCache;
+        use crate::cache::cache::Options;
+        
+        // Por agora, vamos usar uma implementação simplificada que funciona
+        // Vamos criar um DatastoreWrapper diretamente usando o LevelDownCache
+        let cache_options = Options {
+            logger: Some(slog::Logger::root(slog::Discard, slog::o!())),
+            max_cache_size: Some(100 * 1024 * 1024), // 100MB
+            cache_mode: crate::cache::cache::CacheMode::Auto,
+        };
+        
+        let cache_manager = LevelDownCache::new(Some(&cache_options));
+        
+        // Cria uma instância concreta de Address
+        use crate::address;
+        let concrete_address = address::parse(&address.to_string())
+            .map_err(|e| GuardianError::Store(format!("Failed to parse address: {}", e)))?;
+        
+        // Usa o método interno para obter o WrappedCache
+        let wrapped_cache = cache_manager.load_internal("./cache", &concrete_address)
+            .map_err(|e| GuardianError::Store(format!("Failed to create cache: {}", e)))?;
+        
+        // Cria o DatastoreWrapper que implementa Datastore
+        use crate::cache::level_down::DatastoreWrapper;
+        Ok(Arc::new(DatastoreWrapper::new(wrapped_cache)))
+    }
+
     /// Helper method para criar um contexto de acesso baseado no log atual
     fn create_append_context(&self) -> impl CanAppendAdditionalContext {
         let entries = {
@@ -429,14 +458,15 @@ impl BaseStore {
             Some(ac) => ac,
             None => {
                 // Se não foi fornecido um access controller, cria um SimpleAccessController padrão
-                use crate::access_controller::manifest::CreateAccessControllerOptions;
                 use std::collections::HashMap;
                 
                 let mut default_access = HashMap::new();
                 default_access.insert("write".to_string(), vec!["*".to_string()]);
                 
-                let options = CreateAccessControllerOptions::new_simple("simple".to_string(), default_access);
-                Arc::new(SimpleAccessController::new(options)?) as Arc<dyn AccessController>
+                // Cria um logger padrão para o SimpleAccessController
+                let controller_logger = Logger::root(slog::Discard, o!());
+                
+                Arc::new(SimpleAccessController::new(controller_logger, Some(default_access))) as Arc<dyn AccessController>
             }
         };
 
@@ -469,9 +499,9 @@ impl BaseStore {
             let _destroy = opts.cache_destroy.take().unwrap_or_else(|| Box::new(|| Ok(())));
             (cache, _destroy)
         } else {
-            // Por enquanto, usar um cache dummy até a implementação real estar pronta
-            let dummy_cache: Arc<dyn Datastore> = Arc::new(crate::cache::cache::DummyDatastore::default());
-            (dummy_cache, Box::new(move || -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> { Ok(()) }) as Box<dyn FnOnce() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>>)
+            // Usar implementação real de cache baseada em sled
+            let cache_impl = Self::create_real_cache(address.as_ref())?;
+            (cache_impl, Box::new(move || -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> { Ok(()) }) as Box<dyn FnOnce() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>>)
         };
 
         let sort_fn = opts.sort_fn.take().unwrap_or(default_sort_fn);
@@ -698,9 +728,6 @@ impl BaseStore {
         }
 
         let mut verified_heads = vec![];
-        
-        // Criamos um contexto de acesso usando o helper method
-        let ac_context = self.create_append_context();
         
         debug!(self.logger, "Sync: Processing {} heads", heads.len());
 
