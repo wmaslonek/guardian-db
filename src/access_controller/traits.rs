@@ -4,6 +4,7 @@ use std::sync::Arc;
 use slog::Logger;
 use crate::access_controller::manifest::ManifestParams;
 use crate::eqlabs_ipfs_log::access_controller;
+use crate::eqlabs_ipfs_log::identity_provider::IdentityProvider;
 
 /// equivalente a LogEntry em go
 pub type LogEntry = dyn access_controller::LogEntry;
@@ -42,6 +43,15 @@ pub trait AccessController: Send + Sync {
     
     /// Retorna a instância atual do logger.
     async fn logger(&self) -> Arc<Logger>;
+    
+    /// Verifica se uma entrada pode ser adicionada ao log.
+    /// Este método é específico para o GuardianDB e não está presente na interface original do OrbitDB.
+    async fn can_append(
+        &self,
+        entry: &dyn access_controller::LogEntry,
+        identity_provider: &dyn IdentityProvider,
+        additional_context: &dyn access_controller::CanAppendAdditionalContext,
+    ) -> Result<()>;
 }
 
 /// equivalente a Option em go
