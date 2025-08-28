@@ -104,6 +104,12 @@ pub struct DatastoreWrapper {
     cache: Arc<WrappedCache>,
 }
 
+impl DatastoreWrapper {
+    pub fn new(cache: Arc<WrappedCache>) -> Self {
+        Self { cache }
+    }
+}
+
 #[async_trait::async_trait]
 impl Datastore for DatastoreWrapper {
     async fn has(&self, key: &[u8]) -> Result<bool> {
