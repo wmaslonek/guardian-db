@@ -269,4 +269,13 @@ impl AccessController for DummyAccessController {
     async fn logger(&self) -> Arc<slog::Logger> {
         self.logger.clone()
     }
+    
+    async fn can_append(
+        &self,
+        _entry: &dyn crate::eqlabs_ipfs_log::access_controller::LogEntry,
+        _identity_provider: &dyn crate::eqlabs_ipfs_log::identity_provider::IdentityProvider,
+        _additional_context: &dyn crate::eqlabs_ipfs_log::access_controller::CanAppendAdditionalContext,
+    ) -> Result<()> {
+        Ok(()) // Dummy implementation always allows
+    }
 }
