@@ -282,7 +282,7 @@ impl<T: BaseGuardianDB + GuardianDBDocumentStoreProvider> GuardianDBDocumentStor
 ///
 /// Expõe um método para criar ou abrir uma `KeyValueStore`.
 #[async_trait::async_trait]
-pub trait GuardianDBKVStoreProvider {
+pub trait GuardianDBKVStoreProvider: Send + Sync {
     /// Define um tipo de erro associado para este trait.
     type Error: Error + Send + Sync + 'static;
 
