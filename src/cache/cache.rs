@@ -1,4 +1,3 @@
-// equivalente ao arquivo interface.go
 use crate::error::{GuardianError, Result};
 use crate::data_store::Datastore;
 use crate::address::Address;
