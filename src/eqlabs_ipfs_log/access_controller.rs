@@ -3,14 +3,14 @@ use crate::eqlabs_ipfs_log::identity_provider::IdentityProvider;
 
 /// Representa uma entrada de log.
 /// Equivalente ao `LogEntry` em Go.
-pub trait LogEntry {
+pub trait LogEntry: Send + Sync {
     fn get_payload(&self) -> &[u8];
     fn get_identity(&self) -> &Identity;
 }
 
 /// Representa um contexto adicional para a verificação do append.
 /// Equivalente ao `CanAppendAdditionalContext` em Go.
-pub trait CanAppendAdditionalContext {
+pub trait CanAppendAdditionalContext: Send + Sync {
     fn get_log_entries(&self) -> Vec<Box<dyn LogEntry>>;
 }
 
