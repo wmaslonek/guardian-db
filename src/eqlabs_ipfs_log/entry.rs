@@ -3,14 +3,13 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use serde_json::json;
 use serde::{Serialize, Deserialize};
-
 use std::io::Cursor;
 use futures::{future::join_all, TryStreamExt};
 use tokio::runtime::Runtime;
 use ipfs_api_backend_hyper::{IpfsApi, IpfsClient};
-
 use crate::eqlabs_ipfs_log::lamport_clock::LamportClock;
 use crate::eqlabs_ipfs_log::identity::Identity;
+use crate::eqlabs_ipfs_log::access_controller::LogEntry;
 
 #[derive(Debug)]
 pub enum Error {
@@ -70,6 +69,9 @@ pub struct Entry {
 	pub next: Vec<String>,
 	pub v: u32,
 	pub clock: LamportClock,
+	// Campo opcional para armazenar a identidade associada à entrada
+	#[serde(skip)]
+	pub identity: Option<Arc<Identity>>,
 }
 
 // Explicit Send + Sync implementations for Entry
@@ -88,6 +90,7 @@ impl Entry {
 			next: Vec::new(),
 			v: 0,
 			clock: LamportClock::new(s),
+			identity: None,
 		}
 	}
 
@@ -107,6 +110,7 @@ impl Entry {
 			next: next,
 			v: 1,
 			clock: clock.unwrap_or(LamportClock::new(identity.pub_key())),
+			identity: Some(Arc::new(identity)),
 		}
 	}
 
@@ -365,4 +369,28 @@ impl PartialOrd for Entry {
 	fn partial_cmp (&self, other: &Self) -> Option<Ordering> {
 		Some(self.cmp(other))
 	}
+}
+
+// Implementação do trait LogEntry para Entry
+impl LogEntry for Entry {
+    fn get_payload(&self) -> &[u8] {
+        self.payload.as_bytes()
+    }
+    
+    fn get_identity(&self) -> &Identity {
+        // Se temos uma identidade armazenada, a retornamos
+        if let Some(ref identity_arc) = self.identity {
+            return identity_arc.as_ref();
+        }
+        
+        // Caso contrário, retornamos uma identidade padrão baseada no clock ID
+        use std::sync::OnceLock;
+        use crate::eqlabs_ipfs_log::identity::Signatures;
+        
+        static DEFAULT_IDENTITY: OnceLock<Identity> = OnceLock::new();
+        DEFAULT_IDENTITY.get_or_init(|| {
+            let signatures = Signatures::new("", "");
+            Identity::new("unknown", "unknown", signatures)
+        })
+    }
 }
