@@ -137,17 +137,8 @@ impl Store for GuardianDBDocumentStore {
     }
 
     fn access_controller(&self) -> &dyn crate::access_controller::traits::AccessController {
-        // BaseStore retorna &str, mas trait espera &dyn AccessController
-        // TODO: Implementar conversão adequada ou mudar BaseStore
-        // Por enquanto, usamos o DummyAccessController
-        use crate::access_controller::manifest::DummyAccessController;
-        use std::sync::{Arc, OnceLock};
-        
-        static DUMMY: OnceLock<Arc<DummyAccessController>> = OnceLock::new();
-        let dummy = DUMMY.get_or_init(|| {
-            Arc::new(DummyAccessController::default())
-        });
-        dummy.as_ref()
+        // Usa o access_controller real do BaseStore
+        self.base_store.access_controller()
     }
 
     async fn add_operation(
