@@ -4,8 +4,10 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use slog::{self, Logger};
 use crate::access_controller::manifest::{CreateAccessControllerOptions, ManifestParams};
+use crate::access_controller::traits::AccessController;
 use crate::address::Address;
 use crate::eqlabs_ipfs_log::{access_controller::LogEntry, identity_provider::IdentityProvider};
+use async_trait::async_trait;
 
 /// Agrupa o estado mutável do controlador para ser protegido por um único RwLock,
 /// espelhando o comportamento do `sync.RWMutex` no código Go.
@@ -21,94 +23,12 @@ pub struct SimpleAccessController {
 }
 
 impl SimpleAccessController {
-
-    /// equivalente a SetLogger em go
-    pub async fn set_logger(&self, logger: Arc<Logger>) {
-        let mut state = self.state.write().await;
-        state.logger = logger;
-    }
-
-    /// equivalente a Logger em go
-    pub async fn logger(&self) -> Arc<Logger> {
-        let state = self.state.read().await;
-        state.logger.clone()
-    }
-
     /// equivalente a Address em go
     /// Este controlador não tem um endereço, pois não é persistido.
     pub fn address(&self) -> Option<Box<dyn Address>> {
         None
     }
 
-    /// equivalente a Grant em go
-    /// Não implementado, retorna sucesso sem fazer nada.
-    pub async fn grant(&self, _capability: &str, _key_id: &str) -> Result<()> {
-        Ok(())
-    }
-
-    /// equivalente a Revoke em go
-    /// Não implementado, retorna sucesso sem fazer nada.
-    pub async fn revoke(&self, _capability: &str, _key_id: &str) -> Result<()> {
-        Ok(())
-    }
-
-    /// equivalente a Load em go
-    /// Não faz nada, pois as permissões são definidas apenas na criação.
-    pub async fn load(&self, _address: &str) -> Result<()> {
-        Ok(())
-    }
-
-    /// equivalente a Save em go
-    /// Retorna um manifesto padrão, mas não salva estado nenhum.
-    pub async fn save(&self) -> Result<CreateAccessControllerOptions> {
-        // Retorna um manifesto com CID vazio, indicando que não há dados para salvar.
-        Ok(CreateAccessControllerOptions::new_empty())
-    }
-
-    /// equivalente a Close em go
-    /// Não há recursos para liberar.
-    pub async fn close(&self) -> Result<()> {
-        Ok(())
-    }
-
-    /// equivalente a Type em go
-    pub fn r#type(&self) -> &'static str {
-        "simple"
-    }
-
-    /// equivalente a GetAuthorizedByRole em go
-    pub async fn get_authorized_by_role(&self, role: &str) -> Result<Vec<String>> {
-        let state = self.state.read().await;
-        // Retorna a lista de chaves para a role, ou um vetor vazio se não existir.
-        Ok(state.allowed_keys.get(role).cloned().unwrap_or_default())
-    }
-
-    /// equivalente a CanAppend em go
-    pub async fn can_append(
-        &self,
-        _entry: &dyn LogEntry,
-        _identity_provider: &dyn IdentityProvider,
-        _additional_context: &dyn crate::eqlabs_ipfs_log::access_controller::CanAppendAdditionalContext,
-    ) -> Result<()> {
-        let state = self.state.read().await;
-        
-        // Busca as chaves com permissão de escrita.
-        if let Some(write_keys) = state.allowed_keys.get("write") {
-            // TODO: Implementar método identity() adequado para LogEntry
-            // let entry_id = entry.identity().id();
-            let entry_id = "placeholder_id"; // Placeholder temporário
-            for id in write_keys {
-                // Permite se a ID da entrada for uma das chaves ou se houver um wildcard "*".
-                if entry_id == id || id == "*" {
-                    // Note: Diferente de outros ACs, este não verifica a assinatura da identidade.
-                    return Ok(());
-                }
-            }
-        }
-        
-        Err(GuardianError::Store("Não tem permissão para adicionar esta entrada".to_string()))
-    }
-    
     /// equivalente a NewSimpleAccessController em go
     pub fn new(params: CreateAccessControllerOptions) -> Result<Self> {
         let initial_state = ControllerState {
@@ -123,5 +43,86 @@ impl SimpleAccessController {
         Ok(Self {
             state: RwLock::new(initial_state),
         })
+    }
+}
+
+#[async_trait]
+impl AccessController for SimpleAccessController {
+    fn r#type(&self) -> &str {
+        "simple"
+    }
+
+    async fn get_authorized_by_role(&self, role: &str) -> Result<Vec<String>> {
+        let state = self.state.read().await;
+        Ok(state.allowed_keys.get(role).cloned().unwrap_or_default())
+    }
+
+    async fn grant(&self, _capability: &str, _key_id: &str) -> Result<()> {
+        Ok(())
+    }
+
+    async fn revoke(&self, _capability: &str, _key_id: &str) -> Result<()> {
+        Ok(())
+    }
+
+    async fn load(&self, _address: &str) -> Result<()> {
+        Ok(())
+    }
+
+    async fn save(&self) -> Result<Box<dyn ManifestParams>> {
+        let options = CreateAccessControllerOptions::new_empty();
+        Ok(Box::new(options))
+    }
+
+    async fn close(&self) -> Result<()> {
+        Ok(())
+    }
+
+    async fn set_logger(&self, logger: Arc<Logger>) {
+        let mut state = self.state.write().await;
+        state.logger = logger;
+    }
+
+    async fn logger(&self) -> Arc<Logger> {
+        let state = self.state.read().await;
+        state.logger.clone()
+    }
+
+    async fn can_append(
+        &self,
+        entry: &dyn LogEntry,
+        identity_provider: &dyn IdentityProvider,
+        _additional_context: &dyn crate::eqlabs_ipfs_log::access_controller::CanAppendAdditionalContext,
+    ) -> Result<()> {
+        let state = self.state.read().await;
+        
+        // Busca as chaves com permissão de escrita
+        if let Some(write_keys) = state.allowed_keys.get("write") {
+            // Verifica se há um wildcard que permite qualquer identidade
+            if write_keys.contains(&"*".to_string()) {
+                // Ainda assim, verifica a identidade para garantir que é válida
+                if let Err(e) = identity_provider.verify_identity(entry.get_identity()).await {
+                    return Err(GuardianError::Store(format!("Invalid identity signature: {}", e)));
+                }
+                return Ok(());
+            }
+            
+            // Obtém o ID da identidade da entrada
+            let entry_identity = entry.get_identity();
+            let entry_id = entry_identity.id();
+            
+            // Verifica se o ID da entrada está na lista de chaves autorizadas
+            for authorized_id in write_keys {
+                if entry_id == authorized_id {
+                    // Verifica a assinatura da identidade
+                    if let Err(e) = identity_provider.verify_identity(entry_identity).await {
+                        return Err(GuardianError::Store(format!("Invalid identity signature for authorized key {}: {}", entry_id, e)));
+                    }
+                    return Ok(());
+                }
+            }
+        }
+        
+        Err(GuardianError::Store(format!("Access denied: identity {} not authorized for write operations", entry.get_identity().id())))
     }
 }
