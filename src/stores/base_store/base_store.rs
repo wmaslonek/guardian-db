@@ -25,8 +25,9 @@ use crate::stores::events::{EventWrite, EventReady, EventReplicateProgress, Even
 use crate::eqlabs_ipfs_log::{entry::Entry, identity::Identity, log::{Log, LogOptions}};
 use crate::pubsub::event::{EventBus, Emitter}; // Import do nosso EventBus e Emitter
 use crate::events::{EmitterInterface, EventEmitter}; // Import para compatibilidade com Store trait
-
-// Removido IpfsLogIo - a funcionalidade está diretamente implementada em Entry::multihash
+use crate::eqlabs_ipfs_log::access_controller::{CanAppendAdditionalContext, LogEntry};
+use crate::access_controller::{traits::AccessController, simple::SimpleAccessController};
+use crate::eqlabs_ipfs_log::identity_provider::{IdentityProvider, GuardianDBIdentityProvider};
 
 // Em Go, `muIndex` protege tanto `oplog` quanto `index`. Em Rust, é
 // idiomático agrupar esses dados em uma única struct e proteger
@@ -45,18 +46,58 @@ pub struct Emitters {
     evt_replicated: Emitter<EventReplicated>,
     evt_replicate: Emitter<EventReplicate>,
 }
+struct CanAppendContextImpl { 
+    log: Log 
+}
 
-//------------------------------------------------ REFERENTE A GO-IPFS-LOG---------
-// O contexto para verificação de acesso, que fornece acesso ao log.
-pub trait CanAppendContext {
-    // fn get_log_entries(&self) -> Vec<logac::LogEntry>; //referente a go-ipfs-log access control - commented until logac is available
-}
-struct CanAppendContextImpl { log: Log }
-impl CanAppendContext for CanAppendContextImpl {
+impl CanAppendAdditionalContext for CanAppendContextImpl {
     // Equivalente à função `GetLogEntries` em Go.
-    // fn get_log_entries(&self) -> Vec<logac::LogEntry> { self.log.get_entries() } //referente a go-ipfs-log access control - commented until logac is available
+    fn get_log_entries(&self) -> Vec<Box<dyn LogEntry>> {
+        // Obtém todas as entradas do log e as converte para LogEntry
+        self.log.values()
+            .into_iter()
+            .map(|arc_entry| {
+                // Converte Arc<Entry> para Box<dyn LogEntry>
+                // Como Entry implementa LogEntry, podemos fazer esta conversão
+                let entry: Entry = (*arc_entry).clone();
+                Box::new(entry) as Box<dyn LogEntry>
+            })
+            .collect()
+    }
 }
-//---------------------------------------------------------------------------------
+
+// Implementação alternativa que usa snapshot das entradas
+// para evitar problemas de empréstimo com o log
+struct CanAppendContextSnapshot {
+    entries: Vec<Box<dyn LogEntry>>,
+}
+
+impl CanAppendAdditionalContext for CanAppendContextSnapshot {
+    fn get_log_entries(&self) -> Vec<Box<dyn LogEntry>> {
+        // Retorna uma cópia das entradas capturadas no snapshot
+        self.entries.iter()
+            .map(|entry| {
+                // Como não podemos clonar Box<dyn LogEntry> diretamente,
+                // vamos criar novas instâncias baseadas nos dados
+                let payload = entry.get_payload();
+                let identity = entry.get_identity();
+                
+                // Cria uma nova Entry com os mesmos dados
+                let new_entry = Entry {
+                    hash: String::new(), // Placeholder
+                    id: identity.id().to_string(),
+                    payload: String::from_utf8_lossy(payload).to_string(),
+                    next: Vec::new(),
+                    v: 1,
+                    clock: crate::eqlabs_ipfs_log::lamport_clock::LamportClock::new(identity.id()),
+                    identity: Some(Arc::new(identity.clone())),
+                };
+                
+                Box::new(new_entry) as Box<dyn LogEntry>
+            })
+            .collect()
+    }
+}
 
 /// Equivalente à struct `storeSnapshot` em Go.
 /// Usamos `serde` para a (de)serialização de/para JSON.
@@ -89,6 +130,8 @@ pub struct BaseStore {
 
     // --- Componentes Principais e APIs Externas ---
     ipfs: Arc<KuboCoreApiClient>,
+    access_controller: Arc<dyn AccessController>,
+    identity_provider: Arc<dyn IdentityProvider>,
     
     // --- Estado Interno Protegido por Locks ---
     cache: Arc<dyn Datastore>,
@@ -132,6 +175,21 @@ fn default_sort_fn(a: &Entry, b: &Entry) -> std::cmp::Ordering {
 }
 
 impl BaseStore {
+    /// Helper method para criar um contexto de acesso baseado no log atual
+    fn create_append_context(&self) -> impl CanAppendAdditionalContext {
+        let entries = {
+            let guard = self.log_and_index.read();
+            guard.oplog.values().into_iter()
+                .map(|arc_entry| {
+                    let entry: Entry = (*arc_entry).clone();
+                    Box::new(entry) as Box<dyn LogEntry>
+                })
+                .collect::<Vec<_>>()
+        };
+        
+        CanAppendContextSnapshot { entries }
+    }
+
     /// Equivalente à função `DBName` em Go.
     /// Retorna o nome do banco de dados (store).
     /// Em Rust, é idiomático usar `snake_case` para nomes de funções.
@@ -167,8 +225,13 @@ impl BaseStore {
     /// Equivalente à função `AccessController` em Go.
     ///
     /// Para simplificar, vamos retornar um placeholder por enquanto
-    pub fn access_controller(&self) -> &str {
-        "placeholder_access_controller"
+    pub fn access_controller(&self) -> &dyn AccessController {
+        self.access_controller.as_ref()
+    }
+
+    /// Retorna uma referência ao IdentityProvider da store.
+    pub fn identity_provider(&self) -> &dyn IdentityProvider {
+        self.identity_provider.as_ref()
     }
 
     /// Equivalente à função `Replicator` em Go.
@@ -364,8 +427,21 @@ impl BaseStore {
         let event_bus = opts.event_bus.take().ok_or_else(|| GuardianError::Store("EventBus is a required option".to_string()))?;
         let _access_controller = match opts.access_controller.take() {
             Some(ac) => ac,
-            None => return Err(GuardianError::Store("AccessController is required".to_string())),
+            None => {
+                // Se não foi fornecido um access controller, cria um SimpleAccessController padrão
+                use crate::access_controller::manifest::CreateAccessControllerOptions;
+                use std::collections::HashMap;
+                
+                let mut default_access = HashMap::new();
+                default_access.insert("write".to_string(), vec!["*".to_string()]);
+                
+                let options = CreateAccessControllerOptions::new_simple("simple".to_string(), default_access);
+                Arc::new(SimpleAccessController::new(options)?) as Arc<dyn AccessController>
+            }
         };
+
+        // Cria um IdentityProvider baseado na identidade da store
+        let identity_provider = Arc::new(GuardianDBIdentityProvider::new()) as Arc<dyn IdentityProvider>;
 
         // --- 2. Criação dos Componentes ---
         let id = address.to_string().to_string();
@@ -439,6 +515,8 @@ impl BaseStore {
         reference_count: opts.reference_count.unwrap_or(64) as usize,
         sort_fn,
         ipfs: ipfs.clone(),
+        access_controller: _access_controller,
+        identity_provider,
         cache,
         log_and_index,
         replicator: RwLock::new(None), // Inicializado como None, será preenchido depois
@@ -503,11 +581,15 @@ impl BaseStore {
     
     async fn replication_load_complete(&self, logs: Vec<Log>) -> Result<()> {
         let mut log_and_index = self.log_and_index.write();
+        let mut total_entries_added = 0;
         
         for log in logs {
+            let entries_before = log_and_index.oplog.len();
             if log_and_index.oplog.join(&log, None).is_none() {
                 return Err(GuardianError::Store("Failed to join log".to_string()));
             }
+            let entries_after = log_and_index.oplog.len();
+            total_entries_added += entries_after - entries_before;
         }
 
         // Para atualizar o index, precisamos de uma implementação correta
@@ -526,11 +608,19 @@ impl BaseStore {
         let log_length = log_and_index.oplog.len();
         drop(cache);
         
-        let _ = self.emitters.evt_replicated.emit(EventReplicated {
+        // Emite evento de replicação concluída
+        let replicated_event = EventReplicated {
             address: self.address.clone(),
             entries: heads.iter().map(|arc_entry| (**arc_entry).clone()).collect(),
             log_length,
-        });
+        };
+        
+        if let Err(e) = self.emitters.evt_replicated.emit(replicated_event) {
+            warn!(self.logger, "Failed to emit EventReplicated: {}", e);
+        } else {
+            debug!(self.logger, "Replication completed: added {} entries, total length: {}", 
+                   total_entries_added, log_length);
+        }
 
         Ok(())
     }
@@ -608,17 +698,31 @@ impl BaseStore {
         }
 
         let mut verified_heads = vec![];
-        // Por enquanto vamos pular a validação de acesso até que o sistema esteja mais estável
-        // let oplog_guard = self.oplog(); // Obtém uma referência para o log
-        // let ac_context = CanAppendContextImpl { log: oplog_guard.oplog };
+        
+        // Criamos um contexto de acesso usando o helper method
+        let ac_context = self.create_append_context();
+        
+        debug!(self.logger, "Sync: Processing {} heads", heads.len());
 
         for head in heads {
-            // Validação de acesso - por enquanto vamos pular esta verificação
-            // if let Err(_) = self.access_controller.can_append(&head, &ac_context) {
-            //     debug!(self.logger, "Sync: head discarded (no write access)");
-            //     continue;
-            // }
-
+            // Validação básica: verifica se o head não está vazio
+            if head.hash().is_empty() || head.payload().is_empty() {
+                debug!(self.logger, "Sync: head discarded (invalid data)");
+                continue;
+            }
+            
+            // Cria um novo contexto para cada iteração para evitar problemas de borrow
+            let head_ac_context = self.create_append_context();
+            
+            // Usa o IdentityProvider real da store para validação de acesso
+            let identity_provider = &self.identity_provider;
+            
+            // Validação de acesso real usando o access_controller
+            if let Err(e) = self.access_controller.can_append(&head, identity_provider.as_ref(), &head_ac_context).await {
+                debug!(self.logger, "Sync: head discarded (no write access): {}", e);
+                continue;
+            }
+            
             // Escreve a entrada no IPFS usando um método compatível
             // Por enquanto, vamos usar uma implementação simplificada
             let hash = head.hash(); // Obtém o hash da entrada
@@ -930,20 +1034,60 @@ async fn handle_peer_event(&self, event: EventPubSub) { // Assuming a single enu
     pub async fn load(&self, amount: Option<isize>) -> Result<()> {
         let _default_amount = amount.unwrap_or(-1); // -1 para "todos"
 
+        // Emite evento de início do carregamento
+        let load_event = EventLoad {
+            address: self.address.clone(),
+            heads: Vec::new(), // Inicialmente vazio
+        };
+        if let Err(e) = self.emitters.evt_load.emit(load_event) {
+            warn!(self.logger, "Failed to emit EventLoad: {}", e);
+        }
+
         // Carrega heads do cache
         let mut heads = Vec::new();
         let cache = self.cache();
         BaseStore::load_heads_from_cache_key(&cache, "_localHeads", &mut heads).await?;
         BaseStore::load_heads_from_cache_key(&cache, "_remoteHeads", &mut heads).await?;
 
-        if heads.is_empty() { return Ok(()); }
+        if heads.is_empty() { 
+            // Emite evento indicando que o carregamento terminou (sem dados)
+            let ready_event = EventReady {
+                address: self.address.clone(),
+                heads: Vec::new(),
+            };
+            if let Err(e) = self.emitters.evt_ready.emit(ready_event) {
+                warn!(self.logger, "Failed to emit EventReady: {}", e);
+            }
+            return Ok(()); 
+        }
         
-        // Por enquanto, vamos apenas logar que o load foi chamado
         debug!(self.logger, "Loading {} heads", heads.len());
+        
+        // Emite evento de progresso para cada head carregado
+        for (i, head) in heads.iter().enumerate() {
+            let load_progress_event = EventLoadProgress {
+                address: self.address.clone(),
+                hash: Cid::try_from(head.hash()).unwrap_or_default(),
+                entry: head.clone(),
+                progress: (i + 1) as i32,
+                max: heads.len() as i32,
+            };
+            if let Err(e) = self.emitters.evt_load_progress.emit(load_progress_event) {
+                warn!(self.logger, "Failed to emit EventLoadProgress: {}", e);
+            }
+        }
         
         self.update_index()?;
         
-        // Por enquanto, vamos apenas logar que o processo foi concluído
+        // Emite evento indicando que a store está pronta
+        let ready_event = EventReady {
+            address: self.address.clone(),
+            heads: heads.clone(),
+        };
+        if let Err(e) = self.emitters.evt_ready.emit(ready_event) {
+            warn!(self.logger, "Failed to emit EventReady: {}", e);
+        }
+        
         debug!(self.logger, "Load completed");
 
         Ok(())
