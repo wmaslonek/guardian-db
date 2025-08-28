@@ -2,9 +2,9 @@ use crate::error::{GuardianError, Result};
 use cid::Cid;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex}; // Mudança para Mutex síncrono
+use std::sync::{Arc, Mutex};
 use ipfs_api_backend_hyper::IpfsClient;
-// use slog::Logger; // Temporarily unused
+use slog::Logger;
 use crate::access_controller::traits::AccessController;
 
 /// equivalente a Manifest em go
@@ -21,29 +21,101 @@ pub struct Manifest {
 
 /// equivalente a CreateAccessControllerOptions em go
 /// Contém as opções de configuração para um controlador de acesso.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct CreateAccessControllerOptions {
-    #[serde(rename = "skip_manifest", default, skip_serializing_if = "std::ops::Not::not")]
     pub skip_manifest: bool,
-
-    // #[serde(with = "crate::utils::cid_serde")] // Assume um serializador customizado para Cid
-    #[serde(rename = "address", skip)] // Temporarily skip serialization until CID serialization is implemented
     pub address: Cid,
-    
-    #[serde(rename = "type", default, skip_serializing_if = "String::is_empty")]
     pub r#type: String,
-
-    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
     
     // O campo `Access` não é renomeado na versão Go.
     // Usamos um Mutex para acesso concorrente seguro, como o `sync.RWMutex` do Go.
-    #[serde(skip)] // O lock não é serializado diretamente
     access: Arc<Mutex<HashMap<String, Vec<String>>>>,
-    
-    // Campo auxiliar para serialização/desserialização do mapa de acesso.
-    #[serde(rename = "access", default, skip_serializing_if = "HashMap::is_empty")]
-    access_serde: HashMap<String, Vec<String>>,
+}
+
+// Implementação manual de Serialize para sincronizar dados antes da serialização
+impl Serialize for CreateAccessControllerOptions {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        
+        let mut state = serializer.serialize_struct("CreateAccessControllerOptions", 5)?;
+        state.serialize_field("skip_manifest", &self.skip_manifest)?;
+        // Note: CID serialization may need custom implementation
+        state.serialize_field("type", &self.r#type)?;
+        state.serialize_field("name", &self.name)?;
+        
+        // Serializa os dados de acesso diretamente do Mutex
+        if let Ok(access_guard) = self.access.lock() {
+            if !access_guard.is_empty() {
+                state.serialize_field("access", &*access_guard)?;
+            }
+        }
+        
+        state.end()
+    }
+}
+
+// Implementação manual de Deserialize para sincronizar dados após a deserialização
+impl<'de> Deserialize<'de> for CreateAccessControllerOptions {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{self, MapAccess, Visitor};
+        use std::fmt;
+
+        struct OptionsVisitor;
+
+        impl<'de> Visitor<'de> for OptionsVisitor {
+            type Value = CreateAccessControllerOptions;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("struct CreateAccessControllerOptions")
+            }
+
+            fn visit_map<V>(self, mut map: V) -> std::result::Result<CreateAccessControllerOptions, V::Error>
+            where
+                V: MapAccess<'de>,
+            {
+                let mut skip_manifest = false;
+                let mut address = Cid::default();
+                let mut type_field = String::new();
+                let mut name = String::new();
+                let mut access = HashMap::new();
+
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "skip_manifest" => skip_manifest = map.next_value()?,
+                        "address" => {
+                            // Note: Custom CID deserialization may be needed
+                            // For now, use default
+                        }
+                        "type" => type_field = map.next_value()?,
+                        "name" => name = map.next_value()?,
+                        "access" => access = map.next_value()?,
+                        _ => { let _ = map.next_value::<serde::de::IgnoredAny>()?; }
+                    }
+                }
+
+                Ok(CreateAccessControllerOptions {
+                    skip_manifest,
+                    address,
+                    r#type: type_field,
+                    name,
+                    access: Arc::new(Mutex::new(access)),
+                })
+            }
+        }
+
+        deserializer.deserialize_struct(
+            "CreateAccessControllerOptions",
+            &["skip_manifest", "address", "type", "name", "access"],
+            OptionsVisitor,
+        )
+    }
 }
 
 impl Default for CreateAccessControllerOptions {
@@ -54,14 +126,13 @@ impl Default for CreateAccessControllerOptions {
             r#type: String::new(),
             name: String::new(),
             access: Arc::new(Mutex::new(HashMap::new())),
-            access_serde: HashMap::new(),
         }
     }
 }
 
 /// equivalente a ManifestParams em go
 /// Uma trait que define a interface para os parâmetros de um manifesto.
-pub trait ManifestParams {
+pub trait ManifestParams: Send + Sync {
     fn skip_manifest(&self) -> bool;
     fn address(&self) -> Cid;
     fn set_address(&mut self, addr: Cid);
@@ -136,7 +207,7 @@ impl CreateAccessControllerOptions {
 /// equivalente a CreateManifest em go
 /// Cria um novo manifesto e retorna seu CID.
 pub async fn create(
-    _ipfs: Arc<IpfsClient>,
+    ipfs: Arc<IpfsClient>,
     controller_type: String,
     params: &CreateAccessControllerOptions,
 ) -> Result<Cid> {
@@ -144,24 +215,52 @@ pub async fn create(
         return Ok(params.address());
     }
 
-    let _manifest = Manifest {
+    // Valida que o controller_type não está vazio
+    if controller_type.is_empty() {
+        return Err(GuardianError::Store("Controller type cannot be empty".to_string()));
+    }
+
+    let manifest = Manifest {
         r#type: controller_type,
         params: CreateAccessControllerOptions {
-            address: params.address(),
             skip_manifest: params.skip_manifest(),
-            ..Default::default()
+            address: params.address(),
+            r#type: params.get_type().to_string(),
+            name: params.get_name().to_string(),
+            access: params.access.clone(),
         },
     };
 
-    // TODO: Implement proper IPFS storage
-    // serde_cbor::to_writer(ipfs.as_ref(), &manifest).await
-    Ok(params.address()) // Temporary mock implementation
+    // Serializa o manifesto em CBOR
+    let cbor_data = serde_cbor::to_vec(&manifest)
+        .map_err(|e| GuardianError::Store(format!("Failed to serialize manifest: {}", e)))?;
+
+    // Valida que os dados serializados não estão vazios
+    if cbor_data.is_empty() {
+        return Err(GuardianError::Store("Serialized manifest is empty".to_string()));
+    }
+
+    // Armazena no IPFS usando o cliente
+    use ipfs_api_backend_hyper::IpfsApi;
+    let response = ipfs.add(std::io::Cursor::new(cbor_data)).await
+        .map_err(|e| GuardianError::Store(format!("Failed to store manifest in IPFS: {}", e)))?;
+
+    // Valida que o IPFS retornou um hash válido
+    if response.hash.is_empty() {
+        return Err(GuardianError::Store("IPFS returned empty hash".to_string()));
+    }
+
+    // Converte o hash retornado para CID
+    let cid = Cid::try_from(response.hash.as_str())
+        .map_err(|e| GuardianError::Store(format!("Invalid CID returned from IPFS: {}", e)))?;
+
+    Ok(cid)
 }
 
 /// equivalente a ResolveManifest em go
 /// Recupera um manifesto a partir do seu endereço.
 pub async fn resolve(
-    _ipfs: Arc<IpfsClient>,
+    ipfs: Arc<IpfsClient>,
     manifest_address: &str,
     params: &CreateAccessControllerOptions,
 ) -> Result<Manifest> {
@@ -176,6 +275,11 @@ pub async fn resolve(
         });
     }
 
+    // Valida que o endereço não está vazio
+    if manifest_address.is_empty() {
+        return Err(GuardianError::Store("Manifest address cannot be empty".to_string()));
+    }
+
     // Remove o prefixo /ipfs/ se existir
     let hash = if let Some(stripped) = manifest_address.strip_prefix("/ipfs/") {
         stripped
@@ -183,99 +287,85 @@ pub async fn resolve(
         manifest_address
     };
 
-    let _cid = Cid::try_from(hash)?;
+    let cid = Cid::try_from(hash)
+        .map_err(|e| GuardianError::Store(format!("Invalid CID format: {}", e)))?;
 
-    // TODO: Implement proper IPFS retrieval
-    // let raw_data = serde_cbor::from_reader(ipfs.as_ref(), cid).await
-    //     .with_context(|| "Não foi possível buscar os dados do manifesto")?;
-    // 
-    // let manifest: Manifest = serde_cbor::from_slice(&raw_data)
-    //     .with_context(|| "Não foi possível deserializar o manifesto")?;
+    // Busca os dados do manifesto no IPFS
+    use ipfs_api_backend_hyper::IpfsApi;
+    use futures::TryStreamExt;
+    
+    let data_stream = ipfs.cat(&cid.to_string());
+    let data_bytes: Vec<u8> = data_stream
+        .try_collect::<Vec<_>>().await
+        .map_err(|e| GuardianError::Store(format!("Failed to retrieve manifest from IPFS: {}", e)))?
+        .into_iter()
+        .flatten()
+        .collect();
 
-    // Temporary mock implementation
-    let manifest = Manifest {
-        r#type: params.get_type().to_string(),
-        params: params.clone(),
-    };
+    // Valida que os dados não estão vazios
+    if data_bytes.is_empty() {
+        return Err(GuardianError::Store("Retrieved manifest data is empty".to_string()));
+    }
+
+    // Deserializa o manifesto a partir dos dados CBOR
+    let manifest: Manifest = serde_cbor::from_slice(&data_bytes)
+        .map_err(|e| GuardianError::Store(format!("Failed to deserialize manifest: {}", e)))?;
+
+    // Validação adicional do manifesto
+    if manifest.r#type.is_empty() {
+        return Err(GuardianError::Store("Manifest type cannot be empty".to_string()));
+    }
 
     Ok(manifest)
 }
 
+/// Função utilitária para criar e validar um manifesto
+pub fn create_manifest_with_validation(
+    controller_type: String,
+    params: CreateAccessControllerOptions,
+) -> Result<Manifest> {
+    // Validações básicas
+    if controller_type.is_empty() {
+        return Err(GuardianError::Store("Controller type cannot be empty".to_string()));
+    }
+
+    if controller_type.len() > 255 {
+        return Err(GuardianError::Store("Controller type too long (max 255 characters)".to_string()));
+    }
+
+    // Valida que o tipo é um dos tipos conhecidos
+    let valid_types = ["ipfs", "GuardianDB", "simple"];
+    if !valid_types.contains(&controller_type.as_str()) {
+        return Err(GuardianError::Store(format!("Unknown controller type: {}", controller_type)));
+    }
+
+    Ok(Manifest {
+        r#type: controller_type,
+        params,
+    })
+}
+
 // equivalente a WithLogger em go
 // Função de alta ordem para configurar um logger (padrão de opção funcional).
-// TODO: Fix async compatibility with AccessController trait
-// pub fn with_logger(logger: Arc<Logger>) -> impl Fn(&dyn AccessController) {
-//     move |ac: &dyn AccessController| {
-//         ac.set_logger(logger.clone());
-//     }
-// }
+// Retorna uma closure que pode ser aplicada a qualquer AccessController
+pub fn with_logger(logger: Arc<slog::Logger>) -> Box<dyn Fn(&dyn AccessController) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> + Send + Sync> {
+    Box::new(move |ac: &dyn AccessController| {
+        let logger_clone = logger.clone();
+        Box::pin(async move {
+            ac.set_logger(logger_clone).await;
+        })
+    })
+}
+
+// Versão alternativa mais simples para uso direto
+pub async fn apply_logger_to_controller(
+    controller: &dyn AccessController, 
+    logger: Arc<slog::Logger>
+) -> Result<()> {
+    controller.set_logger(logger).await;
+    Ok(())
+}
 
 // O bloco `init()` do Go, que registra os tipos para serialização CBOR,
 // é substituído em Rust pelo uso de atributos da crate `serde`, como `#[serde(rename = "...")]`,
 // que são declarativos e aplicados diretamente nas definições das structs.
-
-/// DummyAccessController for placeholder implementations
-pub struct DummyAccessController {
-    logger: Arc<slog::Logger>,
-}
-
-impl Default for DummyAccessController {
-    fn default() -> Self {
-        // Simplified logger setup to avoid slog build issues
-        let drain = slog::Discard;
-        let logger = slog::Logger::root(drain, slog::o!());
-        
-        Self {
-            logger: Arc::new(logger),
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl AccessController for DummyAccessController {
-    fn r#type(&self) -> &str {
-        "dummy"
-    }
-
-    async fn get_authorized_by_role(&self, _role: &str) -> Result<Vec<String>> {
-        Ok(vec![])
-    }
-
-    async fn grant(&self, _capability: &str, _key_id: &str) -> Result<()> {
-        Ok(())
-    }
-
-    async fn revoke(&self, _capability: &str, _key_id: &str) -> Result<()> {
-        Ok(())
-    }
-
-    async fn load(&self, _address: &str) -> Result<()> {
-        Ok(())
-    }
-
-    async fn save(&self) -> Result<Box<dyn ManifestParams>> {
-        Ok(Box::new(CreateAccessControllerOptions::default()))
-    }
-
-    async fn close(&self) -> Result<()> {
-        Ok(())
-    }
-
-    async fn set_logger(&self, logger: Arc<slog::Logger>) {
-        // For dummy implementation, we'll ignore this
-        let _ = logger;
-    }
-
-    async fn logger(&self) -> Arc<slog::Logger> {
-        self.logger.clone()
-    }
-    
-    async fn can_append(
-        &self,
-        _entry: &dyn crate::eqlabs_ipfs_log::access_controller::LogEntry,
-        _identity_provider: &dyn crate::eqlabs_ipfs_log::identity_provider::IdentityProvider,
-        _additional_context: &dyn crate::eqlabs_ipfs_log::access_controller::CanAppendAdditionalContext,
-    ) -> Result<()> {
-        Ok(()) // Dummy implementation always allows
-    }
-}
