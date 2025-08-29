@@ -1,27 +1,7 @@
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use serde_json;
-use crate::error::{GuardianError, Result};
 use crate::eqlabs_ipfs_log::entry::Entry;
-
-// Trait que define o comportamento de um documento de operação (OpDoc).
-pub trait OpDocTrait {
-    fn key(&self) -> &str;
-    fn value(&self) -> &[u8];
-}
-
-// Trait que define o comportamento de uma operação.
-// Em Rust, é idiomático retornar referências (&str, &[u8]) em vez de
-// tomar posse dos dados (String, Vec<u8>) em getters.
-pub trait OperationTrait {
-    fn key(&self) -> Option<&String>;
-    fn op(&self) -> &str;
-    fn value(&self) -> &[u8];
-    fn docs(&self) -> &[OpDoc];
-    fn entry(&self) -> &Entry;
-    fn marshal(&self) -> std::result::Result<Vec<u8>, serde_json::Error>;
-}
-
+use crate::error::{GuardianError, Result};
+use serde::{Deserialize, Serialize};
+use serde_json;
 
 /// Representa um documento dentro de uma operação (equivalente a `opDoc` em Go).
 /// Os atributos `#[serde(rename = "...")]` garantem que os nomes dos campos
@@ -29,56 +9,79 @@ pub trait OperationTrait {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OpDoc {
     #[serde(rename = "key")]
-    key: String,
-    
+    pub key: String,
+
     #[serde(rename = "value")]
-    value: Vec<u8>,
+    pub value: Vec<u8>,
 }
 
-impl OpDocTrait for OpDoc {
-    fn key(&self) -> &str {
+impl OpDoc {
+    /// Cria um novo OpDoc
+    pub fn new(key: String, value: Vec<u8>) -> Self {
+        Self { key, value }
+    }
+
+    /// Getter para key
+    pub fn key(&self) -> &str {
         &self.key
     }
 
-    fn value(&self) -> &[u8] {
+    /// Getter para value
+    pub fn value(&self) -> &[u8] {
         &self.value
     }
 }
 
-
 /// Representa uma operação a ser adicionada ao log (equivalente a `operation` em Go).
-/// `Option<T>` é o equivalente idiomático em Rust para ponteiros que podem ser nulos em Go (ex: *string).
+/// `Option<T>` é o equivalente idiomático em Rust para ponteiros que podem ser nulos em Go.
 /// `#[serde(skip_serializing_if = "...")]` simula o comportamento de `omitempty` do Go.
 /// `#[serde(skip)]` impede que o campo `entry` seja serializado, equivalente a `json:"-"`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Operation {
     #[serde(rename = "key", skip_serializing_if = "Option::is_none")]
-    key: Option<String>,
-    
+    pub key: Option<String>,
+
     #[serde(rename = "op")]
-    op: String,
-    
+    pub op: String,
+
     #[serde(rename = "value", skip_serializing_if = "Vec::is_empty")]
-    value: Vec<u8>,
-    
+    pub value: Vec<u8>,
+
     #[serde(rename = "docs", skip_serializing_if = "Vec::is_empty")]
-    docs: Vec<OpDoc>,
-    
+    pub docs: Vec<OpDoc>,
+
     #[serde(skip)]
-    entry: Entry, // Assumindo que este campo é preenchido após a criação
+    pub entry: Option<Entry>, // Mudado para Option para indicar quando não está disponível
 }
 
-/// Abaixo equivalente a GetDocs em go
-///
-/// Este método faz parte do `impl OperationTrait for Operation`.
-/// A versão em Rust é mais eficiente, pois retorna uma referência de slice (`&[OpDoc]`)
-/// em vez de alocar e preencher um novo vetor como a versão em Go.
-/// equivalente a Marshal em go
-///
-/// Este método também faz parte do `impl OperationTrait for Operation`.
-/// A biblioteca `serde` simplifica enormemente a serialização. Ao derivar `Serialize`
-// na struct `Operation`, o `serde_json` já sabe como convertê-la para JSON.
 impl Operation {
+    /// Cria uma nova operação básica
+    pub fn new(key: Option<String>, op: String, value: Option<Vec<u8>>) -> Self {
+        Self {
+            key,
+            op,
+            value: value.unwrap_or_default(),
+            docs: Vec::new(),
+            entry: None,
+        }
+    }
+
+    /// Cria uma nova operação com documentos (para operações batch)
+    pub fn new_with_documents(
+        key: Option<String>,
+        op: String,
+        docs: Vec<(String, Vec<u8>)>,
+    ) -> Self {
+        let docs = docs.into_iter().map(|(k, v)| OpDoc::new(k, v)).collect();
+        Self {
+            key,
+            op,
+            value: Vec::new(),
+            docs,
+            entry: None,
+        }
+    }
+
     /// Getters públicos para acessar os campos
     pub fn key(&self) -> Option<&String> {
         self.key.as_ref()
@@ -96,119 +99,146 @@ impl Operation {
         &self.docs
     }
 
-    pub fn entry(&self) -> &Entry {
-        &self.entry
+    pub fn entry(&self) -> Option<&Entry> {
+        self.entry.as_ref()
     }
-    
+
+    /// Define a entry após a criação da operação
+    pub fn set_entry(&mut self, entry: Entry) {
+        self.entry = Some(entry);
+    }
+
+    /// Verifica se a operação tem uma entry válida
+    pub fn has_entry(&self) -> bool {
+        self.entry.is_some()
+    }
+
+    /// Serializa a operação para JSON
     pub fn marshal(&self) -> std::result::Result<Vec<u8>, serde_json::Error> {
         serde_json::to_vec(self)
     }
 }
 
-// Implementação do Trait para a struct Operation
-impl OperationTrait for Operation {
-    fn key(&self) -> Option<&String> {
-        self.key.as_ref()
-    }
+/// Analisa um Entry do IPFS log para extrair os dados da operação.
+/// Retorna um Result, que é a forma idiomática do Rust para lidar com erros.
+pub fn parse_operation(entry: Entry) -> Result<Operation> {
+    // Desserializa o payload JSON da entry para uma Operation
+    let mut op: Operation = serde_json::from_str(entry.payload()).map_err(|err| {
+        GuardianError::Store(format!("Incapaz de analisar o JSON da operação: {}", err))
+    })?;
 
-    fn op(&self) -> &str {
-        &self.op
-    }
-
-    fn value(&self) -> &[u8] {
-        &self.value
-    }
-
-    fn docs(&self) -> &[OpDoc] {
-        &self.docs
-    }
-
-    fn entry(&self) -> &Entry {
-        &self.entry
-    }
-    
-    fn marshal(&self) -> std::result::Result<Vec<u8>, serde_json::Error> {
-        serde_json::to_vec(self)
-    }
-}
-
-/// equivalente a NewOpDoc em go
-pub fn new_op_doc(key: String, value: Vec<u8>) -> OpDoc {
-    OpDoc {
-        key,
-        value,
-    }
-}
-
-
-/// equivalente a NewOperation em go
-/// Retorna uma `Box<dyn OperationTrait>` para espelhar o retorno da interface em Go.
-pub fn new_operation(key: Option<String>, op: String, value: Vec<u8>) -> Box<dyn OperationTrait> {
-    Box::new(Operation {
-        key,
-        op,
-        value,
-        docs: Vec::new(),
-        // O campo `entry` é deixado com seu valor padrão, pois não é fornecido na criação.
-        // Uma implementação real poderia exigir um `entry` padrão ou `Option<IpfslLogEntry>`.
-        entry: Entry::empty(), 
-    })
-}
-
-impl Operation {
-    /// Cria uma nova instância diretamente
-    pub fn new(key: Option<String>, op: String, value: Option<Vec<u8>>) -> Self {
-        Self {
-            key,
-            op,
-            value: value.unwrap_or_default(),
-            docs: Vec::new(),
-            entry: Entry::empty(),
-        }
-    }
-
-    /// Cria uma nova operação com documentos
-    pub fn new_with_documents(key: Option<String>, op: String, docs: Vec<(String, Vec<u8>)>) -> Self {
-        let docs = docs.into_iter().map(|(k, v)| OpDoc { key: k, value: v }).collect();
-        Self {
-            key,
-            op,
-            value: Vec::new(),
-            docs,
-            entry: Entry::empty(),
-        }
-    }
-}
-
-
-/// equivalente a NewOperationWithDocuments em go
-pub fn new_operation_with_documents(key: Option<String>, op: String, docs: HashMap<String, Vec<u8>>) -> Box<dyn OperationTrait> {
-    let _docs: Vec<OpDoc> = docs.into_iter().map(|(k, v)| {
-        OpDoc { key: k, value: v }
-    }).collect();
-
-    Box::new(Operation {
-        key,
-        op,
-        value: Vec::new(), // O original em Go não inicializa `value` neste caso
-        docs: _docs,
-        entry: Entry::empty(), // Valor padrão
-    })
-}
-
-/// equivalente a ParseOperation em go
-///
-/// Analisa um IpfslLogEntry para extrair os dados da operação.
-/// Retorna um Result, que é a forma idiomática do Rust para lidar com erros,
-/// substituindo o padrão (valor, erro) do Go.
-pub fn parse_operation(e: Entry) -> Result<Operation> {
-    // Em Go, `json.Unmarshal` modifica a variável `op`.
-    // Em Rust, `serde_json::from_slice` retorna uma nova instância da struct em caso de sucesso.
-    let mut op: Operation = serde_json::from_str(e.payload())
-        .map_err(|err| GuardianError::Store(format!("incapaz de analisar o json da operação: {}", err)))?;
-
-    // Atribui a entrada à operação após a desserialização bem-sucedida.
-    op.entry = e;
+    // Atribui a entrada à operação após a desserialização bem-sucedida
+    op.entry = Some(entry);
 
     Ok(op)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::eqlabs_ipfs_log::identity::Identity;
+
+    fn create_test_identity() -> Identity {
+        let signatures =
+            crate::eqlabs_ipfs_log::identity::Signatures::new("test_id_sign", "test_pub_sign");
+        Identity::new("test_peer", "test_pub_key", signatures)
+    }
+
+    #[test]
+    fn test_op_doc_creation() {
+        let doc = OpDoc::new("test_key".to_string(), b"test_value".to_vec());
+        assert_eq!(doc.key(), "test_key");
+        assert_eq!(doc.value(), b"test_value");
+    }
+
+    #[test]
+    fn test_operation_new() {
+        let op = Operation::new(
+            Some("test_key".to_string()),
+            "PUT".to_string(),
+            Some(b"test_data".to_vec()),
+        );
+
+        assert_eq!(op.key(), Some(&"test_key".to_string()));
+        assert_eq!(op.op(), "PUT");
+        assert_eq!(op.value(), b"test_data");
+        assert!(op.docs().is_empty());
+        assert!(!op.has_entry());
+    }
+
+    #[test]
+    fn test_operation_with_documents() {
+        let docs = vec![
+            ("key1".to_string(), b"value1".to_vec()),
+            ("key2".to_string(), b"value2".to_vec()),
+        ];
+
+        let op = Operation::new_with_documents(None, "PUTALL".to_string(), docs);
+
+        assert_eq!(op.key(), None);
+        assert_eq!(op.op(), "PUTALL");
+        assert!(op.value().is_empty());
+        assert_eq!(op.docs().len(), 2);
+        assert_eq!(op.docs()[0].key(), "key1");
+        assert_eq!(op.docs()[1].key(), "key2");
+    }
+
+    #[test]
+    fn test_operation_marshal() {
+        let op = Operation::new(
+            Some("test".to_string()),
+            "PUT".to_string(),
+            Some(b"data".to_vec()),
+        );
+
+        let json = op.marshal().expect("Failed to marshal operation");
+        let json_str = String::from_utf8(json).expect("Invalid UTF-8");
+
+        // Verifica se contém os campos esperados
+        assert!(json_str.contains("\"key\":\"test\""));
+        assert!(json_str.contains("\"op\":\"PUT\""));
+    }
+
+    #[test]
+    fn test_operation_set_entry() {
+        let mut op = Operation::new(
+            Some("test".to_string()),
+            "PUT".to_string(),
+            Some(b"data".to_vec()),
+        );
+
+        assert!(!op.has_entry());
+
+        let identity = create_test_identity();
+        let entry = Entry::new(identity, "test_log", "test_payload", &[], None);
+
+        op.set_entry(entry);
+        assert!(op.has_entry());
+        assert!(op.entry().is_some());
+    }
+
+    #[test]
+    fn test_parse_operation() {
+        // Cria uma operação e a serializa
+        let original_op = Operation::new(
+            Some("parse_test".to_string()),
+            "GET".to_string(),
+            Some(b"parse_data".to_vec()),
+        );
+
+        let json_data = original_op.marshal().expect("Failed to marshal");
+        let json_str = String::from_utf8(json_data).expect("Invalid UTF-8");
+
+        // Cria uma entry com o payload JSON
+        let identity = create_test_identity();
+        let entry = Entry::new(identity, "test_log", &json_str, &[], None);
+
+        // Testa o parse
+        let parsed_op = parse_operation(entry).expect("Failed to parse operation");
+
+        assert_eq!(parsed_op.key(), Some(&"parse_test".to_string()));
+        assert_eq!(parsed_op.op(), "GET");
+        assert_eq!(parsed_op.value(), b"parse_data");
+        assert!(parsed_op.has_entry());
+    }
 }
