@@ -1,6 +1,6 @@
+use crate::error::GuardianError;
 use crate::iface::{MessageExchangeHeads, MessageMarshaler};
 use serde_json; // Equivalente à biblioteca `encoding/json` de Go.
-use crate::error::GuardianError;
 
 /// Wrapper que adapta serde_json::Error para GuardianError
 pub struct GuardianJSONMarshaler {
@@ -19,11 +19,15 @@ impl MessageMarshaler for GuardianJSONMarshaler {
     type Error = GuardianError;
 
     fn marshal(&self, m: &MessageExchangeHeads) -> std::result::Result<Vec<u8>, Self::Error> {
-        self.inner.marshal(m).map_err(|e| GuardianError::Other(format!("Marshal error: {}", e).into()))
+        self.inner
+            .marshal(m)
+            .map_err(|e| GuardianError::Other(format!("Marshal error: {}", e).into()))
     }
 
     fn unmarshal(&self, data: &[u8]) -> std::result::Result<MessageExchangeHeads, Self::Error> {
-        self.inner.unmarshal(data).map_err(|e| GuardianError::Other(format!("Unmarshal error: {}", e).into()))
+        self.inner
+            .unmarshal(data)
+            .map_err(|e| GuardianError::Other(format!("Unmarshal error: {}", e).into()))
     }
 }
 
