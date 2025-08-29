@@ -1,7 +1,7 @@
-use crate::error::GuardianError;
-use std::any::Any;
-use crate::iface::StoreIndex;
 use crate::eqlabs_ipfs_log::{entry::Entry, log::Log};
+use crate::error::GuardianError;
+use crate::iface::StoreIndex;
+use std::any::Any;
 
 /// Equivalente à `noopIndex struct{}` do Go.
 ///
@@ -16,7 +16,9 @@ pub struct NoopIndex;
 /// do NoopIndex. Ela retorna um "trait object" (`Box<dyn StoreIndex>`),
 /// que é como Rust se refere a um tipo que implementa uma interface dinamicamente.
 /// O parâmetro `_public_key` é ignorado, como no original.
-pub fn new_noop_index(_public_key: &[u8]) -> Box<dyn StoreIndex<Error = GuardianError> + Send + Sync> {
+pub fn new_noop_index(
+    _public_key: &[u8],
+) -> Box<dyn StoreIndex<Error = GuardianError> + Send + Sync> {
     Box::new(NoopIndex)
 }
 
@@ -40,7 +42,11 @@ impl StoreIndex for NoopIndex {
     /// A função não faz nada e sempre retorna `Ok(())`. `Ok(())` é
     /// o equivalente idiomático em Rust para um retorno de sucesso
     /// sem valor (como um `nil` no campo de erro do Go).
-    fn update_index(&mut self, _oplog: &Log, _entries: &[Entry]) -> std::result::Result<(), Self::Error> {
+    fn update_index(
+        &mut self,
+        _oplog: &Log,
+        _entries: &[Entry],
+    ) -> std::result::Result<(), Self::Error> {
         Ok(())
     }
 }
