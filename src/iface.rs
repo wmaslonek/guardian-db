@@ -1,29 +1,32 @@
-use std::any::Any;
-use std::sync::Arc;
-use std::time::Duration;
+use crate::access_controller::{
+    manifest::ManifestParams, traits::AccessController, traits::Option as AccessControllerOption,
+};
+use crate::address::Address;
+use crate::error::GuardianError;
+use crate::events::{self, EmitterInterface};
+use crate::ipfs_core_api::client::IpfsClient; // Use o cliente local
+use cid::Cid;
+use futures::stream::Stream;
+use libp2p::core::PeerId;
+use opentelemetry::global::BoxedTracer;
+use opentelemetry::trace::noop::NoopTracer;
 use serde::{Deserialize, Serialize};
+use slog::Logger;
+use std::any::Any;
 use std::error::Error;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
-use libp2p::core::PeerId;
-use slog::Logger;
-use opentelemetry::global::BoxedTracer;
-use opentelemetry::trace::noop::NoopTracer;
-use cid::Cid;
-use futures::stream::Stream;
-use crate::kubo_core_api::IpfsClient; // Use o cliente local
-use crate::error::GuardianError; 
-use crate::access_controller::{traits::AccessController, manifest::ManifestParams, traits::Option as AccessControllerOption};
-use crate::address::Address;
-use crate::events::{self, EmitterInterface};
 //use crate::ipfs_log::{self, keystore, SortFn, iface as ipfs_log_iface,};
-use crate::data_store::Datastore;// Import da trait Datastore do módulo data_store
+use crate::data_store::Datastore; // Import da trait Datastore do módulo data_store
 use crate::eqlabs_ipfs_log::{entry::Entry, identity::Identity, log::Log};
 use crate::pubsub::event::EventBus; // Import do nosso EventBus
-use crate::stores::{operation::operation::Operation,
+use crate::stores::{
+    operation::operation::Operation,
     replicator::{replication_info::ReplicationInfo, replicator::Replicator},
-    };
+};
 
 // Temporary type definitions until proper modules are available
 pub type SortFn = fn(&Entry, &Entry) -> std::cmp::Ordering;
@@ -54,7 +57,7 @@ impl TracerWrapper {
     }
 }
 
-/// Struct simples para representar spans 
+/// Struct simples para representar spans
 pub enum TracerSpan {
     Boxed,
     Noop,
@@ -82,7 +85,7 @@ impl Drop for TracerSpan {
 pub struct MessageExchangeHeads {
     #[serde(rename = "address")]
     pub address: String,
-    
+
     #[serde(rename = "heads")]
     pub heads: Vec<Entry>, // Em Rust, é mais idiomático ter um Vec de structs do que de ponteiros.
 }
@@ -131,7 +134,7 @@ pub struct CreateDBOptions {
     pub timeout: Option<Duration>,
     pub message_marshaler: Option<Arc<dyn MessageMarshaler<Error = GuardianError>>>,
     pub logger: Option<Logger>,
-    
+
     /// Um `Box<dyn FnOnce()>` é um bom equivalente para uma função de fechamento que só deve ser chamada uma vez.
     pub close_func: Option<Box<dyn FnOnce() + Send>>,
 
@@ -150,8 +153,12 @@ pub type StoreConstructor = Box<
             Arc<Identity>,
             Box<dyn Address>,
             NewStoreOptions, // Assumindo que NewStoreOptions será definida
-        ) -> Pin<Box<dyn Future<Output = Result<Box<dyn Store<Error = GuardianError>>, GuardianError>> + Send>>
-        + Send
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<Box<dyn Store<Error = GuardianError>>, GuardianError>>
+                    + Send,
+            >,
+        > + Send
         + Sync,
 >;
 
@@ -165,14 +172,15 @@ pub type StoreConstructor = Box<
 #[derive(Clone)]
 pub struct CreateDocumentDBOptions {
     /// Extrai a chave de um documento genérico.
-    pub key_extractor: Arc<dyn Fn(&serde_json::Value) -> Result<String, GuardianError> + Send + Sync>,
-    
+    pub key_extractor:
+        Arc<dyn Fn(&serde_json::Value) -> Result<String, GuardianError> + Send + Sync>,
+
     /// Serializa um documento genérico para bytes.
     pub marshal: Arc<dyn Fn(&serde_json::Value) -> Result<Vec<u8>, GuardianError> + Send + Sync>,
-    
+
     /// Desserializa bytes para um documento genérico.
     pub unmarshal: Arc<dyn Fn(&[u8]) -> Result<serde_json::Value, GuardianError> + Send + Sync>,
-    
+
     /// Cria uma nova instância vazia do tipo de item do documento.
     pub item_factory: Arc<dyn Fn() -> serde_json::Value + Send + Sync>,
 }
@@ -204,13 +212,22 @@ pub trait BaseGuardianDB: Send + Sync {
     fn identity(&self) -> &Identity;
 
     /// Cria ou abre uma store com o endereço e opções fornecidos.
-    async fn open(&self, address: &str, options: &mut CreateDBOptions) -> Result<Box<dyn Store<Error = GuardianError>>, Self::Error>;
+    async fn open(
+        &self,
+        address: &str,
+        options: &mut CreateDBOptions,
+    ) -> Result<Box<dyn Store<Error = GuardianError>>, Self::Error>;
 
     /// Retorna uma instância da store se ela já estiver aberta.
     fn get_store(&self, address: &str) -> Option<Box<dyn Store<Error = GuardianError>>>;
 
     /// Cria uma nova store com o nome, tipo e opções fornecidos.
-    async fn create(&self, name: &str, store_type: &str, options: &mut CreateDBOptions) -> Result<Box<dyn Store<Error = GuardianError>>, Self::Error>;
+    async fn create(
+        &self,
+        name: &str,
+        store_type: &str,
+        options: &mut CreateDBOptions,
+    ) -> Result<Box<dyn Store<Error = GuardianError>>, Self::Error>;
 
     /// Determina o endereço de um banco de dados com base nos seus parâmetros.
     async fn determine_address(
@@ -304,7 +321,6 @@ pub trait GuardianDBKVStore: BaseGuardianDB + GuardianDBKVStoreProvider {}
 // a qualquer tipo que já satisfaça as condições.
 impl<T: BaseGuardianDB + GuardianDBKVStoreProvider> GuardianDBKVStore for T {}
 
-
 /// equivalente a interface `GuardianDBLogStoreProvider` em go
 ///
 /// Expõe um método para criar ou abrir uma `EventLogStore`.
@@ -346,14 +362,13 @@ pub trait GuardianDB:
 // A implementação "blanket" permite que qualquer tipo que já satisfaça todas
 // as constraints seja automaticamente considerado um `GuardianDB`.
 impl<
-        T: BaseGuardianDB
-            + GuardianDBKVStoreProvider
-            + GuardianDBLogStoreProvider
-            + GuardianDBDocumentStoreProvider,
-    > GuardianDB for T
+    T: BaseGuardianDB
+        + GuardianDBKVStoreProvider
+        + GuardianDBLogStoreProvider
+        + GuardianDBDocumentStoreProvider,
+> GuardianDB for T
 {
 }
-
 
 /// equivalente a struct `StreamOptions` em go
 ///
@@ -365,20 +380,19 @@ impl<
 pub struct StreamOptions {
     /// "Greater Than": Retorna entradas que são posteriores à CID fornecida.
     pub gt: Option<Cid>,
-    
+
     /// "Greater Than or Equal": Retorna entradas que são a CID fornecida ou posteriores.
     pub gte: Option<Cid>,
-    
+
     /// "Less Than": Retorna entradas que são anteriores à CID fornecida.
     pub lt: Option<Cid>,
-    
+
     /// "Less Than or Equal": Retorna entradas que são a CID fornecida ou anteriores.
     pub lte: Option<Cid>,
 
     /// Limita o número de entradas a serem retornadas.
     pub amount: Option<i32>,
 }
-
 
 /// equivalente a interface `StoreEvents` em go
 ///
@@ -523,6 +537,13 @@ pub struct DocumentStoreGetOptions {
     pub partial_matches: bool,
 }
 
+/// equivalente a struct `DocumentStoreQueryOptions` em go
+#[derive(Default, Debug, Clone)]
+pub struct DocumentStoreQueryOptions {
+    pub limit: Option<usize>,
+    pub skip: Option<usize>,
+    pub sort: Option<String>,
+}
 
 /// equivalente a interface `DocumentStore` em go
 ///
@@ -532,7 +553,8 @@ pub struct DocumentStoreGetOptions {
 #[async_trait::async_trait]
 pub trait DocumentStore: Store {
     /// Armazena um único documento.
-    async fn put(&mut self, document: Box<dyn Any + Send + Sync>) -> Result<Operation, Self::Error>;
+    async fn put(&mut self, document: Box<dyn Any + Send + Sync>)
+    -> Result<Operation, Self::Error>;
 
     /// Deleta um documento pela sua chave.
     async fn delete(&mut self, key: &str) -> Result<Operation, Self::Error>;
@@ -565,8 +587,9 @@ pub trait DocumentStore: Store {
             Box<
                 dyn Fn(
                         &Box<dyn Any + Send + Sync>,
-                    ) -> Pin<Box<dyn Future<Output = Result<bool, Box<dyn Error + Send + Sync>>> + Send>>
-                    + Send
+                    ) -> Pin<
+                        Box<dyn Future<Output = Result<bool, Box<dyn Error + Send + Sync>>> + Send>,
+                    > + Send
                     + Sync,
             >,
         >,
@@ -682,8 +705,16 @@ pub type DirectChannelFactory = Box<
     dyn Fn(
             Arc<dyn DirectChannelEmitter<Error = GuardianError>>,
             Option<DirectChannelOptions>,
-        ) -> Pin<Box<dyn Future<Output = Result<Arc<dyn DirectChannel<Error = GuardianError>>, Box<dyn Error + Send + Sync>>> + Send>>
-        + Send
+        ) -> Pin<
+            Box<
+                dyn Future<
+                        Output = Result<
+                            Arc<dyn DirectChannel<Error = GuardianError>>,
+                            Box<dyn Error + Send + Sync>,
+                        >,
+                    > + Send,
+            >,
+        > + Send
         + Sync,
 >;
 
@@ -691,7 +722,8 @@ pub type DirectChannelFactory = Box<
 ///
 /// Define o protótipo de uma função (ou closure) que constrói e retorna
 /// uma nova instância de um `StoreIndex`.
-pub type IndexConstructor = Box<dyn Fn(&[u8]) -> Box<dyn StoreIndex<Error = GuardianError>> + Send + Sync>;
+pub type IndexConstructor =
+    Box<dyn Fn(&[u8]) -> Box<dyn StoreIndex<Error = GuardianError>> + Send + Sync>;
 
 /// equivalente ao tipo `OnWritePrototype` em go
 ///
@@ -702,7 +734,8 @@ pub type OnWritePrototype = Box<
             Cid,
             Entry,
             Vec<Cid>,
-        ) -> Pin<Box<dyn Future<Output = Result<(), Box<dyn Error + Send + Sync>>> + Send>>
+        )
+            -> Pin<Box<dyn Future<Output = Result<(), Box<dyn Error + Send + Sync>>> + Send>>
         + Send
         + Sync,
 >;
@@ -726,7 +759,8 @@ pub type AccessControllerConstructor = Box<
             Arc<dyn BaseGuardianDB<Error = GuardianError>>,
             &crate::access_controller::manifest::CreateAccessControllerOptions,
             Option<Vec<AccessControllerOption>>,
-        ) -> Pin<Box<dyn Future<Output = Result<Arc<dyn AccessController>, GuardianError>> + Send>>
+        )
+            -> Pin<Box<dyn Future<Output = Result<Arc<dyn AccessController>, GuardianError>> + Send>>
         + Send
         + Sync,
 >;
@@ -746,10 +780,14 @@ pub trait PubSubTopic: Send + Sync {
 
     /// Observa os pares que entram e saem do tópico.
     /// Em Rust, em vez de retornar um canal (chan), é idiomático retornar um `Stream`.
-    async fn watch_peers(&self) -> Result<Pin<Box<dyn Stream<Item = events::Event> + Send>>, Self::Error>;
-    
+    async fn watch_peers(
+        &self,
+    ) -> Result<Pin<Box<dyn Stream<Item = events::Event> + Send>>, Self::Error>;
+
     /// Observa as novas mensagens publicadas no tópico.
-    async fn watch_messages(&self) -> Result<Pin<Box<dyn Stream<Item = EventPubSubMessage> + Send>>, Self::Error>;
+    async fn watch_messages(
+        &self,
+    ) -> Result<Pin<Box<dyn Stream<Item = EventPubSubMessage> + Send>>, Self::Error>;
 
     /// Retorna o nome do tópico.
     fn topic(&self) -> &str;
@@ -763,7 +801,10 @@ pub trait PubSubInterface: Send + Sync {
     type Error: Error + Send + Sync + 'static;
 
     /// Inscreve-se em um tópico.
-    async fn topic_subscribe(&mut self, topic: &str) -> Result<Arc<dyn PubSubTopic<Error = GuardianError>>, Self::Error>;
+    async fn topic_subscribe(
+        &mut self,
+        topic: &str,
+    ) -> Result<Arc<dyn PubSubTopic<Error = GuardianError>>, Self::Error>;
 }
 
 /// equivalente a struct `PubSubSubscriptionOptions` em go
@@ -779,7 +820,7 @@ pub struct PubSubSubscriptionOptions {
 /// EventPubSub::Leaveequivalente a struct `EventPubSubLeave` em go
 /// Representa um evento disparado quando um par (peer) sai
 /// de um tópico do canal Pub/Sub.
-/// 
+///
 /// EventPubSub::Join equivalente a struct `EventPubSubJoin` em go
 /// Representa um evento disparado quando um par (peer) entra
 /// em um tópico do canal Pub/Sub.
