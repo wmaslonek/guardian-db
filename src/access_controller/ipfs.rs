@@ -1,16 +1,18 @@
+use crate::access_controller::{
+    manifest::CreateAccessControllerOptions, manifest::Manifest, manifest::ManifestParams,
+};
+use crate::address::Address;
+use crate::eqlabs_ipfs_log::{access_controller::LogEntry, identity_provider::IdentityProvider};
 use crate::error::{GuardianError, Result};
+use cid::Cid;
+use futures::TryStreamExt;
+use ipfs_api_backend_hyper::{IpfsApi, IpfsClient};
+use log::debug;
 use serde::{Deserialize, Serialize};
+use slog::Logger;
 use std::convert::TryFrom;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use log::debug;
-use slog::Logger;
-use ipfs_api_backend_hyper::{IpfsClient, IpfsApi};
-use cid::Cid;
-use futures::TryStreamExt;
-use crate::access_controller::{manifest::Manifest, manifest::ManifestParams, manifest::CreateAccessControllerOptions};
-use crate::address::Address;
-use crate::eqlabs_ipfs_log::{access_controller::LogEntry, identity_provider::IdentityProvider};
 
 /// Equivalente à struct cborWriteAccess em go.
 /// Usamos atributos da crate serde para mapear o nome do campo para "write" em minúsculas
@@ -59,17 +61,21 @@ impl IpfsAccessController {
         for allowed_key in state.write_access.iter() {
             if allowed_key == key || allowed_key == "*" {
                 // Se a chave for autorizada, verifica a identidade
-                return identity_provider.verify_identity(entry.get_identity()).await;
+                return identity_provider
+                    .verify_identity(entry.get_identity())
+                    .await;
             }
         }
 
-        Err(GuardianError::Store("Chave não tem permissão de escrita".to_string()))
+        Err(GuardianError::Store(
+            "Chave não tem permissão de escrita".to_string(),
+        ))
     }
 
     /// equivalente a GetAuthorizedByRole em go
     pub async fn get_authorized_by_role(&self, role: &str) -> Result<Vec<String>> {
         let state = self.state.read().await;
-        
+
         // Emulando a lógica Go: 'admin' e 'write' são a mesma coisa para este controlador.
         if role == "admin" || role == "write" {
             Ok(state.write_access.clone())
@@ -80,12 +86,16 @@ impl IpfsAccessController {
 
     /// equivalente a Grant em go
     pub async fn grant(&self, _capability: &str, _key_id: &str) -> Result<()> {
-        Err(GuardianError::Store("Não implementado - não existe na versão JS".to_string()))
+        Err(GuardianError::Store(
+            "Não implementado - não existe na versão JS".to_string(),
+        ))
     }
 
     /// equivalente a Revoke em go
     pub async fn revoke(&self, _capability: &str, _key_id: &str) -> Result<()> {
-        Err(GuardianError::Store("Não implementado - não existe na versão JS".to_string()))
+        Err(GuardianError::Store(
+            "Não implementado - não existe na versão JS".to_string(),
+        ))
     }
 
     /// equivalente a Load em go
@@ -95,26 +105,28 @@ impl IpfsAccessController {
         drop(state); // Liberamos o lock de leitura antes das operações de escrita
 
         let cid = Cid::try_from(address)?;
-        
+
         // 1. Lê o manifesto CBOR principal
         let manifest_stream = self.ipfs.cat(&cid.to_string());
         let manifest_bytes_vec = manifest_stream.try_collect::<Vec<_>>().await?;
-        let manifest_data: Vec<u8> = manifest_bytes_vec.iter()
+        let manifest_data: Vec<u8> = manifest_bytes_vec
+            .iter()
             .flat_map(|bytes| bytes.iter())
             .copied()
             .collect();
-        
+
         let manifest: Manifest = serde_cbor::from_slice(&manifest_data)?;
 
         // 2. Lê o conteúdo real das permissões usando o endereço do manifesto
         let access_data_cid = manifest.params.address();
         let access_stream = self.ipfs.cat(&access_data_cid.to_string());
         let access_bytes_vec = access_stream.try_collect::<Vec<_>>().await?;
-        let access_data_bytes: Vec<u8> = access_bytes_vec.iter()
+        let access_data_bytes: Vec<u8> = access_bytes_vec
+            .iter()
             .flat_map(|bytes| bytes.iter())
             .copied()
             .collect();
-        
+
         let write_access_data: CborWriteAccess = serde_cbor::from_slice(&access_data_bytes)?;
 
         // 3. O conteúdo é uma string JSON, que precisa ser deserializada também
@@ -132,26 +144,34 @@ impl IpfsAccessController {
         let state = self.state.read().await;
 
         let write_access_json = serde_json::to_string(&state.write_access)?;
-        
-        let cbor_data = CborWriteAccess { write: write_access_json };
-        
+
+        let cbor_data = CborWriteAccess {
+            write: write_access_json,
+        };
+
         // Serializa a estrutura CBOR em bytes
         let cbor_bytes = serde_cbor::to_vec(&cbor_data)?;
-        
+
         // Salva os bytes no IPFS
         let response = self.ipfs.add(std::io::Cursor::new(cbor_bytes)).await?;
-        
+
         let cid = Cid::try_from(response.hash.as_str())?;
 
         debug!(target: "GuardianDB::ac::ipfs", "Controlador de acesso IPFS salvo no hash {}", cid);
-        
+
         // Cria e retorna os parâmetros do novo manifesto
-        Ok(CreateAccessControllerOptions::new(cid, false, "ipfs".to_string()))
+        Ok(CreateAccessControllerOptions::new(
+            cid,
+            false,
+            "ipfs".to_string(),
+        ))
     }
 
     /// equivalente a Close em go
     pub async fn close(&self) -> Result<()> {
-         Err(GuardianError::Store("Não implementado - não existe na versão JS".to_string()))
+        Err(GuardianError::Store(
+            "Não implementado - não existe na versão JS".to_string(),
+        ))
     }
 
     /// equivalente a NewIPFSAccessController em go
@@ -160,7 +180,6 @@ impl IpfsAccessController {
         identity_id: String,
         mut params: CreateAccessControllerOptions,
     ) -> Result<Self> {
-
         if params.get_access("write").is_none() {
             params.set_access("write".to_string(), vec![identity_id]);
         }
@@ -175,7 +194,7 @@ impl IpfsAccessController {
             state: RwLock::new(initial_state),
         })
     }
-    
+
     /// equivalente a SetLogger em go
     pub async fn set_logger(&self, logger: Arc<Logger>) {
         let mut state = self.state.write().await;
