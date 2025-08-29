@@ -6,7 +6,7 @@
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)
-![Version](https://img.shields.io/badge/version-0.8.26-brightgreen.svg)
+![Version](https://img.shields.io/badge/version-0.8.29-brightgreen.svg)
 ![Build Status](https://img.shields.io/badge/build-passing-green.svg)
 
 ## 💬 Join Our Community
