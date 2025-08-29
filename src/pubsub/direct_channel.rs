@@ -1,9 +1,11 @@
 use crate::error::{GuardianError, Result};
-use crate::iface::{DirectChannelFactory, DirectChannelEmitter, DirectChannelOptions, EventPubSubPayload};
+use crate::iface::{
+    DirectChannelEmitter, DirectChannelFactory, DirectChannelOptions, EventPubSubPayload,
+};
 use async_trait::async_trait;
 use libp2p::{
-    gossipsub::{Message, TopicHash},
     PeerId,
+    gossipsub::{Message, TopicHash},
 };
 use serde::{Deserialize, Serialize};
 use slog::Logger;
@@ -12,7 +14,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, mpsc};
 
 // Equivalente às constantes globais em go
 const PROTOCOL: &str = "/go-orbit-db/direct-channel/1.2.0";
@@ -60,7 +62,12 @@ impl GossipsubInterface {
 
 impl LibP2PInterface for GossipsubInterface {
     fn publish_message(&self, topic: &TopicHash, message: &[u8]) -> Result<()> {
-        slog::debug!(self.logger, "Publicando mensagem no tópico: {:?}, {} bytes", topic, message.len());
+        slog::debug!(
+            self.logger,
+            "Publicando mensagem no tópico: {:?}, {} bytes",
+            topic,
+            message.len()
+        );
         // TODO: Implementar com swarm.behaviour_mut().gossipsub.publish(topic, message)
         Ok(())
     }
@@ -141,7 +148,7 @@ impl DirectChannel {
         own_peer_id: PeerId,
     ) -> Self {
         let (event_sender, event_receiver) = mpsc::unbounded_channel();
-        
+
         Self {
             logger,
             libp2p,
@@ -174,7 +181,8 @@ impl DirectChannel {
         }
         *running = true;
 
-        let mut receiver = self._event_receiver
+        let mut receiver = self
+            ._event_receiver
             .lock()
             .await
             .take()
@@ -215,10 +223,10 @@ impl DirectChannel {
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(HEARTBEAT_INTERVAL);
-            
+
             loop {
                 interval.tick().await;
-                
+
                 let running = *running_flag.lock().await;
                 if !running {
                     break;
@@ -290,14 +298,24 @@ impl DirectChannel {
     ) -> Result<()> {
         match event {
             DirectChannelEvent::MessageReceived { peer, payload } => {
-                slog::debug!(logger, "Mensagem recebida de {}: {} bytes", peer, payload.len());
-                
+                slog::debug!(
+                    logger,
+                    "Mensagem recebida de {}: {} bytes",
+                    peer,
+                    payload.len()
+                );
+
                 // Valida tamanho da mensagem
                 if payload.len() > MAX_MESSAGE_SIZE {
-                    slog::warn!(logger, "Mensagem muito grande de {}: {} bytes", peer, payload.len());
+                    slog::warn!(
+                        logger,
+                        "Mensagem muito grande de {}: {} bytes",
+                        peer,
+                        payload.len()
+                    );
                     return Ok(());
                 }
-                
+
                 // Atualiza atividade do canal
                 {
                     let mut channels_map = channels.write().await;
@@ -306,9 +324,11 @@ impl DirectChannel {
                         state.message_count += 1;
                     }
                 }
-                
+
                 let event_payload = EventPubSubPayload { payload, peer };
-                emitter.emit(event_payload).await
+                emitter
+                    .emit(event_payload)
+                    .await
                     .map_err(|e| GuardianError::Other(format!("Erro ao emitir evento: {}", e)))?;
             }
             DirectChannelEvent::PeerConnected(peer) => {
@@ -327,11 +347,20 @@ impl DirectChannel {
                     state.connection_status = ConnectionStatus::Disconnected;
                 }
             }
-            DirectChannelEvent::MessageSent { peer, success, error } => {
+            DirectChannelEvent::MessageSent {
+                peer,
+                success,
+                error,
+            } => {
                 if success {
                     slog::debug!(logger, "Mensagem enviada com sucesso para: {}", peer);
                 } else {
-                    slog::warn!(logger, "Falha ao enviar mensagem para {}: {:?}", peer, error);
+                    slog::warn!(
+                        logger,
+                        "Falha ao enviar mensagem para {}: {:?}",
+                        peer,
+                        error
+                    );
                 }
             }
             DirectChannelEvent::HeartbeatReceived(peer) => {
@@ -346,7 +375,8 @@ impl DirectChannel {
                 slog::warn!(logger, "Timeout de heartbeat para peer: {}", peer);
                 let mut channels_map = channels.write().await;
                 if let Some(state) = channels_map.get_mut(&peer) {
-                    state.connection_status = ConnectionStatus::Error("Heartbeat timeout".to_string());
+                    state.connection_status =
+                        ConnectionStatus::Error("Heartbeat timeout".to_string());
                 }
             }
         }
@@ -364,7 +394,7 @@ impl DirectChannel {
         }
 
         let topic = self.get_channel_topic(peer);
-        
+
         let message = DirectChannelMessage {
             message_type: MessageType::Data,
             payload,
@@ -385,7 +415,12 @@ impl DirectChannel {
                     success: true,
                     error: None,
                 });
-                slog::debug!(self.logger, "Dados enviados para {}: {} bytes", peer, message.payload.len());
+                slog::debug!(
+                    self.logger,
+                    "Dados enviados para {}: {} bytes",
+                    peer,
+                    message.payload.len()
+                );
                 Ok(())
             }
             Err(e) => {
@@ -404,7 +439,7 @@ impl DirectChannel {
     async fn connect_to_peer(&self, peer: PeerId) -> Result<()> {
         let topic = self.get_channel_topic(peer);
         let mut channels_map = self.channels.write().await;
-        
+
         if let Some(state) = channels_map.get(&peer) {
             match state.connection_status {
                 ConnectionStatus::Connected => {
@@ -423,20 +458,30 @@ impl DirectChannel {
         self.libp2p.subscribe_topic(&topic)?;
 
         // Adiciona ou atualiza o estado do canal
-        channels_map.insert(peer, ChannelState {
-            peer_id: peer,
-            topic: topic.clone(),
-            connection_status: ConnectionStatus::Connecting,
-            last_activity: Instant::now(),
-            message_count: 0,
-            last_heartbeat: Instant::now(),
-        });
+        channels_map.insert(
+            peer,
+            ChannelState {
+                peer_id: peer,
+                topic: topic.clone(),
+                connection_status: ConnectionStatus::Connecting,
+                last_activity: Instant::now(),
+                message_count: 0,
+                last_heartbeat: Instant::now(),
+            },
+        );
 
-        slog::info!(self.logger, "Conectando ao peer {} no tópico: {:?}", peer, topic);
-        
+        slog::info!(
+            self.logger,
+            "Conectando ao peer {} no tópico: {:?}",
+            peer,
+            topic
+        );
+
         // Simula conexão estabelecida (em implementação real seria baseado em eventos do libp2p)
-        let _ = self.event_sender.send(DirectChannelEvent::PeerConnected(peer));
-        
+        let _ = self
+            .event_sender
+            .send(DirectChannelEvent::PeerConnected(peer));
+
         Ok(())
     }
 
@@ -446,7 +491,8 @@ impl DirectChannel {
         let decoded_msg: DirectChannelMessage = serde_cbor::from_slice(&message.data)
             .map_err(|e| GuardianError::Other(format!("Erro ao decodificar mensagem: {}", e)))?;
 
-        let sender_peer = message.source
+        let sender_peer = message
+            .source
             .ok_or_else(|| GuardianError::Other("Mensagem sem remetente".to_string()))?;
 
         match decoded_msg.message_type {
@@ -457,7 +503,9 @@ impl DirectChannel {
                 });
             }
             MessageType::Heartbeat => {
-                let _ = self.event_sender.send(DirectChannelEvent::HeartbeatReceived(sender_peer));
+                let _ = self
+                    .event_sender
+                    .send(DirectChannelEvent::HeartbeatReceived(sender_peer));
             }
             MessageType::Ack => {
                 slog::trace!(self.logger, "ACK recebido de: {}", sender_peer);
@@ -471,7 +519,7 @@ impl DirectChannel {
     pub async fn stop(&self) -> Result<()> {
         let mut running = self.running.lock().await;
         *running = false;
-        
+
         // Desconecta todos os peers
         let peers: Vec<PeerId> = {
             let channels_map = self.channels.read().await;
@@ -481,8 +529,15 @@ impl DirectChannel {
         for peer in peers {
             let mut channels_map = self.channels.write().await;
             if let Some(state) = channels_map.remove(&peer) {
-                slog::info!(self.logger, "Peer removido: {} (tópico: {:?})", peer, state.topic);
-                let _ = self.event_sender.send(DirectChannelEvent::PeerDisconnected(peer));
+                slog::info!(
+                    self.logger,
+                    "Peer removido: {} (tópico: {:?})",
+                    peer,
+                    state.topic
+                );
+                let _ = self
+                    .event_sender
+                    .send(DirectChannelEvent::PeerDisconnected(peer));
             }
         }
 
@@ -495,11 +550,9 @@ impl DirectChannel {
         let channels_map = self.channels.read().await;
         channels_map
             .iter()
-            .filter_map(|(peer_id, state)| {
-                match state.connection_status {
-                    ConnectionStatus::Connected => Some(*peer_id),
-                    _ => None,
-                }
+            .filter_map(|(peer_id, state)| match state.connection_status {
+                ConnectionStatus::Connected => Some(*peer_id),
+                _ => None,
             })
             .collect()
     }
@@ -510,7 +563,10 @@ impl DirectChannel {
         channels_map
             .iter()
             .map(|(peer_id, state)| {
-                (*peer_id, (state.message_count, state.last_activity.elapsed()))
+                (
+                    *peer_id,
+                    (state.message_count, state.last_activity.elapsed()),
+                )
             })
             .collect()
     }
@@ -533,7 +589,7 @@ impl crate::iface::DirectChannel for DirectChannel {
 
     async fn close(&mut self) -> std::result::Result<(), Self::Error> {
         slog::info!(self.logger, "Fechando DirectChannel...");
-        
+
         // Para o processamento
         self.stop().await?;
 
@@ -569,7 +625,6 @@ impl HolderChannels {
         emitter: Box<dyn DirectChannelEmitter<Error = GuardianError>>,
         opts: Option<DirectChannelOptions>,
     ) -> Result<Box<dyn crate::iface::DirectChannel<Error = GuardianError>>> {
-        
         let resolved_opts = opts.unwrap_or_default();
         let logger = resolved_opts.logger.unwrap_or_else(|| self.logger.clone());
 
@@ -590,32 +645,41 @@ impl HolderChannels {
 }
 
 // equivalente a `InitDirectChannelFactory` em go
-pub fn init_direct_channel_factory(
-    logger: Logger,
-    own_peer_id: PeerId,
-) -> DirectChannelFactory {
-    Box::new(move |emitter: Arc<dyn DirectChannelEmitter<Error = GuardianError>>, opts: Option<DirectChannelOptions>| {
-        let logger = logger.clone();
-        let own_peer_id = own_peer_id;
-        Box::pin(async move {
-            slog::info!(logger, "Inicializando DirectChannel factory para peer: {}", own_peer_id);
-            
-            // Cria uma interface para libp2p usando Gossipsub
-            let libp2p_interface = Arc::new(GossipsubInterface::new(logger.clone()));
-            
-            // Cria o holder para gerenciar o DirectChannel
-            let holder = HolderChannels::new(logger.clone(), libp2p_interface, own_peer_id);
-            
-            // Converte Arc para Box para compatibilidade
-            let emitter_box = Box::new(EmitterWrapper::new(emitter));
-            
-            // Cria o canal direto
-            let channel = holder.new_channel(emitter_box, opts).await
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-            
-            Ok(Arc::from(channel) as Arc<dyn crate::iface::DirectChannel<Error = GuardianError>>)
-        })
-    })
+pub fn init_direct_channel_factory(logger: Logger, own_peer_id: PeerId) -> DirectChannelFactory {
+    Box::new(
+        move |emitter: Arc<dyn DirectChannelEmitter<Error = GuardianError>>,
+              opts: Option<DirectChannelOptions>| {
+            let logger = logger.clone();
+            let own_peer_id = own_peer_id;
+            Box::pin(async move {
+                slog::info!(
+                    logger,
+                    "Inicializando DirectChannel factory para peer: {}",
+                    own_peer_id
+                );
+
+                // Cria uma interface para libp2p usando Gossipsub
+                let libp2p_interface = Arc::new(GossipsubInterface::new(logger.clone()));
+
+                // Cria o holder para gerenciar o DirectChannel
+                let holder = HolderChannels::new(logger.clone(), libp2p_interface, own_peer_id);
+
+                // Converte Arc para Box para compatibilidade
+                let emitter_box = Box::new(EmitterWrapper::new(emitter));
+
+                // Cria o canal direto
+                let channel = holder
+                    .new_channel(emitter_box, opts)
+                    .await
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+
+                Ok(Arc::from(channel)
+                    as Arc<
+                        dyn crate::iface::DirectChannel<Error = GuardianError>,
+                    >)
+            })
+        },
+    )
 }
 
 // Wrapper para converter Arc<dyn DirectChannelEmitter> para Box<dyn DirectChannelEmitter>
@@ -649,17 +713,15 @@ pub async fn create_direct_channel_with_libp2p(
     logger: Logger,
     own_peer_id: PeerId,
 ) -> Result<DirectChannel> {
-    let channel = DirectChannel::new(
-        logger.clone(),
-        libp2p,
-        emitter,
-        own_peer_id,
-    );
+    let channel = DirectChannel::new(logger.clone(), libp2p, emitter, own_peer_id);
 
     // Inicia o processamento
     channel.start().await?;
 
-    slog::info!(logger, "DirectChannel criado com interface libp2p customizada");
+    slog::info!(
+        logger,
+        "DirectChannel criado com interface libp2p customizada"
+    );
     Ok(channel)
 }
 
