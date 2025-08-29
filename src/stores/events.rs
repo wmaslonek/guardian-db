@@ -1,13 +1,9 @@
+use crate::address::Address;
+use crate::eqlabs_ipfs_log::entry::Entry;
 use cid::Cid;
 use libp2p::core::PeerId;
 use std::sync::Arc;
-use crate::address::Address;
-use crate::eqlabs_ipfs_log::entry::Entry;
-use crate::stores::replicator::replication_info::ReplicationInfo;
 
-/// Em Rust, a forma idiomática de lidar com uma coleção de diferentes tipos de eventos
-/// (como o `var Events = []interface{}` do Go) é usar uma enum.
-/// Isso fornece segurança de tipo e permite o uso de `match` para tratar cada evento.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     Write(EventWrite),
@@ -80,9 +76,9 @@ impl std::fmt::Debug for EventReplicateProgress {
 
 impl PartialEq for EventReplicateProgress {
     fn eq(&self, other: &Self) -> bool {
-        self.max == other.max 
+        self.max == other.max
             && self.progress == other.progress
-            && self.address.equals(other.address.as_ref()) 
+            && self.address.equals(other.address.as_ref())
             && self.hash == other.hash
             && self.entry == other.entry
     }
@@ -90,7 +86,13 @@ impl PartialEq for EventReplicateProgress {
 
 impl EventReplicateProgress {
     /// equivalente a NewEventReplicateProgress em go
-    pub fn new(addr: Arc<dyn Address + Send + Sync>, h: Cid, e: Entry, max: i32, progress: i32) -> Self {
+    pub fn new(
+        addr: Arc<dyn Address + Send + Sync>,
+        h: Cid,
+        e: Entry,
+        max: i32,
+        progress: i32,
+    ) -> Self {
         Self {
             max,
             progress,
@@ -122,7 +124,7 @@ impl std::fmt::Debug for EventReplicated {
 
 impl PartialEq for EventReplicated {
     fn eq(&self, other: &Self) -> bool {
-        self.address.equals(other.address.as_ref()) 
+        self.address.equals(other.address.as_ref())
             && self.log_length == other.log_length
             && self.entries == other.entries
     }
@@ -130,7 +132,11 @@ impl PartialEq for EventReplicated {
 
 impl EventReplicated {
     /// equivalente a NewEventReplicated em go
-    pub fn new(addr: Arc<dyn Address + Send + Sync>, entries: Vec<Entry>, log_length: usize) -> Self {
+    pub fn new(
+        addr: Arc<dyn Address + Send + Sync>,
+        entries: Vec<Entry>,
+        log_length: usize,
+    ) -> Self {
         Self {
             address: addr,
             log_length,
@@ -165,7 +171,10 @@ impl PartialEq for EventLoad {
 impl EventLoad {
     /// equivalente a NewEventLoad em go
     pub fn new(addr: Arc<dyn Address + Send + Sync>, heads: Vec<Entry>) -> Self {
-        Self { address: addr, heads }
+        Self {
+            address: addr,
+            heads,
+        }
     }
 }
 
@@ -193,7 +202,7 @@ impl std::fmt::Debug for EventLoadProgress {
 
 impl PartialEq for EventLoadProgress {
     fn eq(&self, other: &Self) -> bool {
-        self.address.equals(other.address.as_ref()) 
+        self.address.equals(other.address.as_ref())
             && self.hash == other.hash
             && self.entry == other.entry
             && self.progress == other.progress
@@ -203,7 +212,13 @@ impl PartialEq for EventLoadProgress {
 
 impl EventLoadProgress {
     /// equivalente a NewEventLoadProgress em go
-    pub fn new(addr: Arc<dyn Address + Send + Sync>, h: Cid, e: Entry, progress: i32, max: i32) -> Self {
+    pub fn new(
+        addr: Arc<dyn Address + Send + Sync>,
+        h: Cid,
+        e: Entry,
+        progress: i32,
+        max: i32,
+    ) -> Self {
         Self {
             address: addr,
             hash: h,
@@ -240,7 +255,10 @@ impl PartialEq for EventReady {
 impl EventReady {
     /// equivalente a NewEventReady em go
     pub fn new(addr: Arc<dyn Address + Send + Sync>, heads: Vec<Entry>) -> Self {
-        Self { address: addr, heads }
+        Self {
+            address: addr,
+            heads,
+        }
     }
 }
 
@@ -265,8 +283,8 @@ impl std::fmt::Debug for EventWrite {
 
 impl PartialEq for EventWrite {
     fn eq(&self, other: &Self) -> bool {
-        self.address.equals(other.address.as_ref()) 
-            && self.entry == other.entry 
+        self.address.equals(other.address.as_ref())
+            && self.entry == other.entry
             && self.heads == other.heads
     }
 }
