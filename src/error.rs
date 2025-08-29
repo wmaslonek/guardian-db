@@ -5,58 +5,58 @@ use thiserror::Error;
 pub enum GuardianError {
     #[error("Store error: {0}")]
     Store(String),
-    
+
     #[error("Index error: {0}")]
     Index(String),
-    
+
     #[error("Cache error: {0}")]
     Cache(String),
-    
+
     #[error("Serialization error: {0}")]
     Serialization(String),
-    
+
     #[error("Network error: {0}")]
     Network(String),
-    
+
     #[error("IPFS error: {0}")]
     Ipfs(String),
-    
+
     #[error("Access control error: {0}")]
     AccessControl(String),
-    
+
     #[error("Operation error: {0}")]
     Operation(String),
-    
+
     #[error("Replication error: {0}")]
     Replication(String),
-    
+
     #[error("Invalid argument: {0}")]
     InvalidArgument(String),
-    
+
     #[error("Not found: {0}")]
     NotFound(String),
-    
+
     #[error("Database already exists: {0}")]
     DatabaseAlreadyExists(String),
-    
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
-    
+
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
-    
+
     #[error("CID error: {0}")]
     Cid(#[from] cid::Error),
-    
+
     #[error("CBOR error: {0}")]
     Cbor(#[from] serde_cbor::Error),
-    
+
     #[error("IPFS API error: {0}")]
     IpfsApi(#[from] ipfs_api_backend_hyper::Error),
-    
+
     #[error("Datastore error: {0}")]
     Datastore(String),
-    
+
     #[error("Other error: {0}")]
     Other(String),
 }
