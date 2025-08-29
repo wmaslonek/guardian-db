@@ -1,0 +1,45 @@
+name: Quick Check
+
+on:
+  push:
+    branches-ignore:
+      - main
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Quick compilation check
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-check-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-check-
+
+    - name: Check guardian-db compilation
+      run: cargo check --all-targets --all-features
+
+    - name: Check guardian-db library only
+      run: cargo check --lib
+
+    - name: Check with minimal features
+      run: cargo check --no-default-features
