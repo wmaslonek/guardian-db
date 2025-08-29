@@ -1,10 +1,10 @@
-use crate::error::Result;
-use async_trait::async_trait;
-use std::sync::Arc;
-use slog::Logger;
 use crate::access_controller::manifest::ManifestParams;
 use crate::eqlabs_ipfs_log::access_controller;
 use crate::eqlabs_ipfs_log::identity_provider::IdentityProvider;
+use crate::error::Result;
+use async_trait::async_trait;
+use slog::Logger;
+use std::sync::Arc;
 
 /// equivalente a LogEntry em go
 pub type LogEntry = dyn access_controller::LogEntry;
@@ -16,7 +16,6 @@ pub type CanAppendAdditionalContext = dyn access_controller::CanAppendAdditional
 /// A trait que todos os controladores de acesso do GuardianDB devem implementar.
 #[async_trait]
 pub trait AccessController: Send + Sync {
-    
     /// Retorna o tipo do controlador de acesso como uma string.
     fn r#type(&self) -> &str;
 
@@ -40,10 +39,10 @@ pub trait AccessController: Send + Sync {
 
     /// Define a instância do logger a ser usada.
     async fn set_logger(&self, logger: Arc<Logger>);
-    
+
     /// Retorna a instância atual do logger.
     async fn logger(&self) -> Arc<Logger>;
-    
+
     /// Verifica se uma entrada pode ser adicionada ao log.
     /// Este método é específico para o GuardianDB e não está presente na interface original do OrbitDB.
     async fn can_append(
