@@ -1,193 +1,299 @@
-use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
-use async_trait::async_trait;
-use std::error::Error;
-use libp2p::{
-    gossipsub::{self, Behaviour, TopicHash, Message, IdentTopic as Topic},
-    PeerId,
-};
-use crate::iface::EventPubSubMessage;
+use crate::error::{GuardianError, Result};
 use crate::events;
+use crate::iface::{EventPubSubMessage, PubSubInterface, PubSubTopic};
+use crate::ipfs_core_api::IpfsClient;
 use crate::pubsub::event::new_event_message;
+use async_trait::async_trait;
+use futures::stream::{Stream, StreamExt};
+use libp2p::PeerId;
+use std::collections::HashMap;
+use std::pin::Pin;
+use std::sync::Arc;
+use tokio::sync::{RwLock, mpsc};
+use tokio_stream::wrappers::ReceiverStream;
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, error, info, warn};
 
-#[async_trait]
-pub trait PubSubTopic: Send + Sync {
-    async fn publish(&self, message: Vec<u8>) -> Result<(), gossipsub::PublishError>;
-    fn peers(&self) -> Vec<PeerId>;
-    async fn watch_peers(&self) -> Result<mpsc::Receiver<events::Event>, Box<dyn Error + Send>>;
-    async fn watch_messages(&self) -> Result<mpsc::Receiver<EventPubSubMessage>, Box<dyn Error + Send>>;
-    fn topic(&self) -> &str;
-}
+// Implementação IPFS PubSub usando ipfs_core_api (100% Rust)
+// Substitui a implementação baseada em libp2p gossipsub diretamente
 
-#[async_trait]
-pub trait PubSubInterface: Send + Sync {
-    async fn topic_subscribe(&self, topic_name: &str) -> Result<Arc<dyn PubSubTopic>, Box<dyn Error + Send>>;
-}
-
-// Equivalente à struct `psTopic` em Go.
-// Usamos `Arc` para permitir que esta struct seja compartilhada de forma segura
-// entre múltiplas tarefas assíncronas.
+/// Tópico PubSub integrado com ipfs_core_api
 pub struct PsTopic {
-    topic_hash: TopicHash,
     topic_name: String,
-    // Em vez de Arc<RawPubSub>, vamos usar campos independentes
-    // que permitam operações thread-safe
-    message_broadcaster: tokio::sync::broadcast::Sender<Arc<Message>>,
+    ipfs_client: Arc<IpfsClient>,
+    // Token para cancelamento de operações
+    cancellation_token: CancellationToken,
 }
 
-// Equivalente à struct `rawPubSub` em Go.
+/// PubSub principal usando IPFS Core API
 pub struct RawPubSub {
-    pubsub: Arc<Mutex<Behaviour>>,
+    ipfs_client: Arc<IpfsClient>,
     id: PeerId,
-    // Mutex assíncrono do Tokio para proteger o acesso concorrente ao mapa de tópicos.
-    // O `Arc` dentro do HashMap permite compartilhar `PsTopic`s individuais.
-    topics: Mutex<HashMap<String, Arc<PsTopic>>>,
-    // Adicionando um canal para distribuir eventos de mensagem recebidos
-    // Esta é uma adaptação comum em Rust para desacoplar o loop de eventos da rede
-    // dos consumidores de mensagens.
-    message_broadcaster: tokio::sync::broadcast::Sender<Arc<Message>>,
+    // Mapa thread-safe de tópicos ativos
+    topics: RwLock<HashMap<String, Arc<PsTopic>>>,
 }
 
 #[async_trait]
 impl PubSubTopic for PsTopic {
-    // equivalente a `Publish` em go
-    async fn publish(&self, _message: Vec<u8>) -> Result<(), gossipsub::PublishError> {
-        // Nota: Em libp2p, publish geralmente requer uma referência mutável
-        // Para contornar isso, assumimos que há um canal de comando ou método thread-safe
-        // Por enquanto, simulamos o comportamento
-        // TODO: Implementar canal de comando para publish thread-safe
+    type Error = GuardianError;
+
+    /// Publica uma mensagem no tópico usando ipfs_core_api
+    async fn publish(&self, message: Vec<u8>) -> std::result::Result<(), Self::Error> {
+        info!(
+            "Publicando mensagem no tópico '{}': {} bytes",
+            self.topic_name,
+            message.len()
+        );
+
+        self.ipfs_client
+            .pubsub_publish(&self.topic_name, &message)
+            .await?;
+
+        debug!(
+            "Mensagem publicada com sucesso no tópico '{}'",
+            self.topic_name
+        );
         Ok(())
     }
 
-    // equivalente a `Peers` em go
-    fn peers(&self) -> Vec<PeerId> {
-        // A chamada em `rust-libp2p` retorna os pares do "mesh" para um determinado tópico.
-        // Como não temos acesso direto ao Behaviour em um contexto thread-safe,
-        // retornamos lista vazia por enquanto
-        // TODO: Implementar acesso thread-safe aos peers do mesh
-        Vec::new()
+    /// Lista peers conectados ao tópico
+    async fn peers(&self) -> std::result::Result<Vec<PeerId>, Self::Error> {
+        debug!("Listando peers do tópico: {}", self.topic_name);
+
+        let peers = self.ipfs_client.pubsub_peers(&self.topic_name).await?;
+
+        debug!(
+            "Encontrados {} peers para tópico '{}'",
+            peers.len(),
+            self.topic_name
+        );
+        Ok(peers)
     }
 
-    // equivalente a `WatchPeers` em go
-    async fn watch_peers(&self) -> Result<mpsc::Receiver<events::Event>, Box<dyn std::error::Error + Send>> {
-        let (_tx, rx) = mpsc::channel(32);
-        let _topic_name_clone = self.topic_name.clone();
-
-        // Simulação de monitoramento de peers
-        // TODO: Integrar com sistema de eventos do libp2p
-        tokio::spawn(async move {
-            // Por enquanto, não emite eventos - implementação mock
-            // Em produção, isso seria integrado com o event loop do libp2p
-        });
-
-        Ok(rx)
-    }
-
-    // equivalente a `WatchMessages` em go
-    async fn watch_messages(&self) -> Result<mpsc::Receiver<EventPubSubMessage>, Box<dyn std::error::Error + Send>> {
-        // Em vez de criar uma nova assinatura, vamos nos inscrever no "broadcaster"
-        // de mensagens. Isso é mais eficiente do que ter múltiplos
-        // listeners no stream principal do libp2p.
-        let mut receiver = self.message_broadcaster.subscribe();
-        let (tx, rx) = mpsc::channel(128); // Buffer de 128 como no original
-        let topic_hash = self.topic_hash.clone();
+    /// Monitora mudanças nos peers do tópico
+    async fn watch_peers(
+        &self,
+    ) -> std::result::Result<Pin<Box<dyn Stream<Item = events::Event> + Send>>, Self::Error> {
+        let (tx, rx) = mpsc::channel(32);
+        let ipfs_client = self.ipfs_client.clone();
+        let topic_name = self.topic_name.clone();
+        let token = self.cancellation_token.clone();
 
         tokio::spawn(async move {
-            while let Ok(message) = receiver.recv().await {
-                // Filtra mensagens apenas deste tópico
-                if message.topic == topic_hash {
-                    let event = new_event_message(message.data.clone());
-                    if tx.send(event).await.is_err() {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            let mut last_peers: Vec<PeerId> = Vec::new();
+
+            loop {
+                tokio::select! {
+                    _ = token.cancelled() => {
+                        debug!("Monitoramento de peers cancelado para tópico: {}", topic_name);
                         break;
+                    }
+                    _ = interval.tick() => {
+                        match ipfs_client.pubsub_peers(&topic_name).await {
+                            Ok(current_peers) => {
+                                // Detecta mudanças nos peers
+                                for peer in &current_peers {
+                                    if !last_peers.contains(peer) {
+                                        // Cria evento de join como Arc<dyn Any>
+                                        let join_event: events::Event = Arc::new(crate::iface::EventPubSub::Join {
+                                            peer: *peer,
+                                            topic: topic_name.clone()
+                                        });
+                                        if tx.send(join_event).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                for peer in &last_peers {
+                                    if !current_peers.contains(peer) {
+                                        // Cria evento de leave como Arc<dyn Any>
+                                        let leave_event: events::Event = Arc::new(crate::iface::EventPubSub::Leave {
+                                            peer: *peer,
+                                            topic: topic_name.clone()
+                                        });
+                                        if tx.send(leave_event).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                last_peers = current_peers;
+                            }
+                            Err(e) => {
+                                error!("Erro ao obter peers do tópico '{}': {}", topic_name, e);
+                            }
+                        }
                     }
                 }
             }
         });
 
-        Ok(rx)
+        let stream = ReceiverStream::new(rx);
+        Ok(Box::pin(stream))
     }
 
-    // equivalente a `Topic` em go
+    /// Monitora mensagens recebidas no tópico
+    async fn watch_messages(
+        &self,
+    ) -> std::result::Result<Pin<Box<dyn Stream<Item = EventPubSubMessage> + Send>>, Self::Error>
+    {
+        let (tx, rx) = mpsc::channel(128);
+        let ipfs_client = self.ipfs_client.clone();
+        let topic_name = self.topic_name.clone();
+        let token = self.cancellation_token.clone();
+
+        // Inicia o monitoramento de mensagens
+        tokio::spawn(async move {
+            match ipfs_client.pubsub_subscribe(&topic_name).await {
+                Ok(mut stream) => {
+                    debug!("Stream de mensagens iniciado para tópico: {}", topic_name);
+
+                    loop {
+                        tokio::select! {
+                            _ = token.cancelled() => {
+                                debug!("Monitoramento de mensagens cancelado para tópico: {}", topic_name);
+                                break;
+                            }
+                            msg_result = stream.next() => {
+                                match msg_result {
+                                    Some(Ok(msg)) => {
+                                        let event = new_event_message(msg.data);
+                                        if tx.send(event).await.is_err() {
+                                            debug!("Receptor de mensagens desconectado para tópico: {}", topic_name);
+                                            break;
+                                        }
+                                    }
+                                    Some(Err(e)) => {
+                                        error!("Erro no stream de mensagens para tópico '{}': {}", topic_name, e);
+                                        break;
+                                    }
+                                    None => {
+                                        debug!("Stream de mensagens finalizado para tópico: {}", topic_name);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!(
+                        "Erro ao criar stream de mensagens para tópico '{}': {}",
+                        topic_name, e
+                    );
+                }
+            }
+        });
+
+        let stream = ReceiverStream::new(rx);
+        Ok(Box::pin(stream))
+    }
+
+    /// Retorna o nome do tópico
     fn topic(&self) -> &str {
         &self.topic_name
     }
 }
 
 impl RawPubSub {
-    // equivalente a `NewPubSub` em go
-    pub fn new(ps: Arc<Mutex<Behaviour>>, id: PeerId) -> Arc<Self> {
-        // No Go, um logger e tracer nulos são fornecidos se não forem passados.
-        // Em Rust, a crate `tracing` é configurada globalmente para a aplicação,
-        // então não precisamos passá-la como argumento aqui.
+    /// Cria uma nova instância do RawPubSub usando ipfs_core_api
+    pub async fn new(ipfs_client: Arc<IpfsClient>) -> Result<Arc<Self>> {
+        let node_info = ipfs_client.id().await?;
+        let id = node_info.id;
 
-        // Capacidade do canal de broadcast. Pode ser ajustado conforme necessário.
-        let (tx, _) = tokio::sync::broadcast::channel(256);
+        info!("Inicializando RawPubSub com node ID: {}", id);
 
-        Arc::new(RawPubSub {
-            pubsub: ps,
-            topics: Mutex::new(HashMap::new()),
+        Ok(Arc::new(RawPubSub {
+            ipfs_client,
             id,
-            message_broadcaster: tx,
-        })
+            topics: RwLock::new(HashMap::new()),
+        }))
     }
 
-    // Método auxiliar para criar com swarm (mock implementation)
-    pub fn new_with_swarm(_swarm: Arc<std::sync::Mutex<impl std::marker::Send + 'static>>) -> Result<Arc<Self>, Box<dyn std::error::Error + Send + Sync>> {
-        // Por enquanto, implementação mock que cria um Behaviour padrão
-        use libp2p::identity::Keypair;
-        
-        let local_key = Keypair::generate_ed25519();
-        let local_peer_id = local_key.public().to_peer_id();
-        
-        // Cria um comportamento gossipsub padrão
-        let gossipsub_config = gossipsub::ConfigBuilder::default()
-            .build()
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-        
-        let gossipsub = gossipsub::Behaviour::new(
-            gossipsub::MessageAuthenticity::Signed(local_key),
-            gossipsub_config,
-        ).map_err(|e| Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())) as Box<dyn std::error::Error + Send + Sync>)?;
-
-        Ok(Self::new(Arc::new(Mutex::new(gossipsub)), local_peer_id))
+    /// Método auxiliar para criar com configuração customizada
+    pub async fn new_with_config(ipfs_client: Arc<IpfsClient>) -> Result<Arc<Self>> {
+        Self::new(ipfs_client).await
     }
 
-    
+    /// Obtém estatísticas dos tópicos ativos
+    pub async fn get_topic_stats(&self) -> HashMap<String, usize> {
+        let topics = self.topics.read().await;
+        let mut stats = HashMap::new();
+
+        for (topic_name, topic) in topics.iter() {
+            match topic.peers().await {
+                Ok(peers) => {
+                    stats.insert(topic_name.clone(), peers.len());
+                }
+                Err(e) => {
+                    warn!("Erro ao obter peers do tópico '{}': {}", topic_name, e);
+                    stats.insert(topic_name.clone(), 0);
+                }
+            }
+        }
+
+        stats
+    }
+
+    /// Lista todos os tópicos ativos
+    pub async fn list_topics(&self) -> Vec<String> {
+        let topics = self.topics.read().await;
+        topics.keys().cloned().collect()
+    }
+
+    /// Obtém o ID do peer local
+    pub fn local_peer_id(&self) -> PeerId {
+        self.id
+    }
+
+    /// Remove um tópico (unsubscribe)
+    pub async fn topic_unsubscribe(&self, topic_name: &str) -> Result<()> {
+        let mut topics = self.topics.write().await;
+
+        if let Some(topic) = topics.remove(topic_name) {
+            topic.cancellation_token.cancel();
+            info!("Tópico '{}' removido com sucesso", topic_name);
+        } else {
+            warn!("Tentativa de remover tópico inexistente: {}", topic_name);
+        }
+
+        Ok(())
+    }
 }
 
-// Esta implementação garante que `RawPubSub` satisfaça o contrato de `PubSubInterface`.
-// É o equivalente em Rust a `var _ iface.PubSubInterface = &rawPubSub{}`.
+/// Implementação da interface PubSub usando ipfs_core_api
 #[async_trait]
 impl PubSubInterface for RawPubSub {
-    // equivalente a `TopicSubscribe` em go
-    async fn topic_subscribe(&self, topic_name: &str) -> Result<Arc<dyn PubSubTopic>, Box<dyn std::error::Error + Send>> {
-        // Bloqueia o mutex para garantir acesso exclusivo ao mapa de tópicos.
-        // O `await` é necessário porque é um Mutex assíncrono.
-        let mut topics = self.topics.lock().await;
+    type Error = GuardianError;
 
-        // Se o tópico já existe no nosso mapa, retorna a instância existente.
+    /// Subscreve a um tópico e retorna uma instância PubSubTopic
+    async fn topic_subscribe(
+        &mut self,
+        topic_name: &str,
+    ) -> std::result::Result<Arc<dyn PubSubTopic<Error = GuardianError>>, Self::Error> {
+        let mut topics = self.topics.write().await;
+
+        // Se o tópico já existe, retorna a instância existente
         if let Some(existing_topic) = topics.get(topic_name) {
-            return Ok(existing_topic.clone() as Arc<dyn PubSubTopic>);
+            info!("Reutilizando tópico existente: {}", topic_name);
+            return Ok(existing_topic.clone() as Arc<dyn PubSubTopic<Error = GuardianError>>);
         }
 
-        // Se não existir, nos inscrevemos no tópico no libp2p.
-        let topic = Topic::new(topic_name.to_string());
-        {
-            let mut pubsub = self.pubsub.lock().await;
-            pubsub.subscribe(&topic).map_err(|e| Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())) as Box<dyn std::error::Error + Send>)?;
-        }
+        info!("Criando nova subscrição para tópico: {}", topic_name);
 
-        // Cria uma nova instância de PsTopic.
-        let new_ps_topic = Arc::new(PsTopic {
-            topic_hash: topic.hash(),
+        // Cria novo tópico
+        let new_topic = Arc::new(PsTopic {
             topic_name: topic_name.to_string(),
-            message_broadcaster: self.message_broadcaster.clone(),
+            ipfs_client: self.ipfs_client.clone(),
+            cancellation_token: CancellationToken::new(),
         });
 
-        // Insere o novo tópico no mapa e o retorna.
-        topics.insert(topic_name.to_string(), Arc::clone(&new_ps_topic));
+        // Insere no mapa de tópicos
+        topics.insert(topic_name.to_string(), new_topic.clone());
 
-        Ok(new_ps_topic as Arc<dyn PubSubTopic>)
+        info!("Tópico '{}' criado com sucesso", topic_name);
+        Ok(new_topic as Arc<dyn PubSubTopic<Error = GuardianError>>)
     }
 }
