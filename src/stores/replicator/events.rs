@@ -1,5 +1,5 @@
-use cid::Cid;
 use crate::eqlabs_ipfs_log::entry::Entry;
+use cid::Cid;
 
 // equivalente a EventLoadAdded em go
 /// Um evento acionado quando novas entradas são adicionadas à fila de replicação.
@@ -13,10 +13,7 @@ pub struct EventLoadAdded {
 impl EventLoadAdded {
     /// Cria um novo evento EventLoadAdded.
     pub fn new(hash: Cid, entry: Box<Entry>) -> Self {
-        Self {
-            entry,
-            hash,
-        }
+        Self { entry, hash }
     }
 }
 
@@ -31,9 +28,7 @@ pub struct EventLoadProgress {
 impl EventLoadProgress {
     /// Cria um novo evento EventLoadProgress.
     pub fn new(entry: Box<Entry>) -> Self {
-        Self {
-            entry,
-        }
+        Self { entry }
     }
 }
 
@@ -49,8 +44,6 @@ pub struct EventLoadEnd {
 impl EventLoadEnd {
     /// Cria um novo evento EventLoadEnd.
     pub fn new(log_ids: Vec<String>) -> Self {
-        Self {
-            log_ids,
-        }
+        Self { log_ids }
     }
 }
