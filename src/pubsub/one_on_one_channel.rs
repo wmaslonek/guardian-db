@@ -1,58 +1,24 @@
 use crate::error::{GuardianError, Result};
-use crate::kubo_core_api::client::KuboCoreApiClient;
+use crate::iface::{
+    DirectChannel, DirectChannelEmitter, DirectChannelFactory, DirectChannelOptions,
+};
+use crate::ipfs_core_api::{IpfsClient, PubsubStream};
+use crate::pubsub::event::new_event_payload;
+use async_trait::async_trait;
+use futures::stream::StreamExt;
 use libp2p::PeerId;
-use reqwest::Client;
-use serde::Deserialize;
+use slog::Logger;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{broadcast, RwLock};
-use tracing::{debug, error, info, warn};
-use futures::stream::StreamExt;
+use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
-use crate::pubsub::event::new_event_payload;
-use async_trait::async_trait;
-use slog::Logger;
-use crate::iface::{DirectChannelOptions, DirectChannel, DirectChannelEmitter, DirectChannelFactory};
+use tracing::{debug, error, info, warn};
 
 // Constantes do protocolo
 const PROTOCOL: &str = "ipfs-pubsub-direct-channel/v1";
-    
-// Struct para deserializar a resposta do pubsub stream
-#[derive(Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-struct PubsubMessage {
-    from: String,
-    data: String,
-    // Outros campos como seqno e topic_ids são ignorados por simplicidade
-}
-
-// Struct para deserializar a resposta da API /api/v0/id
-#[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct IdResponse {
-    id: PeerId,
-}
-pub struct Channel {
-    pub id: String,
-    pub cancel_tx: broadcast::Sender<()>,
-}
-
-// Estrutura para gerenciar as chamadas à API RPC do Kubo
-#[derive(Clone)]
-pub struct KuboClient {
-    client: Client,
-    base_url: String,
-}
-
-// Resposta esperada da API /api/v0/pubsub/peers
-#[derive(Deserialize)]
-struct PubsubPeersResponse {
-    #[serde(rename = "Strings")]
-    strings: Vec<String>,
-}
 
 // Em Rust, a verificação de interface é feita no bloco `impl`.
 // Aqui implementamos a trait `DirectChannel` para a nossa struct `Channels`.
@@ -78,20 +44,20 @@ impl DirectChannel for Channels {
             // este token filho será cancelado automaticamente em cascata.
             let child_token = self.token.child_token();
 
-            // Inscreve-se no tópico do pubsub através da API do Kubo.
-            let stream = self.kubo_client.pubsub_subscribe(&id).await?;
+            // Inscreve-se no tópico do pubsub através da nossa API IPFS 100% Rust.
+            let stream = self.ipfs_client.pubsub_subscribe(&id).await?;
 
             // Armazena o token da nova subscrição no mapa.
             subs.insert(target, child_token.clone());
 
             // Clona as referências necessárias para a nova tarefa assíncrona.
             let self_clone = self.clone();
-            
+
             // Inicia a tarefa em segundo plano que irá monitorar o tópico.
             tokio::spawn(async move {
                 // Passa o token filho para a tarefa de monitoramento.
                 self_clone.monitor_topic(stream, target, child_token).await;
-                
+
                 // Após o término do monitoramento (seja por cancelamento ou fim do stream),
                 // remove o peer do mapa de subscrições ativas para limpeza.
                 let mut subs = self_clone.subs.write().await;
@@ -99,13 +65,13 @@ impl DirectChannel for Channels {
                 debug!(logger = ?&self_clone.logger, "Monitor para {} encerrado e removido.", target);
             });
         }
-        
+
         // Libera o lock de escrita antes de continuar.
         drop(subs);
 
         // Tenta se conectar diretamente ao peer na camada de swarm do IPFS.
         // A falha aqui é apenas um aviso, pois o pubsub pode funcionar mesmo sem uma conexão direta.
-        if let Err(e) = self.kubo_client.swarm_connect(&target).await {
+        if let Err(e) = self.ipfs_client.swarm_connect(&target).await {
             warn!(logger = ?self.logger, peer = %target, "Não foi possível conectar diretamente ao peer (aviso): {}", e);
         }
 
@@ -131,9 +97,9 @@ impl DirectChannel for Channels {
             }
         };
 
-        // Publica os dados no tópico do pubsub via API do Kubo.
-        self.kubo_client.pubsub_publish(&id, &head).await?;
-        
+        // Publica os dados no tópico do pubsub via nossa API IPFS 100% Rust.
+        self.ipfs_client.pubsub_publish(&id, &head).await?;
+
         Ok(())
     }
 
@@ -143,7 +109,7 @@ impl DirectChannel for Channels {
     /// limpando todos os recursos associados ao `Channels`.
     async fn close(&mut self) -> std::result::Result<(), Self::Error> {
         info!(logger = ?self.logger, "Encerrando todos os canais e tarefas de monitoramento...");
-        
+
         // Com um único chamado, cancelamos o token principal.
         // Esta ação se propaga e cancela TODOS os tokens filhos que foram
         // passados para as tarefas `monitor_topic`, sinalizando que elas
@@ -152,10 +118,10 @@ impl DirectChannel for Channels {
 
         // Limpa o mapa de subscrições.
         self.subs.write().await.clear();
-        
+
         // Fecha o emissor de eventos.
         self.emitter.close().await?;
-        
+
         Ok(())
     }
 }
@@ -166,7 +132,7 @@ pub struct Channels {
     subs: Arc<RwLock<HashMap<PeerId, CancellationToken>>>,
     self_id: PeerId,
     emitter: Arc<dyn DirectChannelEmitter<Error = GuardianError> + Send + Sync>,
-    kubo_client: Arc<KuboCoreApiClient>,
+    ipfs_client: Arc<IpfsClient>,
     logger: Arc<Logger>,
     // O token principal que controla o tempo de vida de toda a instância de Channels
     token: CancellationToken,
@@ -182,9 +148,9 @@ impl Channels {
             debug!(logger = ?self.logger, topic = %id, "inscrevendo-se no tópico");
 
             // Substitui c.ipfs.PubSub().Subscribe(ctx, id, options.PubSub.Discover(true))
-            // A chamada HTTP para subscribe é de longa duração (streaming).
+            // A chamada é realizada via nossa API IPFS 100% Rust.
             // A sua gestão será feita dentro de `monitor_topic`.
-            let stream = self.kubo_client.pubsub_subscribe(&id).await?;
+            let stream = self.ipfs_client.pubsub_subscribe(&id).await?;
 
             let cancel_token = CancellationToken::new();
 
@@ -204,7 +170,7 @@ impl Channels {
         drop(subs);
 
         // Substitui c.ipfs.Swarm().Connect(ctx, peer.AddrInfo{ID: target})
-        if let Err(e) = self.kubo_client.swarm_connect(&target).await {
+        if let Err(e) = self.ipfs_client.swarm_connect(&target).await {
             warn!(logger = ?self.logger, peer = %target, "não foi possível conectar ao peer remoto: {}", e);
         }
 
@@ -223,8 +189,15 @@ impl Channels {
         };
 
         // Substitui c.ipfs.PubSub().Publish(ctx, id, head)
-        self.kubo_client.pubsub_publish(&id, head).await
-            .map_err(|e| GuardianError::Other(format!("falha ao publicar dados no pubsub via rpc: {}", e)))?;
+        self.ipfs_client
+            .pubsub_publish(&id, head)
+            .await
+            .map_err(|e| {
+                GuardianError::Other(format!(
+                    "falha ao publicar dados no pubsub via nossa API IPFS: {}",
+                    e
+                ))
+            })?;
 
         Ok(())
     }
@@ -243,7 +216,7 @@ impl Channels {
                 }
                 _ = interval.tick() => {
                     // Substitui c.ipfs.PubSub().Peers(ctx, options.PubSub.Topic(channelID))
-                    match self.kubo_client.pubsub_peers(channel_id).await {
+                    match self.ipfs_client.pubsub_peers(channel_id).await {
                         Ok(peers) => {
                             if peers.iter().any(|p| p == &other_peer) {
                                 debug!(logger = ?self.logger, "peer {} encontrado no pubsub", other_peer);
@@ -253,7 +226,7 @@ impl Channels {
                         }
                         Err(e) => {
                             error!(logger = ?self.logger, "falha ao obter peers do pubsub: {}", e);
-                            // Retorna o erro em caso de falha na chamada RPC
+                            // Retorna o erro em caso de falha na chamada da nossa API IPFS
                             return Err(e.into());
                         }
                     }
@@ -262,22 +235,20 @@ impl Channels {
         }
     }
 
-    //=================================================================================
-    // Função auxiliar para chamadas à API do Kubo (não presente diretamente no .go)
-    // mas necessária para a adaptação.
-    // As implementações reais fariam as chamadas HTTP.
+    // Função auxiliar para geração de identificadores únicos de canal.
+    // Implementa lógica pura e determinística para criar IDs de canais one-on-one.
+    // Garante que o mesmo ID seja gerado independente da ordem dos peers.
     // equivalente a getChannelID em go
     fn get_channel_id(&self, p: &PeerId) -> String {
         let mut channel_id_peers = [self.self_id.to_string(), p.to_string()];
         channel_id_peers.sort();
         format!("/{}/{}", PROTOCOL, channel_id_peers.join("/"))
     }
-    //=================================================================================
 
     // equivalente a monitorTopic em go
     async fn monitor_topic(
         &self,
-        mut stream: impl futures::Stream<Item = std::result::Result<crate::kubo_core_api::PubsubMessage, GuardianError>> + Unpin + Send,
+        mut stream: PubsubStream,
         p: PeerId,
         token: CancellationToken, // Recebe o token (filho)
     ) {
@@ -300,7 +271,7 @@ impl Channels {
                                 continue;
                             }
 
-                            // Emite o payload do evento
+                            // Emite o payload do evento - mantém dados como Vec<u8>
                             let event = new_event_payload(msg.data, p);
                             if let Err(e) = self.emitter.emit(event).await {
                                 warn!(logger = ?self.logger, "não foi possível emitir payload do evento: {}", e);
@@ -323,11 +294,9 @@ impl Channels {
 }
 
 // equivalente a NewChannelFactory em go
-pub async fn new_channel_factory(
-    kubo_client: Arc<KuboCoreApiClient>,
-) -> Result<DirectChannelFactory> {
+pub async fn new_channel_factory(ipfs_client: Arc<IpfsClient>) -> Result<DirectChannelFactory> {
     // Substitui ipfs.Key().Self(ctx)
-    let self_id = kubo_client
+    let self_id = ipfs_client
         .id()
         .await
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
@@ -335,13 +304,14 @@ pub async fn new_channel_factory(
 
     info!("ID do nó local: {}", self_id);
 
-    let factory = move |emitter: Arc<dyn DirectChannelEmitter<Error = GuardianError>>, opts: Option<DirectChannelOptions>| {
-        let kubo_client = kubo_client.clone();
+    let factory = move |emitter: Arc<dyn DirectChannelEmitter<Error = GuardianError>>,
+                        opts: Option<DirectChannelOptions>| {
+        let ipfs_client = ipfs_client.clone();
         let self_id = self_id.clone();
-        
+
         Box::pin(async move {
             let opts = opts.unwrap_or_default();
-            
+
             // Criar um logger simples - usando logger básico em vez de slog complexo
             let logger = opts.logger.unwrap_or_else(|| {
                 use slog::o;
@@ -353,13 +323,23 @@ pub async fn new_channel_factory(
                 emitter,
                 subs: Arc::new(RwLock::new(HashMap::new())),
                 self_id,
-                kubo_client,
+                ipfs_client,
                 logger: Arc::new(logger),
                 token: CancellationToken::new(),
             });
 
             Ok(ch as Arc<dyn DirectChannel<Error = GuardianError>>)
-        }) as Pin<Box<dyn Future<Output = std::result::Result<Arc<dyn DirectChannel<Error = GuardianError>>, Box<dyn std::error::Error + Send + Sync>>> + Send>>
+        })
+            as Pin<
+                Box<
+                    dyn Future<
+                            Output = std::result::Result<
+                                Arc<dyn DirectChannel<Error = GuardianError>>,
+                                Box<dyn std::error::Error + Send + Sync>,
+                            >,
+                        > + Send,
+                >,
+            >
     };
 
     Ok(Box::new(factory))
