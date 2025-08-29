@@ -1,18 +1,15 @@
-use std::sync::Arc;
-use tokio::sync::mpsc;
-use crate::error::{GuardianError, Result};
-use cid::Cid;
 use crate::data_store::Datastore;
-use crate::iface::{self, Store, EventLogStore, StreamOptions};
+use crate::eqlabs_ipfs_log::{entry::Entry, identity::Identity};
+use crate::error::{GuardianError, Result};
+use crate::iface::{self, EventLogStore, Store, StreamOptions};
+use crate::ipfs_core_api::client::IpfsClient;
+use crate::pubsub::event::EventBus;
 use crate::stores::base_store::base_store::BaseStore;
 use crate::stores::operation::{operation, operation::Operation};
-use crate::eqlabs_ipfs_log::{entry::Entry, identity::Identity};
-use crate::kubo_core_api::IpfsClient;
-use crate::{
-    address::Address,
-    stores::event_log_store::index::new_event_index,
-};
-use crate::pubsub::event::EventBus;
+use crate::{address::Address, stores::event_log_store::index::new_event_index};
+use cid::Cid;
+use std::sync::Arc;
+use tokio::sync::mpsc;
 
 /// A implementação do trait `EventLogStore` para a nossa struct.
 #[async_trait::async_trait]
@@ -27,12 +24,19 @@ impl EventLogStore for OrbitDBEventLogStore {
 
     /// Obtém uma entrada específica do log pelo seu CID.
     async fn get(&self, cid: Cid) -> std::result::Result<Operation, Self::Error> {
-        self.get(cid).await.map_err(|e| GuardianError::Store(format!("Error getting operation: {}", e)))
+        self.get(cid)
+            .await
+            .map_err(|e| GuardianError::Store(format!("Error getting operation: {}", e)))
     }
 
     /// Retorna uma lista de operações que ocorreram na store, com opções de filtro.
-    async fn list(&self, options: Option<StreamOptions>) -> std::result::Result<Vec<Operation>, Self::Error> {
-        self.list(options).await.map_err(|e| GuardianError::Store(format!("Error listing operations: {}", e)))
+    async fn list(
+        &self,
+        options: Option<StreamOptions>,
+    ) -> std::result::Result<Vec<Operation>, Self::Error> {
+        self.list(options)
+            .await
+            .map_err(|e| GuardianError::Store(format!("Error listing operations: {}", e)))
     }
 }
 
@@ -93,11 +97,18 @@ impl Store for OrbitDBEventLogStore {
         self.basestore.load(Some(amount as isize)).await
     }
 
-    async fn sync(&mut self, heads: Vec<crate::eqlabs_ipfs_log::entry::Entry>) -> std::result::Result<(), Self::Error> {
+    async fn sync(
+        &mut self,
+        heads: Vec<crate::eqlabs_ipfs_log::entry::Entry>,
+    ) -> std::result::Result<(), Self::Error> {
         self.basestore.sync(heads).await
     }
 
-    async fn load_more_from(&mut self, _amount: u64, entries: Vec<crate::eqlabs_ipfs_log::entry::Entry>) {
+    async fn load_more_from(
+        &mut self,
+        _amount: u64,
+        entries: Vec<crate::eqlabs_ipfs_log::entry::Entry>,
+    ) {
         self.basestore.load_more_from(entries)
     }
 
@@ -112,7 +123,7 @@ impl Store for OrbitDBEventLogStore {
         todo!("OpLog access needs proper implementation")
     }
 
-    fn ipfs(&self) -> Arc<crate::kubo_core_api::client::KuboCoreApiClient> {
+    fn ipfs(&self) -> Arc<crate::ipfs_core_api::client::IpfsClient> {
         self.basestore.ipfs()
     }
 
@@ -132,7 +143,9 @@ impl Store for OrbitDBEventLogStore {
     async fn add_operation(
         &mut self,
         op: Operation,
-        on_progress_callback: Option<tokio::sync::mpsc::Sender<crate::eqlabs_ipfs_log::entry::Entry>>,
+        on_progress_callback: Option<
+            tokio::sync::mpsc::Sender<crate::eqlabs_ipfs_log::entry::Entry>,
+        >,
     ) -> std::result::Result<crate::eqlabs_ipfs_log::entry::Entry, Self::Error> {
         self.basestore.add_operation(op, on_progress_callback).await
     }
@@ -145,8 +158,6 @@ impl Store for OrbitDBEventLogStore {
     fn tracer(&self) -> Arc<crate::iface::TracerWrapper> {
         self.basestore.tracer()
     }
-
-    // Removido: fn io() - A funcionalidade está implementada em Entry::multihash
 
     fn event_bus(&self) -> EventBus {
         // TODO: Convert from Arc<EventBus> to EventBus - for now returning a new instance
@@ -164,18 +175,19 @@ impl OrbitDBEventLogStore {
         addr: Arc<dyn Address + Send + Sync>,
         mut options: iface::NewStoreOptions,
     ) -> Result<Self> {
-
         // Em Go, o ponteiro para a função de criação do índice é definido dentro do
         // construtor. Em Rust, fazemos o mesmo, modificando as opções.
         options.index = Some(Box::new(new_event_index));
 
         // A lógica de `InitBaseStore` seria encapsulada no construtor de `BaseStore`,
         // que agora recebe e armazena o cliente HTTP.
-        let basestore = BaseStore::new(ipfs_client, identity, addr, Some(options)).await
+        let basestore = BaseStore::new(ipfs_client, identity, addr, Some(options))
+            .await
             .map_err(|e| GuardianError::Store(format!("unable to initialize base store: {}", e)))?;
 
         Ok(OrbitDBEventLogStore {
-            basestore: Arc::try_unwrap(basestore).map_err(|_| GuardianError::Store("Failed to unwrap BaseStore Arc".to_string()))?
+            basestore: Arc::try_unwrap(basestore)
+                .map_err(|_| GuardianError::Store("Failed to unwrap BaseStore Arc".to_string()))?,
         })
     }
 
@@ -201,12 +213,15 @@ impl OrbitDBEventLogStore {
         let op = Operation::new(None, "ADD".to_string(), Some(value));
 
         // `add_operation` retorna um `Entry`.
-        let entry = self.add_operation(op, None).await
+        let entry = self
+            .add_operation(op, None)
+            .await
             .map_err(|e| GuardianError::Store(format!("error while adding operation: {}", e)))?;
 
         // `parse_operation` converte o `Entry` de volta para uma `Operation`.
-        let op_result = operation::parse_operation(entry)
-            .map_err(|e| GuardianError::Store(format!("unable to parse newly created entry: {}", e)))?;
+        let op_result = operation::parse_operation(entry).map_err(|e| {
+            GuardianError::Store(format!("unable to parse newly created entry: {}", e))
+        })?;
 
         Ok(op_result)
     }
@@ -215,7 +230,7 @@ impl OrbitDBEventLogStore {
     /// Recupera uma única operação do log pelo seu CID.
     pub async fn get(&self, cid: Cid) -> Result<Operation> {
         let (tx, mut rx) = mpsc::channel(1);
-        
+
         let stream_options = StreamOptions {
             gte: Some(cid),
             amount: Some(1),
@@ -229,7 +244,9 @@ impl OrbitDBEventLogStore {
         if let Some(value) = rx.recv().await {
             Ok(value)
         } else {
-            Err(GuardianError::Store("stream completed without yielding a value".to_string()))
+            Err(GuardianError::Store(
+                "stream completed without yielding a value".to_string(),
+            ))
         }
     }
 
@@ -241,7 +258,8 @@ impl OrbitDBEventLogStore {
         options: Option<StreamOptions>,
     ) -> Result<()> {
         // A função `query` retorna as entradas (entries) do log.
-        let messages = self.query(options)
+        let messages = self
+            .query(options)
             .map_err(|e| GuardianError::Store(format!("unable to fetch query results: {}", e)))?;
 
         for message in messages {
@@ -290,11 +308,11 @@ impl OrbitDBEventLogStore {
         // Inverte os eventos para buscar dos mais recentes para os mais antigos.
         let mut events = events;
         events.reverse();
-        
+
         // A busca é inclusiva se LTE for definido ou se nenhum limite (LT/LTE) for definido.
         let inclusive = options.lte.is_some() || cid.is_none();
         let mut result = self.read(&events, cid, amount, inclusive);
-        
+
         // Desfaz a inversão do resultado para manter a ordem cronológica original.
         result.reverse();
 
@@ -325,10 +343,6 @@ impl OrbitDBEventLogStore {
         }
 
         // Limita a quantidade de elementos e coleta o resultado.
-        ops.iter()
-            .skip(start_index)
-            .take(amount)
-            .cloned()
-            .collect()
+        ops.iter().skip(start_index).take(amount).cloned().collect()
     }
 }
