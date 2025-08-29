@@ -1,6 +1,6 @@
+use crate::stores::replicator::traits::ReplicationInfo as ReplicationInfoTrait;
 use std::future::Future;
 use tokio::sync::RwLock;
-use crate::stores::replicator::traits::ReplicationInfo as ReplicationInfoTrait;
 
 // Struct interna para conter os dados protegidos pelo Lock.
 #[derive(Default, Debug, Clone, Copy)]
