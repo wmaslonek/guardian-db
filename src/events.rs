@@ -1,13 +1,13 @@
 use crate::error::{GuardianError, Result};
+use async_trait::async_trait;
 use std::any::Any;
 use std::collections::VecDeque;
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc, Mutex, Notify};
+use tokio::sync::{Mutex, Notify, broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
-use async_trait::async_trait;
 
 // Usando nosso EventBus implementado
-use crate::pubsub::event::{EventBus, Emitter};
+use crate::pubsub::event::{Emitter, EventBus};
 
 /// Um alias de tipo para um evento dinâmico e seguro para threads.
 /// Equivalente ao `type Event interface{}` em Go.
@@ -60,7 +60,10 @@ impl EmitterInterface for EventEmitter {
         let mut guard = self.internal.lock().await;
         if guard.emitter.is_none() {
             let bus = guard.get_bus_mut();
-            let emitter = bus.emitter::<EventBox>().await.expect("não foi possível inicializar o emitter para EventBox");
+            let emitter = bus
+                .emitter::<EventBox>()
+                .await
+                .expect("não foi possível inicializar o emitter para EventBox");
             guard.emitter = Some(emitter);
         }
         if let Some(emitter) = guard.emitter.as_ref() {
@@ -72,11 +75,16 @@ impl EmitterInterface for EventEmitter {
     async fn subscribe(&self) -> (mpsc::Receiver<Event>, CancellationToken) {
         let mut guard = self.internal.lock().await;
         let bus = guard.get_bus_mut();
-        let mut sub = bus.subscribe::<EventBox>().await.expect("não foi possível se inscrever");
+        let mut sub = bus
+            .subscribe::<EventBox>()
+            .await
+            .expect("não foi possível se inscrever");
         let cancellation_token = CancellationToken::new();
         guard.cancellations.push(cancellation_token.clone());
         drop(guard);
-        let receiver = self.handle_subscriber(cancellation_token.clone(), sub).await;
+        let receiver = self
+            .handle_subscriber(cancellation_token.clone(), sub)
+            .await;
         (receiver, cancellation_token)
     }
 
@@ -89,9 +97,14 @@ impl EmitterInterface for EventEmitter {
 
     async fn global_channel(&self) -> broadcast::Receiver<Event> {
         let mut guard = self.internal.lock().await;
-        if let Some(sender) = &guard.cglobal { return sender.subscribe(); }
+        if let Some(sender) = &guard.cglobal {
+            return sender.subscribe();
+        }
         let bus = guard.get_bus_mut();
-        let mut sub = bus.subscribe::<EventBox>().await.expect("unable to subscribe");
+        let mut sub = bus
+            .subscribe::<EventBox>()
+            .await
+            .expect("unable to subscribe");
         let token = CancellationToken::new();
         guard.cancellations.push(token.clone());
         let (tx, rx) = broadcast::channel(16);
@@ -102,9 +115,9 @@ impl EmitterInterface for EventEmitter {
                     biased;
                     _ = token.cancelled() => break,
                     maybe_event = sub.recv() => {
-                        let event_box = match maybe_event { 
-                            Ok(e) => e, 
-                            Err(_) => break 
+                        let event_box = match maybe_event {
+                            Ok(e) => e,
+                            Err(_) => break
                         };
                         let _ = tx.send(event_box.evt);
                     }
@@ -135,7 +148,7 @@ impl EventEmitter {
             })),
         }
     }
-    
+
     // equivalente a 'Emit' em go
     /// Envia um evento para os listeners inscritos.
     pub async fn emit(&self, evt: Event) {
@@ -144,15 +157,17 @@ impl EventEmitter {
         // Inicializa o emitter de forma preguiçosa (lazy) se ele não existir.
         if guard.emitter.is_none() {
             let bus = guard.get_bus_mut();
-            let emitter = bus.emitter::<EventBox>().await
+            let emitter = bus
+                .emitter::<EventBox>()
+                .await
                 .expect("não foi possível inicializar o emitter para EventBox");
             guard.emitter = Some(emitter);
         }
-        
+
         // O lock ainda está ativo, então é seguro usar unwrap.
         if let Some(emitter) = guard.emitter.as_ref() {
             let event_box = EventBox { evt };
-    
+
             // A versão em Go ignora o resultado, então fazemos o mesmo aqui.
             let _ = emitter.emit(event_box);
         }
@@ -165,7 +180,8 @@ impl EventEmitter {
 
         let bus = guard.get_bus_mut();
 
-        let sub = bus.subscribe::<EventBox>()
+        let sub = bus
+            .subscribe::<EventBox>()
             .await
             .expect("não foi possível se inscrever");
 
@@ -177,8 +193,10 @@ impl EventEmitter {
         drop(guard);
 
         // O token retornado pode ser usado para cancelar apenas esta inscrição.
-        let receiver = self.handle_subscriber(cancellation_token.clone(), sub).await;
-        
+        let receiver = self
+            .handle_subscriber(cancellation_token.clone(), sub)
+            .await;
+
         (receiver, cancellation_token)
     }
 
@@ -191,7 +209,7 @@ impl EventEmitter {
         for token in &guard.cancellations {
             token.cancel();
         }
-        
+
         // A lógica original em Go não limpa o array de funções de cancelamento.
         // Mantemos o mesmo comportamento aqui, apenas sinalizando o cancelamento.
     }
@@ -292,11 +310,14 @@ impl EventEmitter {
 
         // Caso contrário, inicializa o mecanismo do canal global.
         let bus = guard.get_bus_mut();
-        let mut sub = bus.subscribe::<EventBox>().await.expect("unable to subscribe");
-        
+        let mut sub = bus
+            .subscribe::<EventBox>()
+            .await
+            .expect("unable to subscribe");
+
         let token = CancellationToken::new();
         guard.cancellations.push(token.clone());
-        
+
         let (tx, rx) = broadcast::channel(16);
         guard.cglobal = Some(tx.clone());
 
@@ -307,9 +328,9 @@ impl EventEmitter {
                     biased;
                     _ = token.cancelled() => break,
                     maybe_event = sub.recv() => {
-                        let event_box = match maybe_event { 
-                            Ok(e) => e, 
-                            Err(_) => break 
+                        let event_box = match maybe_event {
+                            Ok(e) => e,
+                            Err(_) => break
                         };
                         // Ignora o erro se não houver listeners.
                         let _ = tx.send(event_box.evt);
@@ -317,7 +338,7 @@ impl EventEmitter {
                 }
             }
         });
-        
+
         rx
     }
 
@@ -338,7 +359,9 @@ impl EventEmitter {
         let mut guard = self.internal.lock().await;
 
         if guard.bus.is_some() {
-            Err(GuardianError::Other("o bus já foi inicializado".to_string()))
+            Err(GuardianError::Other(
+                "o bus já foi inicializado".to_string(),
+            ))
         } else {
             guard.bus = Some(bus);
             Ok(())
@@ -385,14 +408,21 @@ mod tests {
         for i in 0..EXPECTED_CLIENTS {
             for j in 0..EXPECTED_EVENTS {
                 let receiver = receivers.get_mut(i).unwrap();
-                
+
                 let recv_future = timeout(Duration::from_secs(2), receiver.recv());
                 let item = recv_future
                     .await
-                    .unwrap_or_else(|_| panic!("timeout enquanto esperava pelo evento: cliente {}, evento {}", i, j))
+                    .unwrap_or_else(|_| {
+                        panic!(
+                            "timeout enquanto esperava pelo evento: cliente {}, evento {}",
+                            i, j
+                        )
+                    })
                     .expect("canal fechado inesperadamente");
 
-                let s = item.downcast_ref::<String>().expect("não foi possível converter para String");
+                let s = item
+                    .downcast_ref::<String>()
+                    .expect("não foi possível converter para String");
                 assert_eq!(*s, format!("{}", j));
             }
         }
@@ -403,7 +433,10 @@ mod tests {
 
         // Verifica se todos os canais foram fechados.
         for receiver in &mut receivers {
-            assert!(receiver.recv().await.is_none(), "o canal deveria estar fechado");
+            assert!(
+                receiver.recv().await.is_none(),
+                "o canal deveria estar fechado"
+            );
         }
     }
 
@@ -453,18 +486,23 @@ mod tests {
         // Verifica se recebeu os eventos de 5 a 9.
         for i in 5..10 {
             let item = sub.recv().await.expect("canal foi fechado prematuramente");
-            let item_str = item.downcast_ref::<String>().expect("não foi possível converter");
+            let item_str = item
+                .downcast_ref::<String>()
+                .expect("não foi possível converter");
             assert_eq!(*item_str, format!("{}", i));
         }
 
         // Cancela a inscrição individual.
         sub_cancel.cancel();
-        
+
         // Aguarda a propagação do cancelamento.
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Verifica que o canal foi fechado.
-        assert!(sub.recv().await.is_none(), "o canal deveria estar fechado após o cancelamento");
+        assert!(
+            sub.recv().await.is_none(),
+            "o canal deveria estar fechado após o cancelamento"
+        );
     }
 }
 
