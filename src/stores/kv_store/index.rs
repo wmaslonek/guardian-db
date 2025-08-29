@@ -1,11 +1,11 @@
+use crate::eqlabs_ipfs_log::{entry::Entry, log::Log};
 use crate::error::GuardianError;
+use crate::iface::StoreIndex;
+use crate::stores::operation::operation::Operation;
+use parking_lot::RwLock;
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use parking_lot::RwLock;
-use crate::iface::StoreIndex;
-use crate::eqlabs_ipfs_log::{entry::Entry, log::Log};
-use crate::stores::operation::operation::Operation;
 
 /// Em Go: kvIndex.
 /// Em Rust, `muIndex` e `index` são combinados em um único campo
@@ -37,7 +37,11 @@ impl StoreIndex for KvIndex {
     }
 
     /// equivalente a função UpdateIndex em go
-    fn update_index(&mut self, oplog: &Log, _entries: &[Entry]) -> std::result::Result<(), Self::Error> {
+    fn update_index(
+        &mut self,
+        oplog: &Log,
+        _entries: &[Entry],
+    ) -> std::result::Result<(), Self::Error> {
         // Um `HashSet` é mais idiomático em Rust para rastrear chaves já processadas.
         let mut handled = HashSet::new();
 
@@ -76,7 +80,10 @@ impl StoreIndex for KvIndex {
                         }
                     }
                     Err(e) => {
-                        return Err(GuardianError::Store(format!("Erro ao parsear operação: {}", e)));
+                        return Err(GuardianError::Store(format!(
+                            "Erro ao parsear operação: {}",
+                            e
+                        )));
                     }
                 }
             }
