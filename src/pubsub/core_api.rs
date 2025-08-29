@@ -1,23 +1,23 @@
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 use crate::error::GuardianError;
-use std::time::Duration;
-use tokio::sync::{mpsc, Mutex, RwLock};
-use tokio_stream::{StreamExt, wrappers::ReceiverStream};
-use opentelemetry::trace::noop::NoopTracer;
-use libp2p::PeerId;
-use slog::{o, Logger};
-use crate::kubo_core_api::client::KuboCoreApiClient;
-use crate::iface::{PubSubInterface, EventPubSubMessage, PubSubTopic, TracerWrapper};
 use crate::events;
+use crate::iface::{EventPubSubMessage, PubSubInterface, PubSubTopic, TracerWrapper};
+use crate::ipfs_core_api::client::IpfsClient;
 use crate::pubsub::event;
-use std::pin::Pin;
 use futures::Stream;
+use libp2p::PeerId;
+use opentelemetry::trace::noop::NoopTracer;
+use slog::{Logger, o};
+use std::collections::{HashMap, HashSet};
+use std::pin::Pin;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::{Mutex, RwLock, mpsc};
+use tokio_stream::{StreamExt, wrappers::ReceiverStream};
 
 // equivalente a coreAPIPubSub em go
 /// A struct `CoreApiPubSub` gerencia a lógica de pubsub para o nó do GuardianDB.
 pub struct CoreApiPubSub {
-    pub api: KuboCoreApiClient,
+    pub api: IpfsClient,
     pub logger: Logger,
     pub id: PeerId,
     pub poll_interval: Duration,
@@ -29,7 +29,10 @@ pub struct CoreApiPubSub {
 impl PubSubInterface for Arc<CoreApiPubSub> {
     type Error = GuardianError;
 
-    async fn topic_subscribe(&mut self, topic: &str) -> Result<Arc<dyn crate::iface::PubSubTopic<Error = GuardianError>>, Self::Error> {
+    async fn topic_subscribe(
+        &mut self,
+        topic: &str,
+    ) -> Result<Arc<dyn crate::iface::PubSubTopic<Error = GuardianError>>, Self::Error> {
         let ps_topic = self.topic_subscribe_internal(topic).await?;
         Ok(ps_topic as Arc<dyn crate::iface::PubSubTopic<Error = GuardianError>>)
     }
@@ -55,7 +58,7 @@ impl PsTopic {
     pub async fn peers(&self) -> crate::error::Result<Vec<PeerId>> {
         // O bloqueio de leitura é assíncrono com tokio::sync::RwLock
         let members_guard = self.members.read().await;
-        
+
         // .clone() cria uma nova cópia do Vec, liberando o bloqueio
         // quando `members_guard` sai de escopo.
         Ok(members_guard.clone())
@@ -70,9 +73,15 @@ impl PsTopic {
         let current_peers_set: HashSet<PeerId> = all_current_peers_vec.iter().cloned().collect();
 
         // Usa operações de conjunto para encontrar diferenças de forma eficiente e idiomática.
-        let joining: Vec<PeerId> = current_peers_set.difference(&old_members_set).cloned().collect();
-        let leaving: Vec<PeerId> = old_members_set.difference(&current_peers_set).cloned().collect();
-        
+        let joining: Vec<PeerId> = current_peers_set
+            .difference(&old_members_set)
+            .cloned()
+            .collect();
+        let leaving: Vec<PeerId> = old_members_set
+            .difference(&current_peers_set)
+            .cloned()
+            .collect();
+
         // Atualiza a lista de membros internos com um bloqueio de escrita
         let mut members_guard = self.members.write().await;
         *members_guard = all_current_peers_vec;
@@ -87,9 +96,11 @@ impl PsTopic {
     // NOTA: Para que `tokio::spawn` funcione, a chamada a esta função
     // provavelmente virá de uma `Arc<PsTopic>` para permitir o clone e
     // a movimentação da referência para dentro da nova task.
-    pub async fn watch_peers_channel(self: &Arc<Self>) -> crate::error::Result<mpsc::Receiver<Arc<dyn std::any::Any + Send + Sync>>> {
+    pub async fn watch_peers_channel(
+        self: &Arc<Self>,
+    ) -> crate::error::Result<mpsc::Receiver<Arc<dyn std::any::Any + Send + Sync>>> {
         let (tx, rx) = mpsc::channel(32);
-        
+
         // Clona o Arc para que a nova task possa ter sua própria referência.
         let topic_clone = self.clone();
 
@@ -143,8 +154,7 @@ impl PsTopic {
     pub async fn watch_messages(&self) -> crate::error::Result<mpsc::Receiver<EventPubSubMessage>> {
         // A chamada para a API do Kubo para se inscrever no tópico.
         // Espera-se que retorne um Stream de mensagens.
-        let mut subscription = self.ps.api.pubsub_subscribe(&self.topic)
-            .await?;
+        let mut subscription = self.ps.api.pubsub_subscribe(&self.topic).await?;
 
         let (tx, rx) = mpsc::channel(128);
         let self_peer_id = self.ps.id.clone(); // Clona o ID para usar na task
@@ -165,7 +175,7 @@ impl PsTopic {
                             // O receptor foi fechado, encerra a task.
                             break;
                         }
-                    },
+                    }
                     Err(_e) => {
                         // Erro no stream, encerra a task
                         break;
@@ -197,10 +207,12 @@ impl PubSubTopic for PsTopic {
         self.peers().await
     }
 
-    async fn watch_peers(&self) -> crate::error::Result<Pin<Box<dyn Stream<Item = events::Event> + Send>>> {
+    async fn watch_peers(
+        &self,
+    ) -> crate::error::Result<Pin<Box<dyn Stream<Item = events::Event> + Send>>> {
         // Criamos um novo receiver para a trait
         let (tx, rx) = mpsc::channel(32);
-        
+
         // Cria uma cópia dos dados necessários para evitar problemas de lifetime
         let topic_name = self.topic.clone();
         let ps_clone = self.ps.clone();
@@ -214,7 +226,7 @@ impl PubSubTopic for PsTopic {
                 ps: ps_clone,
                 members: RwLock::new(members_data),
             };
-            
+
             loop {
                 // Chama a função que calcula a diferença de peers
                 let peers_diff_result = local_topic.peers_diff().await;
@@ -258,8 +270,10 @@ impl PubSubTopic for PsTopic {
         let stream = ReceiverStream::new(rx);
         Ok(Box::pin(stream))
     }
-    
-    async fn watch_messages(&self) -> crate::error::Result<Pin<Box<dyn Stream<Item = EventPubSubMessage> + Send>>> {
+
+    async fn watch_messages(
+        &self,
+    ) -> crate::error::Result<Pin<Box<dyn Stream<Item = EventPubSubMessage> + Send>>> {
         let receiver = self.watch_messages().await?;
         let stream = ReceiverStream::new(receiver);
         Ok(Box::pin(stream))
@@ -274,7 +288,10 @@ impl CoreApiPubSub {
     // equivalente a TopicSubscribe em go
     /// Assina um tópico de pubsub, retornando uma instância de `PubSubTopic`.
     /// Se o tópico já existe, retorna a instância existente.
-    pub async fn topic_subscribe_internal(self: &Arc<Self>, topic: &str) -> crate::error::Result<Arc<PsTopic>> {
+    pub async fn topic_subscribe_internal(
+        self: &Arc<Self>,
+        topic: &str,
+    ) -> crate::error::Result<Arc<PsTopic>> {
         let mut topics_guard = self.topics.lock().await;
 
         // Se o tópico já estiver na nossa cache, retorna a instância existente.
@@ -288,7 +305,7 @@ impl CoreApiPubSub {
             ps: self.clone(), // Clona a referência Arc para o CoreApiPubSub
             members: Default::default(),
         });
-        
+
         // Insere o novo tópico no nosso cache.
         topics_guard.insert(topic.to_string(), new_topic.clone());
 
@@ -299,17 +316,17 @@ impl CoreApiPubSub {
     /// Cria uma nova instância de `CoreApiPubSub`.
     /// Os parâmetros `logger` e `tracer` podem ser opcionais.
     pub fn new(
-        api: KuboCoreApiClient,
+        api: IpfsClient,
         id: PeerId,
         poll_interval: Duration,
         logger: Option<Logger>,
         tracer: Option<Arc<TracerWrapper>>,
     ) -> Arc<Self> {
         let default_logger = slog::Logger::root(slog::Discard, o!());
-        
+
         // Criar tracer padrão caso não seja fornecido
         let default_tracer = Arc::new(TracerWrapper::Noop(NoopTracer::new()));
-        
+
         Arc::new(Self {
             topics: Mutex::new(HashMap::new()),
             api,
