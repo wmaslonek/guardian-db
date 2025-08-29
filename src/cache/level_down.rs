@@ -1,14 +1,15 @@
+use crate::address::Address;
+use crate::cache::{cache::Cache, cache::Options};
+use crate::data_store::{Datastore, Key, Order, Query, ResultItem, Results};
+use crate::error::{GuardianError, Result};
+use sled::{Config, Db, IVec};
+use slog::{Discard, Logger, debug, o};
 use std::{
     collections::HashMap,
+    fmt,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, Weak},
 };
-use slog::{debug, o, Discard, Logger};
-use sled::{Config, Db, IVec};
-use crate::error::{GuardianError, Result};
-use crate::cache::{cache::Cache, cache::Options};
-use crate::data_store::{Key, Query, ResultItem, Results, Order, Datastore};
-use crate::address::Address;
 
 pub const IN_MEMORY_DIRECTORY: &str = ":memory:";
 
@@ -21,40 +22,82 @@ pub struct WrappedCache {
 }
 
 impl WrappedCache {
-    pub fn get(&self, _ctx: &mut dyn core::any::Any, key: &Key) -> std::result::Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-        match self.db.get(key.as_bytes()).map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)? {
+    pub fn get(
+        &self,
+        _ctx: &mut dyn core::any::Any,
+        key: &Key,
+    ) -> std::result::Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+        match self
+            .db
+            .get(key.as_bytes())
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
+        {
             Some(v) => Ok(v.to_vec()),
             None => Err(format!("key not found: {}", key).into()),
         }
     }
 
-    pub fn has(&self, _ctx: &mut dyn core::any::Any, key: &Key) -> std::result::Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-        Ok(self.db.contains_key(key.as_bytes()).map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?)
+    pub fn has(
+        &self,
+        _ctx: &mut dyn core::any::Any,
+        key: &Key,
+    ) -> std::result::Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(self
+            .db
+            .contains_key(key.as_bytes())
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?)
     }
 
-    pub fn get_size(&self, _ctx: &mut dyn core::any::Any, key: &Key) -> std::result::Result<usize, Box<dyn std::error::Error + Send + Sync>> {
-        let v = self.db.get(key.as_bytes()).map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?.ok_or_else(|| format!("key not found: {}", key))?;
+    pub fn get_size(
+        &self,
+        _ctx: &mut dyn core::any::Any,
+        key: &Key,
+    ) -> std::result::Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+        let v = self
+            .db
+            .get(key.as_bytes())
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
+            .ok_or_else(|| format!("key not found: {}", key))?;
         Ok(v.len())
     }
 
-    pub fn query(&self, _ctx: &mut dyn core::any::Any, q: &Query) -> std::result::Result<Results, Box<dyn std::error::Error + Send + Sync>> {
-        let iter: Box<dyn Iterator<Item = sled::Result<(IVec, IVec)>>> = if let Some(pref) = &q.prefix {
-            Box::new(self.db.scan_prefix(pref.clone()))
-        } else {
-            Box::new(self.db.iter())
-        };
+    pub fn query(
+        &self,
+        _ctx: &mut dyn core::any::Any,
+        q: &Query,
+    ) -> std::result::Result<Results, Box<dyn std::error::Error + Send + Sync>> {
+        let iter: Box<dyn Iterator<Item = sled::Result<(IVec, IVec)>>> =
+            if let Some(prefix_key) = &q.prefix {
+                // Converte Key para bytes para usar como prefixo
+                let prefix_bytes = prefix_key.as_bytes();
+                Box::new(self.db.scan_prefix(prefix_bytes))
+            } else {
+                Box::new(self.db.iter())
+            };
 
         // coleta (ordenado asc pelo sled por padrão)
         let mut items: Results = Vec::new();
+        let mut count = 0;
+
+        // Aplica offset se especificado
+        let skip_count = q.offset.unwrap_or(0);
+        let mut skipped = 0;
+
         for kv in iter {
             let (k, v) = kv.map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+
+            // Aplica offset
+            if skipped < skip_count {
+                skipped += 1;
+                continue;
+            }
+
             let key_str = String::from_utf8(k.to_vec()).unwrap_or_default();
-            items.push(ResultItem {
-                key: Key::new(key_str),
-                value: v.to_vec(),
-            });
+            items.push(ResultItem::new(Key::new(key_str), v.to_vec()));
+            count += 1;
+
             if let Some(n) = q.limit {
-                if items.len() >= n {
+                if count >= n {
                     break;
                 }
             }
@@ -67,18 +110,37 @@ impl WrappedCache {
         Ok(items)
     }
 
-    pub fn put(&self, _ctx: &mut dyn core::any::Any, key: &Key, value: &[u8]) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.db.insert(key.as_bytes(), value).map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+    pub fn put(
+        &self,
+        _ctx: &mut dyn core::any::Any,
+        key: &Key,
+        value: &[u8],
+    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.db
+            .insert(key.as_bytes(), value)
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
         Ok(())
     }
 
-    pub fn delete(&self, _ctx: &mut dyn core::any::Any, key: &Key) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.db.remove(key.as_bytes()).map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+    pub fn delete(
+        &self,
+        _ctx: &mut dyn core::any::Any,
+        key: &Key,
+    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.db
+            .remove(key.as_bytes())
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
         Ok(())
     }
 
-    pub fn sync(&self, _ctx: &mut dyn core::any::Any, _key: &Key) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.db.flush().map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+    pub fn sync(
+        &self,
+        _ctx: &mut dyn core::any::Any,
+        _key: &Key,
+    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.db
+            .flush()
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
         Ok(())
     }
 
@@ -93,7 +155,9 @@ impl WrappedCache {
             m.remove(&self.id);
         }
 
-        self.db.flush().map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+        self.db
+            .flush()
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
         *closed = true;
         Ok(())
     }
@@ -115,14 +179,16 @@ impl Datastore for DatastoreWrapper {
     async fn has(&self, key: &[u8]) -> Result<bool> {
         let key_obj = Key::new(String::from_utf8_lossy(key));
         let mut any_ctx = ();
-        self.cache.has(&mut any_ctx, &key_obj)
+        self.cache
+            .has(&mut any_ctx, &key_obj)
             .map_err(|e| GuardianError::Other(format!("Cache has error: {}", e)))
     }
 
     async fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
         let key_obj = Key::new(String::from_utf8_lossy(key));
         let mut any_ctx = ();
-        self.cache.put(&mut any_ctx, &key_obj, value)
+        self.cache
+            .put(&mut any_ctx, &key_obj, value)
             .map_err(|e| GuardianError::Other(format!("Cache put error: {}", e)))
     }
 
@@ -138,8 +204,38 @@ impl Datastore for DatastoreWrapper {
     async fn delete(&self, key: &[u8]) -> Result<()> {
         let key_obj = Key::new(String::from_utf8_lossy(key));
         let mut any_ctx = ();
-        self.cache.delete(&mut any_ctx, &key_obj)
+        self.cache
+            .delete(&mut any_ctx, &key_obj)
             .map_err(|e| GuardianError::Other(format!("Cache delete error: {}", e)))
+    }
+
+    async fn query(&self, query: &Query) -> Result<Results> {
+        let mut any_ctx = ();
+        self.cache
+            .query(&mut any_ctx, query)
+            .map_err(|e| GuardianError::Other(format!("Cache query error: {}", e)))
+    }
+
+    async fn list_keys(&self, prefix: &[u8]) -> Result<Vec<Key>> {
+        // Converte o prefixo em bytes para uma Query com prefixo
+        let prefix_str = String::from_utf8_lossy(prefix);
+        let prefix_key = Key::new(prefix_str.to_string());
+
+        let query = Query {
+            prefix: Some(prefix_key),
+            limit: None,
+            order: Order::Asc,
+            offset: None,
+        };
+
+        let mut any_ctx = ();
+        let results = self
+            .cache
+            .query(&mut any_ctx, &query)
+            .map_err(|e| GuardianError::Other(format!("Cache list_keys error: {}", e)))?;
+
+        // Extrai apenas as chaves dos resultados
+        Ok(results.into_iter().map(|item| item.key).collect())
     }
 }
 
@@ -161,7 +257,11 @@ impl LevelDownCache {
     }
 
     // Equivalente a Load(directory, address)
-    pub fn load_internal(&self, directory: &str, db_address: &dyn Address) -> std::result::Result<Arc<WrappedCache>, Box<dyn std::error::Error + Send + Sync>> {
+    pub fn load_internal(
+        &self,
+        directory: &str,
+        db_address: &dyn Address,
+    ) -> std::result::Result<Arc<WrappedCache>, Box<dyn std::error::Error + Send + Sync>> {
         let key_path = datastore_key(directory, db_address);
 
         // cache hit
@@ -172,12 +272,18 @@ impl LevelDownCache {
         debug!(self.logger, "opening cache db"; "path" => key_path.as_str());
 
         let db = if directory == IN_MEMORY_DIRECTORY {
-            Config::new().temporary(true).open().map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
+            Config::new()
+                .temporary(true)
+                .open()
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
         } else {
             if let Some(parent) = Path::new(&key_path).parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            Config::new().path(&key_path).open().map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
+            Config::new()
+                .path(&key_path)
+                .open()
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
         };
 
         let wrapped = Arc::new(WrappedCache {
@@ -188,12 +294,17 @@ impl LevelDownCache {
             closed: Mutex::new(false),
         });
 
-        self.caches.lock().unwrap().insert(key_path, wrapped.clone());
+        self.caches
+            .lock()
+            .unwrap()
+            .insert(key_path, wrapped.clone());
         Ok(wrapped)
     }
 
     // Equivalente a Close()
-    pub fn close_internal(&self) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub fn close_internal(
+        &self,
+    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let caches = {
             let m = self.caches.lock().unwrap();
             m.values().cloned().collect::<Vec<_>>()
@@ -205,7 +316,11 @@ impl LevelDownCache {
     }
 
     // Equivalente a Destroy(directory, address)
-    pub fn destroy_internal(&self, directory: &str, db_address: &dyn Address) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub fn destroy_internal(
+        &self,
+        directory: &str,
+        db_address: &dyn Address,
+    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let key_path = datastore_key(directory, db_address);
 
         // fecha e remove do mapa
@@ -223,10 +338,17 @@ impl LevelDownCache {
 
 // Implementação do trait Cache para LevelDownCache
 impl Cache for LevelDownCache {
-    fn load(&self, directory: &str, db_address: &Box<dyn Address>) -> Result<Box<dyn Datastore + Send + Sync>> {
-        let wrapped_cache = self.load_internal(directory, db_address.as_ref())
+    fn load(
+        &self,
+        directory: &str,
+        db_address: &Box<dyn Address>,
+    ) -> Result<Box<dyn Datastore + Send + Sync>> {
+        let wrapped_cache = self
+            .load_internal(directory, db_address.as_ref())
             .map_err(|e| GuardianError::Other(format!("Failed to load cache: {}", e)))?;
-        Ok(Box::new(DatastoreWrapper { cache: wrapped_cache }))
+        Ok(Box::new(DatastoreWrapper {
+            cache: wrapped_cache,
+        }))
     }
 
     fn close(&mut self) -> Result<()> {
@@ -254,4 +376,132 @@ fn datastore_key(directory: &str, db_address: &dyn Address) -> String {
         .join(db_path)
         .to_string_lossy()
         .into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::address::Address;
+    use std::fmt;
+
+    // Mock Address implementation for testing
+    #[derive(Debug)]
+    struct MockAddress {
+        root: cid::Cid,
+        path: String,
+    }
+
+    impl MockAddress {
+        fn new(root_str: &str, path: &str) -> Self {
+            // Create a simple CID for testing
+            let cid = cid::Cid::default();
+            Self {
+                root: cid,
+                path: path.to_string(),
+            }
+        }
+    }
+
+    impl Address for MockAddress {
+        fn get_root(&self) -> cid::Cid {
+            self.root
+        }
+
+        fn get_path(&self) -> &str {
+            &self.path
+        }
+
+        fn equals(&self, other: &dyn Address) -> bool {
+            self.root == other.get_root() && self.path == other.get_path()
+        }
+    }
+
+    impl fmt::Display for MockAddress {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "{}/{}", self.root, self.path)
+        }
+    }
+
+    #[tokio::test]
+    async fn test_datastore_wrapper_basic_operations() {
+        let cache = LevelDownCache::new(None);
+        let mock_address = Box::new(MockAddress::new("test_root", "test_path")) as Box<dyn Address>;
+
+        let datastore = cache.load(IN_MEMORY_DIRECTORY, &mock_address).unwrap();
+
+        // Test put and get
+        let key = b"test_key";
+        let value = b"test_value";
+
+        datastore.put(key, value).await.unwrap();
+        let retrieved = datastore.get(key).await.unwrap();
+        assert_eq!(retrieved, Some(value.to_vec()));
+
+        // Test has
+        assert!(datastore.has(key).await.unwrap());
+        assert!(!datastore.has(b"non_existent").await.unwrap());
+
+        // Test delete
+        datastore.delete(key).await.unwrap();
+        assert!(!datastore.has(key).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_datastore_wrapper_query() {
+        let cache = LevelDownCache::new(None);
+        let mock_address = Box::new(MockAddress::new("test_root", "test_path")) as Box<dyn Address>;
+
+        let datastore = cache.load(IN_MEMORY_DIRECTORY, &mock_address).unwrap();
+
+        // Insert test data
+        datastore.put(b"/users/alice", b"alice_data").await.unwrap();
+        datastore.put(b"/users/bob", b"bob_data").await.unwrap();
+        datastore
+            .put(b"/config/database", b"db_config")
+            .await
+            .unwrap();
+
+        // Test query with prefix
+        let query = Query {
+            prefix: Some(Key::new("/users")),
+            limit: Some(10),
+            order: Order::Asc,
+            offset: None,
+        };
+
+        let results = datastore.query(&query).await.unwrap();
+        assert_eq!(results.len(), 2);
+
+        // Test list_keys
+        let keys = datastore.list_keys(b"/users").await.unwrap();
+        assert_eq!(keys.len(), 2);
+    }
+
+    #[test]
+    fn test_datastore_key_generation() {
+        let mock_address = MockAddress::new("root", "path/to/db");
+        let key = datastore_key("/cache", &mock_address);
+
+        // The exact format depends on the platform path separator
+        assert!(key.contains("cache"));
+        assert!(key.contains("root"));
+        assert!(key.contains("path"));
+    }
+
+    #[tokio::test]
+    async fn test_cache_lifecycle() {
+        let mut cache = LevelDownCache::new(None);
+        let mock_address =
+            Box::new(MockAddress::new("test_root", "lifecycle_test")) as Box<dyn Address>;
+
+        // Load cache
+        let datastore = cache.load(IN_MEMORY_DIRECTORY, &mock_address).unwrap();
+        datastore.put(b"test", b"data").await.unwrap();
+
+        // Destroy cache
+        cache.destroy(IN_MEMORY_DIRECTORY, &mock_address).unwrap();
+
+        // Close cache
+        cache.close().unwrap();
+    }
 }
