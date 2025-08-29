@@ -1,6 +1,6 @@
+use crate::eqlabs_ipfs_log::iface::IPFSLogEntry;
 use cid::Cid;
-use std::collections::VecDeque;
-use crate::eqlabs_ipfs_log::iface::IPFSLogEntry; //equivalente ao go-ipfs-log/iface
+use std::collections::VecDeque; //equivalente ao go-ipfs-log/iface
 // equivalente a processItem interface em go
 /// Um trait para itens que podem ser colocados na fila de processamento.
 /// Cada item deve ser capaz de fornecer um `Cid`.
