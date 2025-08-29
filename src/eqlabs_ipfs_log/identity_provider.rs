@@ -1,8 +1,8 @@
-use std::sync::Arc;
-use async_trait::async_trait;
-use libp2p_identity::{PublicKey, Keypair};
 use crate::eqlabs_ipfs_log::identity::Identity;
 use crate::error::Result;
+use async_trait::async_trait;
+use libp2p_identity::{Keypair, PublicKey};
+use std::sync::Arc;
 
 /// Opções para criar uma identidade.
 pub struct CreateIdentityOptions {
@@ -80,8 +80,9 @@ impl IdentityProvider for GuardianDBIdentityProvider {
 
     async fn sign_identity(&self, data: &[u8], _id: &str) -> Result<Vec<u8>> {
         // Assina os dados com a chave privada
-        let signature = self.keypair.sign(data)
-            .map_err(|e| crate::error::GuardianError::Store(format!("Failed to sign identity data: {}", e)))?;
+        let signature = self.keypair.sign(data).map_err(|e| {
+            crate::error::GuardianError::Store(format!("Failed to sign identity data: {}", e))
+        })?;
         Ok(signature)
     }
 
@@ -91,37 +92,43 @@ impl IdentityProvider for GuardianDBIdentityProvider {
 
     async fn verify_identity(&self, identity: &Identity) -> Result<()> {
         // Verifica se a identidade tem uma assinatura válida
-        let public_key = identity.public_key()
-            .ok_or_else(|| crate::error::GuardianError::Store("Identity missing public key".to_string()))?;
+        let public_key = identity.public_key().ok_or_else(|| {
+            crate::error::GuardianError::Store("Identity missing public key".to_string())
+        })?;
 
         // Usa o HashMap de assinaturas ao invés de acessar a struct Signatures diretamente
         let signatures_map = identity.signatures_map();
-        let signature = signatures_map.get("publicKey")
-            .ok_or_else(|| crate::error::GuardianError::Store("Identity missing publicKey signature".to_string()))?;
+        let signature = signatures_map.get("publicKey").ok_or_else(|| {
+            crate::error::GuardianError::Store("Identity missing publicKey signature".to_string())
+        })?;
 
         // Reconstrói os dados que foram assinados
         let signed_data = format!("{}{}", identity.id(), identity.r#type());
-        
+
         // Verifica a assinatura
         let is_valid = public_key.verify(signed_data.as_bytes(), signature);
-        
+
         if is_valid {
             Ok(())
         } else {
-            Err(crate::error::GuardianError::Store("Invalid identity signature".to_string()))
+            Err(crate::error::GuardianError::Store(
+                "Invalid identity signature".to_string(),
+            ))
         }
     }
 
     async fn sign(&self, _identity: &Identity, bytes: &[u8]) -> Result<Vec<u8>> {
         // Assina dados genéricos com a chave privada
-        let signature = self.keypair.sign(bytes)
-            .map_err(|e| crate::error::GuardianError::Store(format!("Failed to sign data: {}", e)))?;
+        let signature = self.keypair.sign(bytes).map_err(|e| {
+            crate::error::GuardianError::Store(format!("Failed to sign data: {}", e))
+        })?;
         Ok(signature)
     }
 
     fn unmarshal_public_key(&self, data: &[u8]) -> Result<PublicKey> {
-        PublicKey::try_decode_protobuf(data)
-            .map_err(|e| crate::error::GuardianError::Store(format!("Failed to unmarshal public key: {}", e)))
+        PublicKey::try_decode_protobuf(data).map_err(|e| {
+            crate::error::GuardianError::Store(format!("Failed to unmarshal public key: {}", e))
+        })
     }
 }
 
