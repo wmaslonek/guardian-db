@@ -1,11 +1,11 @@
-use libp2p::PeerId;
-use crate::iface::{EventPubSubMessage, EventPubSubPayload, EventPubSub, DirectChannelEmitter};
 use crate::error::{GuardianError, Result};
+use crate::iface::{DirectChannelEmitter, EventPubSub, EventPubSubMessage, EventPubSubPayload};
+use async_trait::async_trait;
+use libp2p::PeerId;
+use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{broadcast, RwLock};
-use std::any::{Any, TypeId};
-use async_trait::async_trait;
+use tokio::sync::{RwLock, broadcast};
 
 // ============================================================================
 // EVENT BUS IMPLEMENTATION usando Tokio Channels
@@ -32,17 +32,18 @@ impl EventBus {
     {
         let type_id = TypeId::of::<T>();
         let mut channels = self.channels.write().await;
-        
+
         if !channels.contains_key(&type_id) {
             let (sender, _) = broadcast::channel::<T>(1024); // Buffer de 1024 eventos
             channels.insert(type_id, Box::new(sender));
         }
-        
-        let sender = channels.get(&type_id)
+
+        let sender = channels
+            .get(&type_id)
             .and_then(|any| any.downcast_ref::<broadcast::Sender<T>>())
             .ok_or_else(|| GuardianError::Other("Failed to get sender for type".to_string()))?
             .clone();
-            
+
         Ok(Emitter { sender })
     }
 
@@ -53,16 +54,17 @@ impl EventBus {
     {
         let type_id = TypeId::of::<T>();
         let mut channels = self.channels.write().await;
-        
+
         if !channels.contains_key(&type_id) {
             let (sender, _) = broadcast::channel::<T>(1024);
             channels.insert(type_id, Box::new(sender));
         }
-        
-        let sender = channels.get(&type_id)
+
+        let sender = channels
+            .get(&type_id)
             .and_then(|any| any.downcast_ref::<broadcast::Sender<T>>())
             .ok_or_else(|| GuardianError::Other("Failed to get sender for type".to_string()))?;
-            
+
         Ok(sender.subscribe())
     }
 }
@@ -72,8 +74,8 @@ pub struct Emitter<T> {
     sender: broadcast::Sender<T>,
 }
 
-impl<T> Emitter<T> 
-where 
+impl<T> Emitter<T>
+where
     T: Clone + Send + Sync + 'static,
 {
     /// Emite um evento para todos os subscribers
@@ -137,34 +139,23 @@ impl DirectChannelEmitter for PayloadEmitter {
 /// Cria um novo evento de Mensagem. Em Go, retornava um ponteiro; em Rust,
 /// geralmente retornamos a própria struct por valor.
 pub fn new_event_message(content: Vec<u8>) -> EventPubSubMessage {
-    EventPubSubMessage {
-        content,
-    }
+    EventPubSubMessage { content }
 }
 
 /// equivalente a 'NewEventPayload' em Go
 /// Cria um novo evento de Payload.
 pub fn new_event_payload(payload: Vec<u8>, peer: PeerId) -> EventPubSubPayload {
-    EventPubSubPayload {
-        payload,
-        peer,
-    }
+    EventPubSubPayload { payload, peer }
 }
 
 /// equivalente a 'NewEventPeerJoin' em Go
 /// Cria um novo evento EventPubSubJoin.
 pub fn new_event_peer_join(peer: PeerId, topic: String) -> EventPubSub {
-    EventPubSub::Join {
-        peer,
-        topic,
-    }
+    EventPubSub::Join { peer, topic }
 }
 
 /// equivalente a 'NewEventPeerLeave' em Go
 /// Cria um novo evento EventPubSubLeave.
 pub fn new_event_peer_leave(peer: PeerId, topic: String) -> EventPubSub {
-    EventPubSub::Leave {
-        peer,
-        topic,
-    }
+    EventPubSub::Leave { peer, topic }
 }
