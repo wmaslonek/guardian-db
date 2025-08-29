@@ -1,19 +1,23 @@
-use std::collections::{HashMap, BTreeMap};
-use cid::Cid;
-use ipfs_api_backend_hyper::IpfsClient;
-use libipld::{Cid as IpldCid, Ipld as IpldType};
-use libipld::cbor::DagCborCodec;
-use libipld::multihash::{Code, Multihash, MultihashDigest};
-use libipld::codec::Codec;
-use crate::error::Result;
-use crate::eqlabs_ipfs_log::identity_provider::IdentityProvider;
 use crate::eqlabs_ipfs_log::access_controller::LogEntry;
 use crate::eqlabs_ipfs_log::identity::Identity;
+use crate::eqlabs_ipfs_log::identity_provider::IdentityProvider;
+use crate::error::Result;
+use cid::Cid;
+use ipfs_api_backend_hyper::IpfsClient;
+use libipld::cbor::DagCborCodec;
+use libipld::codec::Codec;
+use libipld::multihash::{Code, Multihash, MultihashDigest};
+use libipld::{Cid as IpldCid, Ipld as IpldType};
+use std::collections::{BTreeMap, HashMap};
 
 /// Trait que representa uma entrada no log IPFS.
 pub trait IPFSLogEntry: LogEntry {
-    fn new() -> Self where Self: Sized;
-    fn copy(&self) -> Self where Self: Sized;
+    fn new() -> Self
+    where
+        Self: Sized;
+    fn copy(&self) -> Self
+    where
+        Self: Sized;
 
     fn get_log_id(&self) -> String;
     fn get_next(&self) -> Vec<Cid>;
@@ -38,7 +42,11 @@ pub trait IPFSLogEntry: LogEntry {
     fn set_additional_data_value(&mut self, key: String, value: String);
 
     fn is_valid(&self) -> bool;
-    fn verify(&self, identity: &dyn IdentityProvider, io: &dyn IO) -> std::result::Result<(), String>;
+    fn verify(
+        &self,
+        identity: &dyn IdentityProvider,
+        io: &dyn IO,
+    ) -> std::result::Result<(), String>;
     fn equals(&self, b: &dyn IPFSLogEntry) -> bool;
     fn is_parent(&self, b: &dyn IPFSLogEntry) -> bool;
     fn defined(&self) -> bool;
@@ -46,7 +54,9 @@ pub trait IPFSLogEntry: LogEntry {
 
 /// Trait que representa um relógio de Lamport para o IPFS Log.
 pub trait IPFSLogLamportClock {
-    fn new() -> Self where Self: Sized;
+    fn new() -> Self
+    where
+        Self: Sized;
     fn defined(&self) -> bool;
 
     fn get_id(&self) -> Vec<u8>;
@@ -55,8 +65,12 @@ pub trait IPFSLogLamportClock {
     fn set_id(&mut self, id: Vec<u8>);
     fn set_time(&mut self, time: i32);
 
-    fn tick(&mut self) -> Self where Self: Sized;
-    fn merge(&mut self, clock: &dyn IPFSLogLamportClock) -> Self where Self: Sized;
+    fn tick(&mut self) -> Self
+    where
+        Self: Sized;
+    fn merge(&mut self, clock: &dyn IPFSLogLamportClock) -> Self
+    where
+        Self: Sized;
     fn compare(&self, b: &dyn IPFSLogLamportClock) -> i32;
 }
 
@@ -66,25 +80,25 @@ pub trait IO {
         &self,
         ipfs: &IpfsClient,
         obj: &dyn std::any::Any,
-        opts: Option<&WriteOpts>
+        opts: Option<&WriteOpts>,
     ) -> std::result::Result<Cid, String>;
 
     fn read(
         &self,
         ipfs: &IpfsClient,
-        cid: Cid
+        cid: Cid,
     ) -> std::result::Result<Box<dyn format::Node>, String>;
 
     fn decode_raw_entry(
         &self,
         node: Box<dyn format::Node>,
         hash: Cid,
-        p: &dyn IdentityProvider
+        p: &dyn IdentityProvider,
     ) -> std::result::Result<Box<dyn IPFSLogEntry>, String>;
 
     fn decode_raw_json_log(
         &self,
-        node: Box<dyn format::Node>
+        node: Box<dyn format::Node>,
     ) -> std::result::Result<JSONLog, String>;
 }
 
@@ -138,11 +152,13 @@ impl IpldNode {
     /// Cria um novo nó IPLD vazio (mapa)
     pub fn new() -> Result<Self> {
         let ipld = IpldType::Map(BTreeMap::new());
-        let encoded = DagCborCodec.encode(&ipld).map_err(|e| format!("CBOR encoding error: {}", e))?;
+        let encoded = DagCborCodec
+            .encode(&ipld)
+            .map_err(|e| format!("CBOR encoding error: {}", e))?;
         let digest = Code::Sha2_256.digest(&encoded);
         let hash = Multihash::wrap(Code::Sha2_256.into(), digest.digest()).unwrap();
         let cid = IpldCid::new_v1(DagCborCodec.into(), hash);
-        Ok(Self { 
+        Ok(Self {
             cid,
             data: ipld,
             raw_data: encoded,
@@ -151,11 +167,13 @@ impl IpldNode {
 
     /// Cria um nó a partir de um Ipld existente
     pub fn from_ipld(ipld: IpldType) -> Result<Self> {
-        let encoded = DagCborCodec.encode(&ipld).map_err(|e| format!("CBOR encoding error: {}", e))?;
+        let encoded = DagCborCodec
+            .encode(&ipld)
+            .map_err(|e| format!("CBOR encoding error: {}", e))?;
         let digest = Code::Sha2_256.digest(&encoded);
         let hash = Multihash::wrap(Code::Sha2_256.into(), digest.digest()).unwrap();
         let cid = IpldCid::new_v1(DagCborCodec.into(), hash);
-        Ok(Self { 
+        Ok(Self {
             cid,
             data: ipld,
             raw_data: encoded,
@@ -182,11 +200,12 @@ impl Node for IpldNode {
                 _ => return None,
             }
         }
-        IpldNode::from_ipld(current.clone()).ok().map(|n| Box::new(n) as Box<dyn Node>)
+        IpldNode::from_ipld(current.clone())
+            .ok()
+            .map(|n| Box::new(n) as Box<dyn Node>)
     }
 
     fn ipld(&self) -> &IpldType {
         &self.data
     }
 }
-
