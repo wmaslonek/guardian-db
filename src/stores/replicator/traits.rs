@@ -1,9 +1,9 @@
-use cid::Cid;
-use crate::pubsub::event::EventBus; // Usando nosso EventBus
-use std::future::Future;
-use ipfs_api_backend_hyper::IpfsClient;
-use crate::eqlabs_ipfs_log::{entry::Entry, log::Log, identity::Identity};
 use crate::access_controller::traits::AccessController;
+use crate::eqlabs_ipfs_log::{entry::Entry, identity::Identity, log::Log};
+use crate::pubsub::event::EventBus; // Usando nosso EventBus
+use cid::Cid;
+use ipfs_api_backend_hyper::IpfsClient;
+use std::future::Future;
 // Removido: use crate::stores::base_store::base_store::IpfsLogIo;
 // A funcionalidade de I/O está implementada diretamente em Entry::multihash
 
@@ -27,7 +27,7 @@ pub trait StoreInterface: Send + Sync {
 
     /// Retorna a função de ordenação para as entradas do log.
     fn sort_fn(&self) -> SortFn;
-    
+
     // Removido: fn io() - A funcionalidade de I/O está implementada
     // diretamente nos métodos Entry::multihash() e Entry::from_multihash()
 }
