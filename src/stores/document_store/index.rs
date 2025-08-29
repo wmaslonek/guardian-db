@@ -1,7 +1,7 @@
+use crate::eqlabs_ipfs_log::{entry::Entry, log::Log};
+use crate::iface::{CreateDocumentDBOptions, StoreIndex};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
-use crate::iface::{CreateDocumentDBOptions, StoreIndex};
-use crate::eqlabs_ipfs_log::{log::Log, entry::Entry};
 
 /// DocumentIndex mantém um índice de chave-valor em memória para a DocumentStore.
 pub struct DocumentIndex {
@@ -26,7 +26,7 @@ impl DocumentIndex {
     pub fn keys(&self) -> Vec<String> {
         // Adquire um bloqueio de leitura. O unwrap trata casos de "poisoning" do mutex.
         let index_lock = self.index.read().unwrap();
-        
+
         // Coleta as chaves do mapa. `.keys()` retorna um iterador de &String,
         // então `.cloned()` cria novas Strings a partir das referências.
         index_lock.keys().cloned().collect()
@@ -59,14 +59,16 @@ impl StoreIndex for DocumentIndex {
         // Um conjunto para rastrear chaves já processadas, garantindo que
         // apenas a operação mais recente para cada chave seja aplicada.
         let mut handled = HashSet::new();
-        
+
         // Adquire um bloqueio de escrita, pois vamos modificar o índice.
         let mut index = self.index.write().unwrap();
 
         // Itera sobre as entradas fornecidas em ordem reversa (do mais novo para o mais antigo).
         for entry in entries.iter().rev() {
             let operation = crate::stores::operation::operation::parse_operation(entry.clone())
-                .map_err(|e| crate::error::GuardianError::Store(format!("Erro ao parsear operação: {}", e)))?;
+                .map_err(|e| {
+                    crate::error::GuardianError::Store(format!("Erro ao parsear operação: {}", e))
+                })?;
 
             // Para operações normais, obtém a chave principal.
             let key = match operation.key() {
