@@ -6,10 +6,9 @@ use guardian_db::error::Result;
 use guardian_db::ipfs_core_api::{
     ClientConfig, IpfsClient,
     compat::IpfsClientAdapter,
-    types::{AddResponse, NodeInfo, PubsubMessage},
 };
 use std::io::Cursor;
-use tracing::{Level, debug, info};
+use tracing::{Level, info};
 
 #[tokio::main]
 async fn main() -> Result<()> {
