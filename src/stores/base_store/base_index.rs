@@ -1,7 +1,6 @@
-use crate::eqlabs_ipfs_log::{entry::Entry, log::Log};
 use crate::error::GuardianError;
 use crate::iface::StoreIndex;
-use std::any::Any;
+use crate::ipfs_log::{entry::Entry, log::Log};
 use std::collections::{HashMap, HashSet};
 use std::sync::RwLock;
 
@@ -38,22 +37,52 @@ impl StoreIndex for BaseIndex {
     /// Especifica que usaremos GuardianError como o tipo de erro associado.
     type Error = GuardianError;
 
-    /// Equivalente à função `Get` em Go.
-    ///
-    /// Busca um valor no índice pela sua chave.
-    /// Retorna `Some(valor)` se a chave existir, ou `None` caso contrário.
-    ///
-    /// NOTA: Limitação atual - a trait StoreIndex tem um design problemático
-    /// que não permite retornar referências para dados protegidos por lock.
-    /// Uma refatoração futura da trait seria necessária para resolver isso adequadamente.
-    fn get(&self, _key: &str) -> Option<&(dyn Any + Send + Sync)> {
-        // Por enquanto retorna None devido à limitação da trait.
-        // Uma implementação adequada requereria mudanças na arquitetura da trait.
-        None
+    /// Verifica se uma chave existe no índice.
+    fn contains_key(&self, key: &str) -> Result<bool, Self::Error> {
+        let index_lock = self.index.read().map_err(|e| {
+            GuardianError::Store(format!("Falha ao adquirir lock de leitura: {}", e))
+        })?;
+
+        Ok(index_lock.contains_key(key))
+    }
+
+    /// Retorna uma cópia dos dados para uma chave específica como bytes.
+    fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>, Self::Error> {
+        let index_lock = self.index.read().map_err(|e| {
+            GuardianError::Store(format!("Falha ao adquirir lock de leitura: {}", e))
+        })?;
+
+        Ok(index_lock.get(key).cloned())
+    }
+
+    /// Retorna todas as chaves disponíveis no índice.
+    fn keys(&self) -> Result<Vec<String>, Self::Error> {
+        let index_lock = self.index.read().map_err(|e| {
+            GuardianError::Store(format!("Falha ao adquirir lock de leitura: {}", e))
+        })?;
+
+        Ok(index_lock.keys().cloned().collect())
+    }
+
+    /// Retorna o número de entradas no índice.
+    fn len(&self) -> Result<usize, Self::Error> {
+        let index_lock = self.index.read().map_err(|e| {
+            GuardianError::Store(format!("Falha ao adquirir lock de leitura: {}", e))
+        })?;
+
+        Ok(index_lock.len())
+    }
+
+    /// Verifica se o índice está vazio.
+    fn is_empty(&self) -> Result<bool, Self::Error> {
+        let index_lock = self.index.read().map_err(|e| {
+            GuardianError::Store(format!("Falha ao adquirir lock de leitura: {}", e))
+        })?;
+
+        Ok(index_lock.is_empty())
     }
 
     /// Equivalente à função `UpdateIndex` em Go.
-    ///
     /// Atualiza o índice processando as entradas do log de operações.
     /// Implementa a lógica CRDT processando operações PUT e DEL.
     fn update_index(&mut self, _log: &Log, entries: &[Entry]) -> Result<(), Self::Error> {
@@ -112,55 +141,9 @@ impl StoreIndex for BaseIndex {
 
         Ok(())
     }
-}
 
-impl BaseIndex {
-    /// Retorna o ID do índice (public key).
-    pub fn id(&self) -> &[u8] {
-        &self.id
-    }
-
-    /// Retorna uma cópia de todas as chaves presentes no índice.
-    /// Útil para iteração e debug.
-    pub fn keys(&self) -> Result<Vec<String>, GuardianError> {
-        let index_lock = self.index.read().map_err(|e| {
-            GuardianError::Store(format!("Falha ao adquirir lock de leitura: {}", e))
-        })?;
-
-        Ok(index_lock.keys().cloned().collect())
-    }
-
-    /// Retorna uma cópia do valor associado à chave, se existir.
-    /// Esta é uma alternativa ao método `get()` da trait que tem limitações.
-    pub fn get_value(&self, key: &str) -> Result<Option<Vec<u8>>, GuardianError> {
-        let index_lock = self.index.read().map_err(|e| {
-            GuardianError::Store(format!("Falha ao adquirir lock de leitura: {}", e))
-        })?;
-
-        Ok(index_lock.get(key).cloned())
-    }
-
-    /// Retorna o número de entradas no índice.
-    pub fn len(&self) -> Result<usize, GuardianError> {
-        let index_lock = self.index.read().map_err(|e| {
-            GuardianError::Store(format!("Falha ao adquirir lock de leitura: {}", e))
-        })?;
-
-        Ok(index_lock.len())
-    }
-
-    /// Verifica se o índice está vazio.
-    pub fn is_empty(&self) -> Result<bool, GuardianError> {
-        let index_lock = self.index.read().map_err(|e| {
-            GuardianError::Store(format!("Falha ao adquirir lock de leitura: {}", e))
-        })?;
-
-        Ok(index_lock.is_empty())
-    }
-
-    /// Limpa todo o conteúdo do índice.
-    /// Útil para reset ou testes.
-    pub fn clear(&mut self) -> Result<(), GuardianError> {
+    /// Limpa todos os dados do índice.
+    fn clear(&mut self) -> Result<(), Self::Error> {
         let mut index_lock = self.index.write().map_err(|e| {
             GuardianError::Store(format!("Falha ao adquirir lock de escrita: {}", e))
         })?;
@@ -170,34 +153,50 @@ impl BaseIndex {
     }
 }
 
+impl BaseIndex {
+    /// Retorna o ID do índice (public key).
+    pub fn id(&self) -> &[u8] {
+        &self.id
+    }
+
+    /// Retorna uma cópia do valor associado à chave, se existir.
+    /// Este é um método de conveniência que chama get_bytes() da trait.
+    pub fn get_value(&self, key: &str) -> Result<Option<Vec<u8>>, GuardianError> {
+        self.get_bytes(key)
+    }
+}
+
 // MELHORIAS IMPLEMENTADAS:
 //
-// 1. Refatoração da estrutura de dados:
+// 1. Refatoração da trait StoreIndex:
+//    - Removido método get() problemático que retornava referências incompatíveis com locks
+//    - Adicionados métodos específicos e seguros: contains_key(), get_bytes(), keys(), etc.
+//    - Todos os métodos agora funcionam corretamente com dados protegidos por RwLock
+//
+// 2. Refatoração da estrutura de dados:
 //    - Mudou de Vec<Entry> para HashMap<String, Vec<u8>> para indexação eficiente
 //    - Permite busca O(1) por chave ao invés de iteração O(n)
 //
-// 2. Implementação correta do update_index:
+// 3. Implementação correta do update_index:
 //    - Processa operações PUT e DEL corretamente
 //    - Implementa lógica CRDT (apenas a operação mais recente por chave)
 //    - Tratamento de erros sem panic (elimina unwrap() perigoso)
 //
-// 3. Métodos auxiliares adicionados:
-//    - get_value(): alternativa segura ao get() da trait
-//    - keys(): listagem de todas as chaves
-//    - len(), is_empty(): estatísticas do índice
-//    - clear(): reset completo do índice
+// 4. Métodos auxiliares consolidados:
+//    - Implementação da trait StoreIndex fornece funcionalidade completa
+//    - get_value(): método de conveniência que delega para get_bytes()
 //    - id(): acesso ao identificador do índice
 //
-// 4. Tratamento de erros robusto:
+// 5. Tratamento de erros robusto:
 //    - Uso de Result ao invés de unwrap()
 //    - Mensagens de erro descritivas
 //    - Logs de warning para operações problemáticas
 //
-// 5. Thread safety:
+// 6. Thread safety:
 //    - Uso adequado de RwLock para acesso concorrente
 //    - Tratamento de lock poisoning
 //
-// LIMITAÇÕES CONHECIDAS:
-// - O método get() da trait StoreIndex tem limitações arquiteturais
-//   que impedem retornar referências para dados protegidos por lock.
-//   Use get_value() como alternativa segura.
+// LIMITAÇÕES RESOLVIDAS:
+// - ✅ O método get() problemático foi removido e substituído por métodos seguros
+// - ✅ Todos os métodos agora funcionam corretamente com dados protegidos por lock
+// - ✅ A trait StoreIndex foi completamente refatorada para design seguro e eficiente
