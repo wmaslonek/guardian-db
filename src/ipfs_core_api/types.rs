@@ -1,4 +1,4 @@
-// ipfs_core_api/types.rs - Definições de tipos e estruturas de dados
+// Definições de tipos e estruturas de dados
 //
 // Centraliza todos os tipos de dados usados pela API IPFS Core
 
