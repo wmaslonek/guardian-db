@@ -3,7 +3,7 @@
 // Mantém compatibilidade com código existente que usava ipfs_api_backend_hyper
 
 use crate::error::Result;
-use crate::ipfs_core_api::{client::IpfsClient, types::*};
+use crate::ipfs_core_api::client::IpfsClient;
 use cid::Cid;
 use std::pin::Pin;
 use tokio::io::AsyncReadExt;
@@ -207,6 +207,7 @@ pub async fn from_url(url: &str) -> Result<IpfsClientAdapter> {
 }
 
 /// Trait para facilitar migração de código existente
+#[allow(async_fn_in_trait)]
 pub trait IpfsClientCompat {
     async fn add_compat<R>(&self, data: R) -> Result<AddResponse>
     where
