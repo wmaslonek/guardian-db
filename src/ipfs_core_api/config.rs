@@ -1,4 +1,4 @@
-// ipfs_core_api/config.rs - Configuração do cliente IPFS
+// Configuração do cliente IPFS
 //
 // Centraliza todas as opções de configuração do cliente IPFS
 
@@ -65,8 +65,8 @@ impl ClientConfig {
     /// Cria configuração mínima para desenvolvimento
     pub fn development() -> Self {
         Self {
-            enable_pubsub: true,
-            enable_swarm: false, // Simplificado para desenvolvimento
+            enable_pubsub: true, // Habilitado para testes de desenvolvimento
+            enable_swarm: true,  // Necessário para pubsub funcionar
             data_store_path: Some("./tmp/ipfs_dev".into()),
             listening_addrs: vec!["/ip4/127.0.0.1/tcp/0".to_string()],
             bootstrap_peers: vec![],
@@ -168,6 +168,13 @@ impl ClientConfig {
         }
 
         Ok(())
+    }
+
+    /// Cria configuração a partir de um cliente Hyper IPFS
+    pub fn from_hyper_client(_hyper_client: &ipfs_api_backend_hyper::IpfsClient) -> Self {
+        // Por enquanto, retorna configuração padrão já que o HyperIpfsClient
+        // não expõe sua configuração interna facilmente
+        Self::development()
     }
 }
 
@@ -464,7 +471,7 @@ mod tests {
     fn test_development_config() {
         let config = ClientConfig::development();
         assert!(config.enable_pubsub);
-        assert!(!config.enable_swarm);
+        assert!(config.enable_swarm);
         assert_eq!(config.listening_addrs.len(), 1);
     }
 
