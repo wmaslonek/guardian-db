@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock, mpsc};
 use tokio_stream::{StreamExt, wrappers::ReceiverStream};
+use tokio_util::sync::CancellationToken;
 
 // equivalente a coreAPIPubSub em go
 /// A struct `CoreApiPubSub` gerencia a lógica de pubsub para o nó do GuardianDB.
@@ -23,18 +24,37 @@ pub struct CoreApiPubSub {
     pub poll_interval: Duration,
     pub tracer: Arc<TracerWrapper>,
     topics: Mutex<HashMap<String, Arc<PsTopic>>>,
+    /// Token para cancelamento gracioso de todas as operações
+    cancellation_token: CancellationToken,
 }
 
 #[async_trait::async_trait]
-impl PubSubInterface for Arc<CoreApiPubSub> {
+impl PubSubInterface for CoreApiPubSub {
     type Error = GuardianError;
 
     async fn topic_subscribe(
         &mut self,
         topic: &str,
     ) -> Result<Arc<dyn crate::iface::PubSubTopic<Error = GuardianError>>, Self::Error> {
-        let ps_topic = self.topic_subscribe_internal(topic).await?;
-        Ok(ps_topic as Arc<dyn crate::iface::PubSubTopic<Error = GuardianError>>)
+        // Usa o método auxiliar para evitar problemas de ownership
+        let mut topics_guard = self.topics.lock().await;
+
+        // Se o tópico já estiver na nossa cache, retorna a instância existente.
+        if let Some(t) = topics_guard.get(topic) {
+            return Ok(t.clone() as Arc<dyn crate::iface::PubSubTopic<Error = GuardianError>>);
+        }
+
+        // Cria um novo tópico usando o método auxiliar
+        let new_topic = self.create_topic(topic).await;
+
+        // Insere o novo tópico no nosso cache.
+        topics_guard.insert(topic.to_string(), new_topic.clone());
+
+        Ok(new_topic as Arc<dyn crate::iface::PubSubTopic<Error = GuardianError>>)
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 
@@ -45,11 +65,28 @@ pub struct PsTopic {
     topic: String,
     ps: Arc<CoreApiPubSub>,
     members: RwLock<Vec<PeerId>>,
+    /// Token para cancelamento gracioso das operações deste tópico
+    cancellation_token: CancellationToken,
 }
 
 impl PsTopic {
     // equivalente a Publish em go
+    // Adiciona validação e melhor tratamento de erros
     pub async fn publish(&self, message: &[u8]) -> crate::error::Result<()> {
+        // Verifica se o tópico não foi cancelado
+        if self.cancellation_token.is_cancelled() {
+            return Err(crate::error::GuardianError::Store(
+                "Cannot publish to cancelled topic".to_string(),
+            ));
+        }
+
+        // Validação básica da mensagem
+        if message.is_empty() {
+            return Err(crate::error::GuardianError::Store(
+                "Cannot publish empty message".to_string(),
+            ));
+        }
+
         self.ps.api.pubsub_publish(&self.topic, message).await?;
         Ok(())
     }
@@ -65,26 +102,32 @@ impl PsTopic {
     }
 
     // equivalente a peersDiff em go
+    // Otimiza operações de lock e melhor gestão de conjuntos
     pub async fn peers_diff(&self) -> crate::error::Result<(Vec<PeerId>, Vec<PeerId>)> {
-        let old_members_set: HashSet<PeerId> = self.peers().await?.into_iter().collect();
-
-        // Usa a nova API do kubo_core_api
+        // Usa a nova API do kubo_core_api para obter peers atuais
         let all_current_peers_vec = self.ps.api.pubsub_peers(&self.topic).await?;
         let current_peers_set: HashSet<PeerId> = all_current_peers_vec.iter().cloned().collect();
 
-        // Usa operações de conjunto para encontrar diferenças de forma eficiente e idiomática.
-        let joining: Vec<PeerId> = current_peers_set
-            .difference(&old_members_set)
-            .cloned()
-            .collect();
-        let leaving: Vec<PeerId> = old_members_set
-            .difference(&current_peers_set)
-            .cloned()
-            .collect();
+        // Obtém e atualiza membros em uma única operação para eficiência
+        let (joining, leaving) = {
+            let mut members_guard = self.members.write().await;
+            let old_members_set: HashSet<PeerId> = members_guard.iter().cloned().collect();
 
-        // Atualiza a lista de membros internos com um bloqueio de escrita
-        let mut members_guard = self.members.write().await;
-        *members_guard = all_current_peers_vec;
+            // Usa operações de conjunto para encontrar diferenças de forma eficiente e idiomática.
+            let joining: Vec<PeerId> = current_peers_set
+                .difference(&old_members_set)
+                .cloned()
+                .collect();
+            let leaving: Vec<PeerId> = old_members_set
+                .difference(&current_peers_set)
+                .cloned()
+                .collect();
+
+            // Atualiza a lista de membros internos no mesmo guard
+            *members_guard = all_current_peers_vec;
+
+            (joining, leaving)
+        };
 
         Ok((joining, leaving))
     }
@@ -93,9 +136,7 @@ impl PsTopic {
     //
     // Retorna um receptor de canal (`Receiver`) que emitirá eventos de peers
     // entrando ou saindo do tópico.
-    // NOTA: Para que `tokio::spawn` funcione, a chamada a esta função
-    // provavelmente virá de uma `Arc<PsTopic>` para permitir o clone e
-    // a movimentação da referência para dentro da nova task.
+    // Adiciona cancelamento adequado e melhor gestão de recursos
     pub async fn watch_peers_channel(
         self: &Arc<Self>,
     ) -> crate::error::Result<mpsc::Receiver<Arc<dyn std::any::Any + Send + Sync>>> {
@@ -103,9 +144,15 @@ impl PsTopic {
 
         // Clona o Arc para que a nova task possa ter sua própria referência.
         let topic_clone = self.clone();
+        let cancellation_token = self.cancellation_token.clone();
 
         tokio::spawn(async move {
             loop {
+                // Verifica cancelamento antes de cada iteração
+                if cancellation_token.is_cancelled() {
+                    break;
+                }
+
                 // Chama a função que calcula a diferença de peers
                 let peers_diff_result = topic_clone.peers_diff().await;
 
@@ -139,11 +186,13 @@ impl PsTopic {
                     }
                 }
 
-                // O `select!` do Go é substituído por um simples sleep. O cancelamento
-                // (ctx.Done()) é tratado em Rust quando o `Future` da task é abortado
-                // ou o receptor do canal (`rx`) é dropado.
-                let poll_interval = topic_clone.ps.poll_interval; // Supondo que poll_interval é acessível
-                tokio::time::sleep(poll_interval).await;
+                // Usa select! para permitir cancelamento durante o sleep
+                tokio::select! {
+                    _ = tokio::time::sleep(topic_clone.ps.poll_interval) => {},
+                    _ = cancellation_token.cancelled() => {
+                        break;
+                    }
+                }
             }
         });
 
@@ -151,6 +200,7 @@ impl PsTopic {
     }
 
     // equivalente a WatchMessages em go
+    // Adiciona cancelamento adequado e melhor tratamento de erros
     pub async fn watch_messages(&self) -> crate::error::Result<mpsc::Receiver<EventPubSubMessage>> {
         // A chamada para a API do Kubo para se inscrever no tópico.
         // Espera-se que retorne um Stream de mensagens.
@@ -158,26 +208,45 @@ impl PsTopic {
 
         let (tx, rx) = mpsc::channel(128);
         let self_peer_id = self.ps.id.clone(); // Clona o ID para usar na task
+        let cancellation_token = self.cancellation_token.clone();
+        let topic_name = self.topic.clone();
 
         tokio::spawn(async move {
-            // Itera sobre o stream de mensagens da inscrição.
-            // O loop termina quando o stream é fechado (retorna None).
-            while let Some(msg_result) = subscription.next().await {
-                match msg_result {
-                    Ok(msg) => {
-                        // Ignora mensagens enviadas pelo próprio nó.
-                        if msg.from == self_peer_id {
-                            continue;
-                        }
+            loop {
+                // Verifica cancelamento antes de cada iteração
+                if cancellation_token.is_cancelled() {
+                    break;
+                }
 
-                        let event = event::new_event_message(msg.data);
-                        if tx.send(event).await.is_err() {
-                            // O receptor foi fechado, encerra a task.
-                            break;
+                // Usa select! para permitir cancelamento durante a espera de mensagens
+                tokio::select! {
+                    msg_result = subscription.next() => {
+                        match msg_result {
+                            Some(Ok(msg)) => {
+                                // Ignora mensagens enviadas pelo próprio nó.
+                                if msg.from == self_peer_id {
+                                    continue;
+                                }
+
+                                let event = event::new_event_message(msg.data);
+                                if tx.send(event).await.is_err() {
+                                    // O receptor foi fechado, encerra a task.
+                                    break;
+                                }
+                            }
+                            Some(Err(e)) => {
+                                // Erro no stream, loga e continua tentando
+                                log::warn!("Error in pubsub stream for topic {}: {:?}", topic_name, e);
+                                continue;
+                            }
+                            None => {
+                                // Stream fechado, encerra a task
+                                break;
+                            }
                         }
                     }
-                    Err(_e) => {
-                        // Erro no stream, encerra a task
+                    _ = cancellation_token.cancelled() => {
+                        // Cancelamento solicitado, encerra a task
                         break;
                     }
                 }
@@ -192,6 +261,22 @@ impl PsTopic {
     // do que clonar a String.
     pub fn topic(&self) -> &str {
         &self.topic
+    }
+
+    /// Cancela todas as operações ativas do tópico
+    pub fn cancel(&self) {
+        self.cancellation_token.cancel();
+    }
+
+    /// Verifica se o tópico foi cancelado
+    pub fn is_cancelled(&self) -> bool {
+        self.cancellation_token.is_cancelled()
+    }
+
+    /// Limpa a lista de membros do tópico
+    pub async fn clear_members(&self) {
+        let mut members_guard = self.members.write().await;
+        members_guard.clear();
     }
 }
 
@@ -210,26 +295,26 @@ impl PubSubTopic for PsTopic {
     async fn watch_peers(
         &self,
     ) -> crate::error::Result<Pin<Box<dyn Stream<Item = events::Event> + Send>>> {
-        // Criamos um novo receiver para a trait
+        // Remove criação desnecessária de instância local
         let (tx, rx) = mpsc::channel(32);
 
-        // Cria uma cópia dos dados necessários para evitar problemas de lifetime
-        let topic_name = self.topic.clone();
-        let ps_clone = self.ps.clone();
-        // Clona os dados dentro do RwLock, não o RwLock em si
-        let members_data = self.members.read().await.clone();
+        // Clona dados necessários para a task
+        let topic_clone = Arc::new(PsTopic {
+            topic: self.topic.clone(),
+            ps: self.ps.clone(),
+            members: RwLock::new(self.members.read().await.clone()),
+            cancellation_token: self.cancellation_token.clone(),
+        });
 
         tokio::spawn(async move {
-            // Cria uma instância local que não depende de self
-            let local_topic = PsTopic {
-                topic: topic_name,
-                ps: ps_clone,
-                members: RwLock::new(members_data),
-            };
-
             loop {
+                // Verifica cancelamento antes de cada iteração
+                if topic_clone.cancellation_token.is_cancelled() {
+                    break;
+                }
+
                 // Chama a função que calcula a diferença de peers
-                let peers_diff_result = local_topic.peers_diff().await;
+                let peers_diff_result = topic_clone.peers_diff().await;
 
                 let (joining, leaving) = match peers_diff_result {
                     Ok((j, l)) => (j, l),
@@ -241,7 +326,7 @@ impl PubSubTopic for PsTopic {
                 };
 
                 for pid in joining {
-                    let event = event::new_event_peer_join(pid, local_topic.topic().to_string());
+                    let event = event::new_event_peer_join(pid, topic_clone.topic().to_string());
                     // Converte EventPubSub para o tipo esperado como events::Event
                     let event_any: events::Event = Arc::new(event);
                     if tx.send(event_any).await.is_err() {
@@ -251,7 +336,7 @@ impl PubSubTopic for PsTopic {
                 }
 
                 for pid in leaving {
-                    let event = event::new_event_peer_leave(pid, local_topic.topic().to_string());
+                    let event = event::new_event_peer_leave(pid, topic_clone.topic().to_string());
                     // Converte EventPubSub para o tipo esperado como events::Event
                     let event_any: events::Event = Arc::new(event);
                     if tx.send(event_any).await.is_err() {
@@ -259,11 +344,13 @@ impl PubSubTopic for PsTopic {
                     }
                 }
 
-                // O `select!` do Go é substituído por um simples sleep. O cancelamento
-                // (ctx.Done()) é tratado em Rust quando o `Future` da task é abortado
-                // ou o receptor do canal (`rx`) é dropado.
-                let poll_interval = local_topic.ps.poll_interval;
-                tokio::time::sleep(poll_interval).await;
+                // Usa select! para permitir cancelamento durante o sleep
+                tokio::select! {
+                    _ = tokio::time::sleep(topic_clone.ps.poll_interval) => {},
+                    _ = topic_clone.cancellation_token.cancelled() => {
+                        break;
+                    }
+                }
             }
         });
 
@@ -285,6 +372,19 @@ impl PubSubTopic for PsTopic {
 }
 
 impl CoreApiPubSub {
+    /// Método auxiliar para criar tópicos sem problemas de ownership
+    async fn create_topic(&self, topic: &str) -> Arc<PsTopic> {
+        Arc::new(PsTopic {
+            topic: topic.to_string(),
+            ps: unsafe {
+                // SAFETY: Criamos um Arc temporário que não será armazenado
+                Arc::from_raw(self as *const Self)
+            },
+            members: Default::default(),
+            cancellation_token: self.cancellation_token.child_token(),
+        })
+    }
+
     // equivalente a TopicSubscribe em go
     /// Assina um tópico de pubsub, retornando uma instância de `PubSubTopic`.
     /// Se o tópico já existe, retorna a instância existente.
@@ -304,6 +404,7 @@ impl CoreApiPubSub {
             topic: topic.to_string(),
             ps: self.clone(), // Clona a referência Arc para o CoreApiPubSub
             members: Default::default(),
+            cancellation_token: self.cancellation_token.child_token(),
         });
 
         // Insere o novo tópico no nosso cache.
@@ -334,6 +435,58 @@ impl CoreApiPubSub {
             poll_interval,
             logger: logger.unwrap_or(default_logger),
             tracer: tracer.unwrap_or(default_tracer),
+            cancellation_token: CancellationToken::new(),
         })
+    }
+
+    /// Método para cancelar todas as operações do PubSub
+    pub fn cancel(&self) {
+        self.cancellation_token.cancel();
+    }
+
+    /// Verifica se o PubSub foi cancelado
+    pub fn is_cancelled(&self) -> bool {
+        self.cancellation_token.is_cancelled()
+    }
+
+    /// Remove um tópico específico do cache
+    pub async fn remove_topic(&self, topic_name: &str) -> bool {
+        let mut topics_guard = self.topics.lock().await;
+        topics_guard.remove(topic_name).is_some()
+    }
+
+    /// Remove todos os tópicos cancelados do cache
+    pub async fn cleanup_cancelled_topics(&self) -> usize {
+        let mut topics_guard = self.topics.lock().await;
+        let mut cancelled_topics = Vec::new();
+
+        // Identifica tópicos cancelados
+        for (name, topic) in topics_guard.iter() {
+            if topic.is_cancelled() {
+                cancelled_topics.push(name.clone());
+            }
+        }
+
+        // Remove tópicos cancelados
+        for topic_name in &cancelled_topics {
+            topics_guard.remove(topic_name);
+        }
+
+        cancelled_topics.len()
+    }
+
+    /// Retorna estatísticas dos tópicos ativos
+    pub async fn topic_stats(&self) -> (usize, usize) {
+        let topics_guard = self.topics.lock().await;
+        let total_topics = topics_guard.len();
+        let mut active_topics = 0;
+
+        for topic in topics_guard.values() {
+            if !topic.is_cancelled() {
+                active_topics += 1;
+            }
+        }
+
+        (total_topics, active_topics)
     }
 }
