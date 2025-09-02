@@ -6,7 +6,7 @@ O `IpfsLogIo` era um trait placeholder que estava sendo usado como uma abstraç�
 
 ### 1. **Funcionalidade Já Implementada**
 
-A funcionalidade que o `IpfsLogIo` deveria fornecer já está implementada diretamente no módulo `eqlabs_ipfs_log`:
+A funcionalidade que o `IpfsLogIo` deveria fornecer já está implementada diretamente no módulo `ipfs_log`:
 
 - **Entry::multihash()**: Faz a serialização e armazenamento de entradas no IPFS
 - **Entry::from_multihash()**: Faz a recuperação e deserialização de entradas do IPFS
@@ -70,7 +70,7 @@ Removido o método `io()` das implementações de:
 
 ### 1. **Simplicidade**
 - Eliminou camada de abstração desnecessária
-- Uso direto das funcionalidades já implementadas no `eqlabs_ipfs_log`
+- Uso direto das funcionalidades já implementadas no `ipfs_log`
 
 ### 2. **Compatibilidade**
 - Resolveu problemas de compatibilidade com `dyn Trait` para métodos async
@@ -110,6 +110,6 @@ pub fn from_multihash(ipfs: &IpfsClient, hash: &str) -> impl Future<Item = Entry
 
 ## Conclusão
 
-A remoção do `IpfsLogIo` foi bem-sucedida e necessária. O projeto agora usa diretamente as funcionalidades de I/O implementadas no módulo `eqlabs_ipfs_log`, que já forneciam toda a funcionalidade necessária de forma mais eficiente e idiomática para Rust.
+A remoção do `IpfsLogIo` foi bem-sucedida e necessária. O projeto agora usa diretamente as funcionalidades de I/O implementadas no módulo `ipfs_log`, que já forneciam toda a funcionalidade necessária de forma mais eficiente e idiomática para Rust.
 
 **Status**: ✅ **COMPLETO** - IpfsLogIo removido, funcionalidades de I/O usando Entry::multihash diretamente
