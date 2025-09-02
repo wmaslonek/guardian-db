@@ -124,6 +124,10 @@ impl DirectChannel for Channels {
 
         Ok(())
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 // A struct principal que gerencia os canais
