@@ -116,7 +116,7 @@ impl ProcessQueue {
     // equivalente a Next em go
     /// Remove e retorna o primeiro item da fila.
     /// Retorna `None` se a fila estiver vazia.
-    pub fn next(&mut self) -> Option<ProcessQueueItem> {
+    pub fn pop_next(&mut self) -> Option<ProcessQueueItem> {
         self.items.pop_front()
     }
 
