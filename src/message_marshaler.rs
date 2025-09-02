@@ -7,6 +7,12 @@ pub struct GuardianJSONMarshaler {
     inner: JSONMarshaler,
 }
 
+impl Default for GuardianJSONMarshaler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GuardianJSONMarshaler {
     pub fn new() -> Self {
         Self {
@@ -21,13 +27,13 @@ impl MessageMarshaler for GuardianJSONMarshaler {
     fn marshal(&self, m: &MessageExchangeHeads) -> std::result::Result<Vec<u8>, Self::Error> {
         self.inner
             .marshal(m)
-            .map_err(|e| GuardianError::Other(format!("Marshal error: {}", e).into()))
+            .map_err(|e| GuardianError::Other(format!("Marshal error: {}", e)))
     }
 
     fn unmarshal(&self, data: &[u8]) -> std::result::Result<MessageExchangeHeads, Self::Error> {
         self.inner
             .unmarshal(data)
-            .map_err(|e| GuardianError::Other(format!("Unmarshal error: {}", e).into()))
+            .map_err(|e| GuardianError::Other(format!("Unmarshal error: {}", e)))
     }
 }
 
