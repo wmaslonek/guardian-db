@@ -1,11 +1,11 @@
 use crate::address::Address;
 use crate::data_store::Datastore;
-use crate::eqlabs_ipfs_log::identity::Identity;
 use crate::error::{GuardianError, Result};
 use crate::iface::{
     CreateDocumentDBOptions, DocumentStoreGetOptions, NewStoreOptions, Store, TracerWrapper,
 };
 use crate::ipfs_core_api::client::IpfsClient;
+use crate::ipfs_log::identity::Identity;
 use crate::pubsub::event::EventBus;
 use crate::stores::base_store::base_store::BaseStore;
 use crate::stores::document_store::index::DocumentIndex;
@@ -51,10 +51,11 @@ impl Store for GuardianDBDocumentStore {
         self.cached_address.as_ref()
     }
 
-    fn index(&self) -> &dyn crate::iface::StoreIndex<Error = GuardianError> {
+    fn index(&self) -> Box<dyn crate::iface::StoreIndex<Error = GuardianError> + Send + Sync> {
         // Usa o DocumentIndex local que foi criado especificamente para esta DocumentStore
         // Este índice mantém compatibilidade com a trait Store
-        &*self.doc_index
+        let default_opts = Arc::new(default_store_opts_for_map("_id"));
+        Box::new(DocumentIndex::new(default_opts))
     }
 
     fn store_type(&self) -> &str {
@@ -66,14 +67,9 @@ impl Store for GuardianDBDocumentStore {
         self.base_store.replication_status()
     }
 
-    fn replicator(&self) -> &crate::stores::replicator::replicator::Replicator {
+    fn replicator(&self) -> Option<Arc<crate::stores::replicator::replicator::Replicator>> {
         // Usa o valor em cache para evitar problemas de lifetime
-        match &self.cached_replicator {
-            Some(replicator_arc) => replicator_arc.as_ref(),
-            None => {
-                panic!("Replicator não está disponível - store não foi inicializada corretamente")
-            }
-        }
+        self.cached_replicator.clone()
     }
 
     fn cache(&self) -> Arc<dyn Datastore> {
@@ -93,18 +89,14 @@ impl Store for GuardianDBDocumentStore {
 
     async fn sync(
         &mut self,
-        heads: Vec<crate::eqlabs_ipfs_log::entry::Entry>,
+        heads: Vec<crate::ipfs_log::entry::Entry>,
     ) -> std::result::Result<(), Self::Error> {
         self.base_store.sync(heads).await
     }
 
-    async fn load_more_from(
-        &mut self,
-        _amount: u64,
-        entries: Vec<crate::eqlabs_ipfs_log::entry::Entry>,
-    ) {
+    async fn load_more_from(&mut self, _amount: u64, entries: Vec<crate::ipfs_log::entry::Entry>) {
         // BaseStore.load_more_from não é async e tem assinatura diferente
-        self.base_store.load_more_from(entries)
+        let _ = self.base_store.load_more_from(entries);
     }
 
     async fn load_from_snapshot(&mut self) -> std::result::Result<(), Self::Error> {
@@ -113,16 +105,9 @@ impl Store for GuardianDBDocumentStore {
         Ok(())
     }
 
-    fn op_log(&self) -> &crate::eqlabs_ipfs_log::log::Log {
-        // BaseStore agora retorna Arc<RwLock<Log>>, mas a trait espera &Log
-        // Isso é uma limitação arquitetural da trait - ela foi projetada antes do RwLock
-        // Por enquanto, vamos usar uma abordagem que funciona mas pode ter limitações
-        let log_guard = self.base_store.op_log();
-        let log_ref = log_guard.read();
-
-        // SAFETY: O RwLock guard é válido e mantém a referência
-        // Esta é uma solução temporária até a trait ser refatorada
-        unsafe { &*(&*log_ref as *const _) }
+    fn op_log(&self) -> Arc<parking_lot::RwLock<crate::ipfs_log::log::Log>> {
+        // BaseStore agora retorna Arc<RwLock<Log>>, e a trait agora também espera isso
+        self.base_store.op_log()
     }
 
     fn ipfs(&self) -> Arc<IpfsClient> {
@@ -145,28 +130,26 @@ impl Store for GuardianDBDocumentStore {
     async fn add_operation(
         &mut self,
         op: Operation,
-        on_progress_callback: Option<
-            tokio::sync::mpsc::Sender<crate::eqlabs_ipfs_log::entry::Entry>,
-        >,
-    ) -> std::result::Result<crate::eqlabs_ipfs_log::entry::Entry, Self::Error> {
+        on_progress_callback: Option<tokio::sync::mpsc::Sender<crate::ipfs_log::entry::Entry>>,
+    ) -> std::result::Result<crate::ipfs_log::entry::Entry, Self::Error> {
         self.base_store
             .add_operation(op, on_progress_callback)
             .await
     }
 
-    fn logger(&self) -> &slog::Logger {
+    fn logger(&self) -> Arc<slog::Logger> {
         // Usa o valor em cache para evitar problemas de lifetime
-        self.cached_logger.as_ref()
+        self.cached_logger.clone()
     }
 
     fn tracer(&self) -> Arc<TracerWrapper> {
         self.base_store.tracer()
     }
 
-    fn event_bus(&self) -> EventBus {
-        // EventBus não implementa Clone, então criamos um novo
+    fn event_bus(&self) -> Arc<EventBus> {
+        // EventBus agora deve retornar Arc
         // Para manter compatibilidade, retornamos uma nova instância
-        EventBus::new()
+        Arc::new(EventBus::new())
     }
 }
 
