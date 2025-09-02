@@ -28,6 +28,12 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+// Type aliases para reduzir complexidade de tipos
+type KeyExtractorFn = Arc<dyn Fn(&serde_json::Value) -> Result<String, GuardianError> + Send + Sync>;
+type MarshalFn = Arc<dyn Fn(&serde_json::Value) -> Result<Vec<u8>, GuardianError> + Send + Sync>;
+type UnmarshalFn = Arc<dyn Fn(&[u8]) -> Result<serde_json::Value, GuardianError> + Send + Sync>;
+type ItemFactoryFn = Arc<dyn Fn() -> serde_json::Value + Send + Sync>;
+type CleanupCallback = Box<dyn FnOnce() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> + Send + Sync>;
 // Temporary type definitions until proper modules are available
 pub type SortFn = fn(&Entry, &Entry) -> std::cmp::Ordering;
 
@@ -190,17 +196,16 @@ pub type StoreConstructor = Box<
 #[derive(Clone)]
 pub struct CreateDocumentDBOptions {
     /// Extrai a chave de um documento genérico.
-    pub key_extractor:
-        Arc<dyn Fn(&serde_json::Value) -> Result<String, GuardianError> + Send + Sync>,
+    pub key_extractor: KeyExtractorFn,
 
     /// Serializa um documento genérico para bytes.
-    pub marshal: Arc<dyn Fn(&serde_json::Value) -> Result<Vec<u8>, GuardianError> + Send + Sync>,
+    pub marshal: MarshalFn,
 
     /// Desserializa bytes para um documento genérico.
-    pub unmarshal: Arc<dyn Fn(&[u8]) -> Result<serde_json::Value, GuardianError> + Send + Sync>,
+    pub unmarshal: UnmarshalFn,
 
     /// Cria uma nova instância vazia do tipo de item do documento.
-    pub item_factory: Arc<dyn Fn() -> serde_json::Value + Send + Sync>,
+    pub item_factory: ItemFactoryFn,
 }
 
 /// equivalente a struct `DetermineAddressOptions` em go
@@ -544,7 +549,6 @@ pub trait EventLogStore: Store {
     /// # Nota
     /// Esta funcionalidade está comentada até que a implementação de Stream seja finalizada.
     // async fn stream(&self, options: Option<StreamOptions>) -> Result<impl Stream<Item = Operation>, Self::Error>;
-
     /// Retorna uma lista de operações que ocorreram na store, com opções de filtro.
     /// Permite consultas históricas com critérios específicos de tempo/posição.
     ///
@@ -751,7 +755,7 @@ pub struct NewStoreOptions {
     pub cache: Option<Arc<dyn Datastore>>,
 
     /// Callback para destruição do cache (pode falhar)
-    pub cache_destroy: Option<Box<dyn FnOnce() -> Result<(), Box<dyn Error + Send + Sync>>>>,
+    pub cache_destroy: Option<CleanupCallback>,
 
     /// Número de workers para replicação concorrente
     pub replication_concurrency: Option<u32>,
