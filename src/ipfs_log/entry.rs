@@ -115,7 +115,7 @@ impl Entry {
             hash: data.to_owned(),
             id: log_id.to_owned(),
             payload: data.to_owned(),
-            next: next,
+            next,
             v: 1,
             clock: clock.unwrap_or(LamportClock::new(identity.pub_key())),
             identity: Some(Arc::new(identity)),
@@ -283,7 +283,7 @@ impl Entry {
             let prev = p;
             parent = entries.iter().find(|e| Entry::is_parent(prev, e));
         }
-        stack.sort_by(|a, b| a.clock().time().cmp(&b.clock().time()));
+        stack.sort_by_key(|a| a.clock().time());
         stack
     }
 
@@ -306,7 +306,7 @@ impl Entry {
     ///
     /// [`sort_step_by_step`]: #method.sort_step_by_step
     pub fn sort_by_entry_hash(a: &Entry, b: &Entry) -> Ordering {
-        Entry::sort_step_by_step(|a, b| a.hash().cmp(&b.hash()))(a, b)
+        Entry::sort_step_by_step(|a, b| a.hash().cmp(b.hash()))(a, b)
     }
 
     /// A sorting helper function to
@@ -331,7 +331,7 @@ impl Entry {
         F: 'static + Fn(&Entry, &Entry) -> Ordering,
     {
         move |a, b| {
-            let mut diff = a.clock().cmp(&b.clock());
+            let mut diff = a.clock().cmp(b.clock());
             if diff == Ordering::Equal {
                 diff = resolve(a, b);
             }
@@ -348,7 +348,7 @@ impl Entry {
         F: 'static + Fn(&Entry, &Entry) -> Ordering,
     {
         move |a, b| {
-            let mut diff = a.clock().id().cmp(&b.clock().id());
+            let mut diff = a.clock().id().cmp(b.clock().id());
             if diff == Ordering::Equal {
                 diff = resolve(a, b);
             }
