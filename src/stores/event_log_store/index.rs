@@ -15,6 +15,12 @@ pub struct EventIndex {
     entries_cache: Arc<RwLock<Vec<Entry>>>,
 }
 
+impl Default for EventIndex {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EventIndex {
     /// Construtor padrão para um EventIndex.
     pub fn new() -> Self {
