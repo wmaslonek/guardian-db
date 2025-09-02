@@ -3,21 +3,16 @@
 // Implementação do cliente IPFS 100% Rust com funcionalidades completas
 
 use crate::error::{GuardianError, Result};
-use crate::ipfs_core_api::{
-    config::ClientConfig,
-    errors::{IpfsError, IpfsResult},
-    types::*,
-};
+use crate::ipfs_core_api::{config::ClientConfig, errors::IpfsError, types::*};
 use async_stream::stream;
 use cid::Cid;
 use libp2p::PeerId;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncReadExt;
 use tokio::sync::{RwLock, broadcast};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info};
 
 /// Estado interno do cliente IPFS
 #[derive(Debug)]
@@ -275,7 +270,7 @@ impl IpfsClient {
         // Envia para subscribers se houver
         let state_guard = self.state.read().await;
         if let Some(sender) = state_guard.subscriptions.get(topic) {
-            if let Err(_) = sender.send(message) {
+            if sender.send(message).is_err() {
                 debug!("Nenhum subscriber ativo para tópico '{}'", topic);
             }
         } else {
@@ -473,7 +468,7 @@ impl IpfsClient {
             .filter(|(_, pin_type)| {
                 pin_type_filter
                     .as_ref()
-                    .map_or(true, |filter| *pin_type == filter)
+                    .is_none_or(|filter| *pin_type == filter)
             })
             .map(|(hash, pin_type)| PinResponse {
                 hash: hash.clone(),
