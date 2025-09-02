@@ -13,6 +13,9 @@ use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::runtime::Runtime;
 
+// Type aliases para reduzir complexidade de tipos
+type EntrySortFn = Box<dyn Fn(&Entry, &Entry) -> Ordering + Send + Sync>;
+
 /// An immutable, operation-based conflict-free replicated data type ([CRDT]).
 ///
 /// [CRDT]: https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type
@@ -25,7 +28,7 @@ pub struct Log {
     length: usize,
     heads: Vec<Arc<Entry>>,
     nexts: HashSet<String>,
-    sort_fn: Box<dyn Fn(&Entry, &Entry) -> Ordering + Send + Sync>,
+    sort_fn: EntrySortFn,
     clock: LamportClock,
 }
 
@@ -51,7 +54,7 @@ pub struct LogOptions<'a> {
     pub entries: &'a [Arc<Entry>],
     pub heads: &'a [Arc<Entry>],
     pub clock: Option<LamportClock>,
-    pub sort_fn: Option<Box<dyn Fn(&Entry, &Entry) -> Ordering + Send + Sync>>,
+    pub sort_fn: Option<EntrySortFn>,
 }
 
 impl<'a> LogOptions<'a> {
@@ -147,7 +150,7 @@ impl Log {
         let length = entries.len();
 
         let heads = Log::dedup(&if heads.is_empty() {
-            Log::find_heads(&entries)
+            Log::find_heads(entries)
         } else {
             heads.to_owned()
         });
@@ -175,15 +178,15 @@ impl Log {
 
         Log {
             ipfs: ipfs.clone(),
-            id: id,
-            identity: identity,
-            access: access,
+            id,
+            identity,
+            access,
             entries: entry_set,
-            length: length,
-            heads: heads,
-            nexts: nexts,
-            sort_fn: sort_fn,
-            clock: clock,
+            length,
+            heads,
+            nexts,
+            sort_fn,
+            clock,
         }
     }
 
@@ -205,7 +208,7 @@ impl Log {
     ) -> Log {
         let es = Entry::fetch_entries(&ipfs, &[hash.to_owned()])
             .into_iter()
-            .map(|x| Arc::new(x))
+            .map(Arc::new)
             .collect::<Vec<Arc<Entry>>>();
         Log::new(ipfs, identity, opts.entries(&es).heads(&[]))
     }
@@ -218,7 +221,7 @@ impl Log {
         for h in &self.heads {
             t_new = max(t_new, h.clock().time());
         }
-        t_new = t_new + 1;
+        t_new += 1;
         self.clock = LamportClock::new(self.clock.id()).set_time(t_new);
 
         let mut heads = Vec::new();
@@ -281,7 +284,7 @@ impl Log {
         if self.id != other.id {
             return None;
         }
-        let new_items = other.diff(&self);
+        let new_items = other.diff(self);
 
         //something about identify provider and verification,
         //implement later
@@ -289,7 +292,7 @@ impl Log {
         //...
 
         for e in &new_items {
-            if let None = self.get(e.0) {
+            if self.get(e.0).is_none() {
                 self.length += 1;
             }
             for n in e.1.next() {
@@ -314,14 +317,13 @@ impl Log {
             &self
                 .heads
                 .iter()
-                .chain(other.heads.iter())
-                .map(|x| x.clone())
+                .chain(other.heads.iter()).cloned()
                 .collect::<Vec<_>>()[..],
         );
         let merged_heads: Vec<Arc<Entry>> = all_heads
             .into_iter()
-            .filter(|x| !nexts_from_new_items.contains(&x.hash().to_owned()))
-            .filter(|x| !self.nexts.contains(&x.hash().to_owned()))
+            .filter(|x| !nexts_from_new_items.contains(x.hash()))
+            .filter(|x| !self.nexts.contains(x.hash()))
             .collect();
         self.heads = Log::dedup(&merged_heads[..]);
 
@@ -393,6 +395,11 @@ impl Log {
         self.length
     }
 
+    /// Returns whether the log is empty.
+    pub fn is_empty(&self) -> bool {
+        self.length == 0
+    }
+
     pub fn find_heads(entries: &[Arc<Entry>]) -> Vec<Arc<Entry>> {
         let mut parents = HashMap::<&str, &str>::new();
         for e in entries {
@@ -438,7 +445,7 @@ impl Log {
                 .iter()
                 .filter(|&&x| !hashes.contains(&x[..]))
                 .map(|x| reverses[x].clone())
-                .chain(no_nexts.into_iter())
+                .chain(no_nexts)
                 .collect::<Vec<_>>()[..],
         );
         tails.sort();
@@ -467,7 +474,7 @@ impl Log {
         let mut s = HashSet::new();
         v.iter()
             .filter(|x| s.insert(x.hash()))
-            .map(|x| x.clone())
+            .cloned()
             .collect()
     }
 
@@ -509,7 +516,7 @@ impl Log {
         let mut s = String::from("[ ");
         for e in &self.entries {
             if self.heads.iter().any(|x| x.hash() == e.1.hash()) {
-                s.push_str("^");
+                s.push('^');
             }
             s.push_str(e.0);
             s.push_str(", ");
@@ -531,7 +538,7 @@ impl Log {
             } else {
                 s.push_str("\t\t.,.");
             }
-            s.push_str("\n");
+            s.push('\n');
         }
         s
     }
@@ -608,7 +615,7 @@ impl Display for Log {
         let mut s = String::new();
         for e in es {
             let parents = Entry::find_children(&e, &self.values());
-            if parents.len() >= 1 {
+            if !parents.is_empty() {
                 if parents.len() >= 2 {
                     for _ in 0..parents.len() - 1 {
                         s.push_str("  ");
@@ -617,7 +624,7 @@ impl Display for Log {
                 s.push_str("└─");
             }
             s.push_str(e.payload());
-            s.push_str("\n");
+            s.push('\n');
         }
         write!(f, "{}", s)
     }
