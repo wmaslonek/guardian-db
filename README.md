@@ -6,80 +6,79 @@
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)
-![Version](https://img.shields.io/badge/version-0.8.29-brightgreen.svg)
+![Version](https://img.shields.io/badge/version-0.9.2-brightgreen.svg)
 ![Build Status](https://img.shields.io/badge/build-passing-green.svg)
+![Tests](https://img.shields.io/badge/tests-66%20passed-green.svg)
 
 ## 💬 Join Our Community
 Join our Discord to collaborate: [Join Discord](https://discord.gg/Ezzk8PnGR5)
 
 ## 🔥 What is GuardianDB?
-GuardianDB is a P2P database built on top of IPFS. It allows apps to store and share data without relying on servers, using CRDTs to synchronize and prevent conflicts. GuardianDB is like having a "MongoDB" or "CouchDB", but without a central server, running on IPFS, where each participant keeps a copy and shares changes. 
+GuardianDB is a decentralized, peer-to-peer database built on top of IPFS. It allows applications to store and share data without relying on centralized servers, using CRDTs (Conflict-free Replicated Data Types) to synchronize data and prevent conflicts. Think of GuardianDB as having a "MongoDB" or "CouchDB", but without a central server, running on IPFS, where each participant keeps a copy and shares changes.
 
 ## 🎯 Overview
 
-**GuardianDB** is the definitive evolution of the OrbitDB concept, reimplemented from scratch in Rust to overcome the limitations of previous implementations in JavaScript and Go.
+**GuardianDB** is a complete rewrite of OrbitDB in Rust, designed to overcome the limitations of previous implementations while providing superior performance, safety, and functionality.
 
 ### 🚀 Why GuardianDB is Superior?
 
 **Compared to Original OrbitDB (JavaScript):**
 - **🔒 Memory Safety**: Zero memory vulnerabilities thanks to Rust's ownership system
-- **⚡ 10-100x Performance**: Elimination of V8 overhead and garbage collection
-- **🛡️ Type Safety**: Bug prevention at compile time vs JS runtime errors
+- **⚡ Superior Performance**: Elimination of V8 overhead and garbage collector
+- **🛡️ Type Safety**: Compile-time error prevention vs JavaScript runtime errors
 - **📦 Native Binary**: Standalone executables without Node.js runtime dependencies
-- **🔄 True Concurrency**: Truly parallel async/await without event loop blocking
+- **🔄 True Concurrency**: Fearless concurrency with Tokio async runtime
 
-**Compared to OrbitDB (GO):**
+**Compared to OrbitDB (Go):**
 - **🎯 Zero-Cost Abstractions**: High-level abstractions without performance overhead
-- **🔐 Borrowing System**: Deterministic memory management vs Go's garbage collector
+- **🔐 Ownership System**: Deterministic memory management vs Go's garbage collector
 - **⚙️ LLVM Optimization**: Compilation to highly optimized machine code
-- **🧵 Fearless Concurrency**: Thread system safe by design vs goroutines with data races
+- **🧵 Safe Concurrency**: Thread-safe by design vs potential goroutine data races
 - **📊 Predictable Performance**: No GC pauses, consistent latency
 
-### 💎 Exclusive Rust Advantages
+### 💎 Core Rust Advantages
 
-Introducing: GuardianDB. The Rust Implementation of OrbitDB.
-A decentralized peer-to-peer database built on IPFS, offering:
-
-- **🔒 Type Safety**: Compile-time type safety guarantees (vs JS/Go runtime)
-- **⚡ Performance**: Zero-cost abstractions and LLVM optimizations for maximum speed
+- **🔒 Type Safety**: Compile-time guarantees prevent runtime errors
+- **⚡ Performance**: Zero-cost abstractions and LLVM optimizations
 - **🛡️ Memory Safety**: Ownership system prevents leaks and use-after-free
-- **🌐 Decentralization**: Peer-to-peer system without single points of failure
-- **📦 Native IPFS**: 100% Rust implementation without HTTP dependencies or FFI
-- **🔄 Replication**: Automatic synchronization with safe concurrency
-- **🎪 Event Bus**: Reactive, type-safe and lock-free event system
+- **🌐 Decentralization**: Peer-to-peer architecture with no single points of failure
+- **📦 Native IPFS**: Integrated IPFS Core API implementation
+- **🔄 Event-Driven**: Reactive, type-safe event system with Tokio
 - **⚙️ Zero Runtime**: Standalone binaries without VM or interpreter requirements
-
-### 📈 Performance Benchmarks
-
-| Operation | OrbitDB (JS) | OrbitDB (GO) | GuardianDB | Improvement |
-|-----------|--------------|-------------|-------------|-------------|
-| Document insertion | 1,200 ops/s | 3,500 ops/s | **12,000 ops/s** | 🚀 **10x vs JS** |
-| Complex queries | 800 ops/s | 2,100 ops/s | **8,500 ops/s** | 🚀 **4x vs Go** |
-| Peer replication | 45 MB/s | 120 MB/s | **380 MB/s** | 🚀 **3x vs Go** |
-| Memory usage | 85 MB | 32 MB | **18 MB** | 🚀 **43% less** |
-| Startup time | 2.1s | 800ms | **250ms** | 🚀 **3x faster** |
-
-*Benchmarks performed on AMD Ryzen 7 with NVMe SSD*
 
 ## 🏗️ Architecture
 
 ```
 GuardianDB
-├── Core (guardian.rs)
-├── Stores
-│   ├── Event Log Store    # Immutable event log
-│   ├── Key-Value Store    # Key-value storage
-│   └── Document Store     # JSON documents
-├── IPFS Integration
-│   ├── Kubo Core API      # Native IPFS interface
-│   └── PubSub System      # Peer-to-peer communication
+├── Core (guardian.rs)                # Main database interface
+├── Base Guardian (base_guardian.rs)  # Core database implementation
+├── Store Types
+│   ├── Event Log Store              # Immutable append-only logs
+│   ├── Key-Value Store              # Distributed key-value storage
+│   └── Document Store               # JSON document storage with queries
+├── IPFS Core API
+│   ├── Client (client.rs)           # Native IPFS client implementation
+│   ├── Config (config.rs)           # IPFS configuration management
+│   └── Compat (compat.rs)          # Compatibility layer
+├── PubSub System
+│   ├── Direct Channel              # Peer-to-peer direct communication
+│   ├── Raw PubSub                  # Low-level publish/subscribe
+│   └── Event PubSub                # Event-driven messaging
 ├── Access Control
-│   ├── Guardian AC        # Custom access control
-│   ├── IPFS AC           # IPFS signature-based
-│   └── Simple AC         # Open access
-└── Event System
-    ├── Event Bus          # Centralized event system
-    └── Replicator         # Automatic synchronization
+│   ├── Guardian AC                 # Custom access control system
+│   ├── IPFS AC                     # IPFS signature-based control
+│   └── Simple AC                   # Open access control
+├── Event System
+│   ├── Event Bus (events.rs)       # Type-safe event system
+│   └── Replicator                  # Automatic data synchronization
+├── Data Storage
+│   ├── Cache System                # Multi-level caching (Sled)
+│   ├── Keystore                    # Cryptographic key management
+│   └── Datastore                   # Pluggable storage backends
+└── IPFS Log (ipfs_log/)
+    ├── Entry                       # Individual log entries
+    ├── Identity                    # Peer identity management
+    └── Lamport Clock               # Logical time synchronization
 ```
 
 ## 🚀 Features
@@ -89,9 +88,15 @@ GuardianDB
 #### Event Log Store
 ```rust
 use guardian_db::{GuardianDB, CreateDBOptions};
+use guardian_db::ipfs_core_api::IpfsClient;
+
+// Create IPFS client
+let ipfs = IpfsClient::development().await?;
+
+// Create GuardianDB instance
+let db = GuardianDB::new(ipfs, None).await?;
 
 // Create an event log
-let db = GuardianDB::new(ipfs_client, None).await?;
 let log = db.log("my-log", None).await?;
 
 // Add events
@@ -100,7 +105,7 @@ log.add(b"Second event").await?;
 
 // Iterate over events
 for entry in log.iterator(None).await? {
-    println!("Hash: {}, Data: {:?}", entry.hash, entry.payload);
+    println!("Hash: {}, Data: {:?}", entry.hash(), entry.payload());
 }
 ```
 
@@ -111,13 +116,19 @@ let kv = db.key_value("my-store", None).await?;
 
 // CRUD operations
 kv.put("name", b"Guardian DB").await?;
-kv.put("version", b"0.8.26").await?;
+kv.put("version", b"0.9.2").await?;
 
 let value = kv.get("name").await?;
 println!("Name: {:?}", value);
 
 // Delete
 kv.del("version").await?;
+
+// List all keys
+let keys = kv.keys().await?;
+for key in keys {
+    println!("Key: {}", key);
+}
 ```
 
 #### Document Store
@@ -131,21 +142,31 @@ let docs = db.docs("my-docs", None).await?;
 let doc = json!({
     "name": "Guardian DB",
     "type": "database",
-    "features": ["decentralized", "peer-to-peer"]
+    "version": "0.9.2",
+    "features": ["decentralized", "peer-to-peer", "rust"]
 });
 
 docs.put(doc).await?;
 
-// Search documents
+// Query documents
 let results = docs.query(|doc| {
     doc["type"] == "database"
 }).await?;
+
+println!("Found {} documents", results.len());
 ```
 
 ### Event System
 
 ```rust
 use guardian_db::events::EventBus;
+use serde::{Serialize, Deserialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DatabaseEvent {
+    action: String,
+    data: Vec<u8>,
+}
 
 // Create event bus
 let event_bus = EventBus::new();
@@ -156,22 +177,28 @@ let emitter = event_bus.emitter::<DatabaseEvent>().await?;
 // Subscribe to events
 let mut receiver = event_bus.subscribe::<DatabaseEvent>().await?;
 
+// Spawn listener task
+tokio::spawn(async move {
+    while let Ok(event) = receiver.recv().await {
+        println!("Event received: {:?}", event);
+    }
+});
+
 // Emit event
 emitter.emit(DatabaseEvent {
     action: "created".to_string(),
     data: b"new database".to_vec(),
 })?;
-
-// Receive events
-while let Ok(event) = receiver.recv().await {
-    println!("Event received: {:?}", event);
-}
 ```
 
-### Native IPFS
+### IPFS Core API
 
 ```rust
-use guardian_db::kubo_core_api::{KuboCoreApiClient, ClientConfig};
+use guardian_db::ipfs_core_api::{IpfsClient, ClientConfig};
+use std::io::Cursor;
+
+// Development configuration (for testing)
+let client = IpfsClient::development().await?;
 
 // Custom configuration
 let config = ClientConfig {
@@ -182,12 +209,28 @@ let config = ClientConfig {
         "/ip4/127.0.0.1/tcp/0".to_string(),
     ],
     bootstrap_peers: vec![],
+    enable_mdns: false,
+    enable_kad: false,
+    ..Default::default()
 };
 
-let ipfs = KuboCoreApiClient::new(config).await?;
+let ipfs = IpfsClient::new(config).await?;
 
-// Use with Guardian DB
-let db = GuardianDB::new_with_ipfs(ipfs, None).await?;
+// Add data to IPFS
+let data = "Hello, IPFS!".as_bytes();
+let cursor = Cursor::new(data.to_vec());
+let response = ipfs.add(cursor).await?;
+
+println!("Added to IPFS: {}", response.hash);
+
+// Retrieve data from IPFS
+let mut stream = ipfs.cat(&response.hash).await?;
+let mut buffer = Vec::new();
+
+use tokio::io::AsyncReadExt;
+stream.read_to_end(&mut buffer).await?;
+
+println!("Retrieved: {}", String::from_utf8(buffer)?);
 ```
 
 ## 📦 Installation
@@ -196,8 +239,8 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-guardian-db = "0.8.26"
-tokio = { version = "1.0", features = ["full"] }
+guardian-db = "0.9.2"
+tokio = { version = "1.47", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 ```
@@ -208,12 +251,12 @@ serde_json = "1.0"
 
 ```rust
 use guardian_db::{GuardianDB, NewGuardianDBOptions};
-use guardian_db::kubo_core_api::KuboCoreApiClient;
+use guardian_db::ipfs_core_api::IpfsClient;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Configure IPFS client
-    let ipfs = KuboCoreApiClient::default().await?;
+    let ipfs = IpfsClient::development().await?;
     
     // Configure Guardian DB
     let options = NewGuardianDBOptions {
@@ -232,10 +275,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use guardian_db::{
     GuardianDB, NewGuardianDBOptions,
-    kubo_core_api::{KuboCoreApiClient, ClientConfig},
+    ipfs_core_api::{IpfsClient, ClientConfig},
     access_controller::AccessControllerType,
 };
 
+// Advanced IPFS configuration
 let ipfs_config = ClientConfig {
     enable_pubsub: true,
     enable_swarm: true,
@@ -249,39 +293,42 @@ let ipfs_config = ClientConfig {
     bootstrap_peers: vec![
         "/dnsaddr/bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN".to_string(),
     ],
+    ..Default::default()
 };
 
-let ipfs = KuboCoreApiClient::new(ipfs_config).await?;
+let ipfs = IpfsClient::new(ipfs_config).await?;
 
-let orbit_options = NewGuardianDBOptions {
+// GuardianDB configuration
+let db_options = NewGuardianDBOptions {
     directory: Some("./guardian_data".to_string()),
-    access_controller_type: Some(AccessControllerType::Guardian),
     cache_size: Some(1000),
     ..Default::default()
 };
 
-let db = GuardianDB::new(ipfs, Some(orbit_options)).await?;
+let db = GuardianDB::new(ipfs, Some(db_options)).await?;
 ```
 
 ## 🧪 Examples
 
 See the `examples/` folder for complete examples:
 
-- **`event_bus_usage.rs`** - Event system
-- **`kubo_core_api_usage.rs`** - Native IPFS
-- **`kubo_core_api_simple.rs`** - Basic usage
+- **`ipfs_core_api_demo.rs`** - IPFS Core API usage and testing
+- **`event_bus_usage.rs`** - Event system and publish/subscribe
+- **`direct_channel_transport_demo.rs`** - Direct peer-to-peer communication
 
 Run an example:
 
 ```bash
-cargo run --example kubo_core_api_usage
+cargo run --example ipfs_core_api_demo
+cargo run --example event_bus_usage
+cargo run --example direct_channel_transport_demo
 ```
 
 ## 🛠️ Development
 
 ### Prerequisites
 
-- Rust 1.70+
+- Rust 1.70+ (edition 2024)
 - Git
 
 ### Build
@@ -295,31 +342,42 @@ cargo build
 ### Tests
 
 ```bash
-# All tests
-cargo test
-
-# Specific tests
+# Run all unit tests (66 tests)
 cargo test --lib
-cargo test --test cli
 
-# With logs
+# Run all tests including integration tests requiring IPFS
+cargo test -- --include-ignored
+
+# Run specific test module
+cargo test events::tests
+cargo test ipfs_core_api::client::tests
+
+# Run with debug output
 RUST_LOG=debug cargo test
 ```
 
 ### Features
 
 ```bash
-# Build with specific features
+# Build with native IPFS support (default)
 cargo build --features native-ipfs
+
+# Build without default features
 cargo build --no-default-features
+
+# Check code quality
+cargo clippy
+cargo fmt
 ```
 
 ## 📚 Documentation
 
 - **[API Documentation](docs/)** - Complete API documentation
-- **[Event Bus](docs/event_bus_implementation.md)** - Event system
-- **[IPFS Migration](docs/kubo_migration_analysis.md)** - Native IPFS migration
-- **[Kubo Core API](docs/kubo_core_api_readme.md)** - IPFS interface
+- **[Event Bus Implementation](docs/event_bus_implementation.md)** - Event system architecture
+- **[IPFS Core API](docs/IPFS_CORE_API_README.md)** - Native IPFS client documentation
+- **[Direct Channel Improvements](docs/DIRECT_CHANNEL_IMPROVEMENTS.md)** - P2P communication
+- **[Cache System](docs/CACHE_FIXES.md)** - Multi-level caching architecture
+- **[Datastore Improvements](docs/DATASTORE_IMPROVEMENTS.md)** - Storage backend enhancements
 
 ### Generating Documentation
 
@@ -331,29 +389,37 @@ cargo doc --open
 
 ### ✅ Implemented
 
-- Core GuardianDB
-- Event Log Store
-- Key-Value Store  
-- Document Store
-- Event Bus System
-- Native IPFS Core API
-- Access Controllers
-- Basic replication
+- ✅ Core GuardianDB with async/await
+- ✅ Event Log Store (append-only logs)
+- ✅ Key-Value Store (distributed KV storage)  
+- ✅ Document Store (JSON documents)
+- ✅ Event Bus System (type-safe events)
+- ✅ IPFS Core API (native implementation)
+- ✅ Access Controllers (Guardian, IPFS, Simple)
+- ✅ PubSub System (Direct channels, Raw pubsub)
+- ✅ Cache System (Sled)
+- ✅ Keystore (cryptographic key management)
+- ✅ IPFS Log (CRDTs with Lamport clocks)
+- ✅ Replicator (automatic synchronization)
+- ✅ Error handling and type safety
+- ✅ Comprehensive test suite (66 tests passing)
 
 ### 🚧 In Development
 
-- Advanced Document Store queries
-- Custom Access Controller
-- Performance optimizations
-- Integration tests
-- GuardianKCA (Kubo Core API)
+- 🚧 Advanced Document Store queries and indexing
+- 🚧 Performance optimizations and benchmarks
+- 🚧 Enhanced replication strategies
+- 🚧 WebAssembly support
+- 🚧 Network transport improvements
 
 ### 📋 Planned
 
-- Sharding support
-- Automatic compaction
-- Graphical interface
-- Bindings for other languages
+- 📋 Sharding support for large datasets
+- 📋 Automatic compaction and garbage collection
+- 📋 GraphQL query interface
+- 📋 Language bindings (Python, JavaScript, Go)
+- 📋 Distributed consensus algorithms
+- 📋 Web-based management interface
 
 ## 🤝 Contributing
 
@@ -392,11 +458,15 @@ licensed under the MIT License © EQLabs.
 
 ## 📊 Statistics
 
-- **Language**: 100% Rust
-- **Lines of code**: ~10,000+
-- **Dependencies**: Minimal and secure
-- **Test coverage**: 85%+
+- **Language**: 100% Rust (Edition 2024)
+- **Files**: 71 Rust source files
+- **Lines of code**: ~26,700+ lines
+- **Dependencies**: Minimal and carefully selected
+- **Test coverage**: 66 tests passing, 27 integration tests
+- **Performance**: Zero-cost abstractions with LLVM optimization
+- **Memory safety**: 100% safe Rust code
+- **Concurrency**: Fearless concurrency with Tokio
 
 ---
 
-**GuardianDB** - A secure and performant peer-to-peer database for the decentralized Web.
+**GuardianDB** - A secure, performant, and fully decentralized peer-to-peer database for the modern Web.
