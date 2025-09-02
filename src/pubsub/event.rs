@@ -13,6 +13,7 @@ use tokio::sync::{RwLock, broadcast};
 
 /// Event Bus baseado em canais do Tokio - substitui o event bus do Go
 /// Oferece funcionalidade de pub/sub type-safe usando broadcast channels
+#[derive(Clone)]
 pub struct EventBus {
     channels: Arc<RwLock<HashMap<TypeId, Box<dyn Any + Send + Sync>>>>,
 }
@@ -89,6 +90,15 @@ where
     /// Retorna o número de subscribers ativos
     pub fn receiver_count(&self) -> usize {
         self.sender.receiver_count()
+    }
+
+    /// Fecha o emitter - implementação básica para compatibilidade
+    /// Como broadcast::Sender não tem método close(), esta é uma implementação de compatibilidade
+    pub async fn close(&self) -> Result<()> {
+        // Para broadcast::Sender, não há método close() direto
+        // O channel é fechado automaticamente quando todos os senders são dropados
+        // Por enquanto, esta é uma implementação de compatibilidade que sempre retorna Ok
+        Ok(())
     }
 }
 
