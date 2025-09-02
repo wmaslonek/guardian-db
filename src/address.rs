@@ -50,7 +50,7 @@ impl GuardianDBAddress {
     /// Retorna o endereço raiz (sem caminho)
     pub fn root_address(&self) -> Self {
         Self {
-            root: self.root.clone(),
+            root: self.root,
             path: String::new(),
         }
     }
@@ -65,8 +65,8 @@ impl GuardianDBAddress {
 /// Implementação da trait Address.
 impl Address for GuardianDBAddress {
     fn get_root(&self) -> Cid {
-        // A struct Cid em Rust implementa `Clone`, então podemos retornar uma cópia.
-        self.root.clone()
+        // A struct Cid em Rust implementa `Copy`, então podemos retornar diretamente.
+        self.root
     }
 
     fn get_path(&self) -> &str {
@@ -144,7 +144,7 @@ pub fn is_valid(addr: &str) -> Result<()> {
 /// para dar mais flexibilidade e melhor desempenho ao chamador.
 pub fn parse(addr: &str) -> Result<GuardianDBAddress> {
     // Primeiro, valida o endereço. Em caso de erro, retorna um erro mais descritivo.
-    if let Err(_) = is_valid(addr) {
+    if is_valid(addr).is_err() {
         return Err(GuardianError::InvalidArgument(format!(
             "Não é um endereço GuardianDB válido: '{}'",
             addr
@@ -236,7 +236,7 @@ mod tests {
         let cid = Cid::from_str("QmYyQSo1c1Ym7orWxLYvCrM2EmxFTANf8wXmmE7DWjhx5N").unwrap();
 
         // Test from_cid
-        let addr = GuardianDBAddress::from_cid(cid.clone());
+        let addr = GuardianDBAddress::from_cid(cid);
         assert_eq!(addr.get_root(), cid);
         assert_eq!(addr.get_path(), "");
         assert!(!addr.has_path());
@@ -255,9 +255,9 @@ mod tests {
     #[test]
     fn test_address_equality() {
         let cid = Cid::from_str("QmYyQSo1c1Ym7orWxLYvCrM2EmxFTANf8wXmmE7DWjhx5N").unwrap();
-        let addr1 = GuardianDBAddress::new(cid.clone(), "path".to_string());
-        let addr2 = GuardianDBAddress::new(cid.clone(), "path".to_string());
-        let addr3 = GuardianDBAddress::new(cid.clone(), "different".to_string());
+        let addr1 = GuardianDBAddress::new(cid, "path".to_string());
+        let addr2 = GuardianDBAddress::new(cid, "path".to_string());
+        let addr3 = GuardianDBAddress::new(cid, "different".to_string());
 
         assert!(addr1.equals(&addr2));
         assert!(!addr1.equals(&addr3));
