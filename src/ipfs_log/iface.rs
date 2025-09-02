@@ -123,7 +123,6 @@ pub mod format {
 }
 
 ///============
-
 /// Trait que abstrai um nó IPLD genérico.
 /// Substituto do `format.Node` do Go.
 pub trait Node: Send + Sync {
