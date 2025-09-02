@@ -17,6 +17,12 @@ pub struct KeyValueIndex {
     index: Arc<RwLock<HashMap<String, Vec<u8>>>>,
 }
 
+impl Default for KeyValueIndex {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl KeyValueIndex {
     pub fn new() -> Self {
         Self {
@@ -91,7 +97,7 @@ impl StoreIndex for KeyValueIndex {
 
         for entry in entries {
             // Tenta deserializar o payload como uma operação
-            match serde_json::from_str::<Operation>(&entry.payload()) {
+            match serde_json::from_str::<Operation>(entry.payload()) {
                 Ok(operation) => {
                     if let Some(key) = operation.key() {
                         match operation.op() {
@@ -455,7 +461,7 @@ impl GuardianDBKeyValue {
 
             // Processa todas as entradas do log em ordem
             for entry in entries {
-                match serde_json::from_str::<Operation>(&entry.payload()) {
+                match serde_json::from_str::<Operation>(entry.payload()) {
                     Ok(operation) => {
                         if let Some(key) = operation.key() {
                             let mut index_guard = self.index.index.write();
