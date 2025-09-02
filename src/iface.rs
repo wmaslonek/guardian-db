@@ -2,14 +2,22 @@ use crate::access_controller::{
     manifest::ManifestParams, traits::AccessController, traits::Option as AccessControllerOption,
 };
 use crate::address::Address;
+use crate::data_store::Datastore; // Import da trait Datastore do módulo data_store
 use crate::error::GuardianError;
 use crate::events::{self, EmitterInterface};
 use crate::ipfs_core_api::client::IpfsClient; // Use o cliente local
+use crate::ipfs_log::{entry::Entry, identity::Identity, log::Log};
+use crate::pubsub::event::EventBus; // Import do nosso EventBus
+use crate::stores::{
+    operation::operation::Operation,
+    replicator::{replication_info::ReplicationInfo, replicator::Replicator},
+};
 use cid::Cid;
 use futures::stream::Stream;
 use libp2p::core::PeerId;
 use opentelemetry::global::BoxedTracer;
 use opentelemetry::trace::noop::NoopTracer;
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use slog::Logger;
 use std::any::Any;
@@ -19,17 +27,31 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
-//use crate::ipfs_log::{self, keystore, SortFn, iface as ipfs_log_iface,};
-use crate::data_store::Datastore; // Import da trait Datastore do módulo data_store
-use crate::eqlabs_ipfs_log::{entry::Entry, identity::Identity, log::Log};
-use crate::pubsub::event::EventBus; // Import do nosso EventBus
-use crate::stores::{
-    operation::operation::Operation,
-    replicator::{replication_info::ReplicationInfo, replicator::Replicator},
-};
 
 // Temporary type definitions until proper modules are available
 pub type SortFn = fn(&Entry, &Entry) -> std::cmp::Ordering;
+
+// Type aliases para melhorar legibilidade de assinaturas complexas
+/// Alias para documentos dinâmicos thread-safe
+pub type Document = Box<dyn Any + Send + Sync>;
+
+/// Alias para resultado padrão com GuardianError
+pub type GuardianResult<T> = std::result::Result<T, GuardianError>;
+
+/// Alias para filtros de query assíncronos
+pub type AsyncDocumentFilter = Pin<
+    Box<
+        dyn Fn(
+                &Document,
+            )
+                -> Pin<Box<dyn Future<Output = Result<bool, Box<dyn Error + Send + Sync>>> + Send>>
+            + Send
+            + Sync,
+    >,
+>;
+
+/// Alias para callback de progresso
+pub type ProgressCallback = mpsc::Sender<Entry>;
 
 /// Enum para resolver problema de dyn compatibility do Tracer
 pub enum TracerWrapper {
@@ -72,9 +94,6 @@ impl Drop for TracerSpan {
 // Removemos implementação de Tracer para TracerWrapper por enquanto - será implementada depois
 // quando todos os types estiverem definidos corretamente
 
-// Removido: trait IoInterface - A funcionalidade de I/O está implementada
-// diretamente nos métodos Entry::multihash() e Entry::from_multihash() do eqlabs_ipfs_log
-
 /// equivalente a struct `MessageExchangeHeads` em go
 ///
 /// Adicionamos os derives de `serde` para permitir a serialização e desserialização
@@ -87,7 +106,7 @@ pub struct MessageExchangeHeads {
     pub address: String,
 
     #[serde(rename = "heads")]
-    pub heads: Vec<Entry>, // Em Rust, é mais idiomático ter um Vec de structs do que de ponteiros.
+    pub heads: Vec<Entry>,
 }
 
 /// equivalente a interface `MessageMarshaler` em go
@@ -130,7 +149,6 @@ pub struct CreateDBOptions {
     pub cache: Option<Arc<dyn Datastore>>,
     pub identity: Option<Identity>,
     pub sort_fn: Option<SortFn>,
-    // Removido: pub io: Option<Arc<dyn IoInterface>> - A funcionalidade está em Entry::multihash
     pub timeout: Option<Duration>,
     pub message_marshaler: Option<Arc<dyn MessageMarshaler<Error = GuardianError>>>,
     pub logger: Option<Logger>,
@@ -422,7 +440,8 @@ pub trait Store: Send + Sync {
     fn address(&self) -> &dyn Address;
 
     /// Retorna o índice da store, que mantém o estado atual dos dados.
-    fn index(&self) -> &dyn StoreIndex<Error = Self::Error>;
+    /// Retorna Box para evitar problemas de lifetime com RwLock
+    fn index(&self) -> Box<dyn StoreIndex<Error = Self::Error> + Send + Sync>;
 
     /// Retorna o tipo da store como uma string (ex: "eventlog", "kvstore").
     fn store_type(&self) -> &str;
@@ -431,7 +450,8 @@ pub trait Store: Send + Sync {
     fn replication_status(&self) -> ReplicationInfo;
 
     /// Retorna o replicador responsável pela sincronização de dados.
-    fn replicator(&self) -> &Replicator;
+    /// Retorna Option<Arc> para refletir a realidade arquitetural
+    fn replicator(&self) -> Option<Arc<Replicator>>;
 
     /// Retorna o cache da store.
     fn cache(&self) -> Arc<dyn Datastore>;
@@ -452,7 +472,8 @@ pub trait Store: Send + Sync {
     async fn load_from_snapshot(&mut self) -> Result<(), Self::Error>;
 
     /// Retorna o log de operações (OpLog) subjacente.
-    fn op_log(&self) -> &Log;
+    /// Modificado para retornar Arc para evitar problemas de lifetime
+    fn op_log(&self) -> Arc<RwLock<Log>>;
 
     /// Retorna a instância da API do IPFS.
     fn ipfs(&self) -> Arc<IpfsClient>;
@@ -472,58 +493,112 @@ pub trait Store: Send + Sync {
     async fn add_operation(
         &mut self,
         op: Operation,
-        on_progress_callback: Option<mpsc::Sender<Entry>>,
+        on_progress_callback: Option<ProgressCallback>,
     ) -> Result<Entry, Self::Error>;
 
     /// Retorna o logger.
-    fn logger(&self) -> &Logger;
+    /// Modificado para retornar Arc para evitar problemas de lifetime
+    fn logger(&self) -> Arc<Logger>;
 
     /// Retorna o tracer para telemetria.
     fn tracer(&self) -> Arc<TracerWrapper>;
 
-    // Removido: fn io() - A funcionalidade está em Entry::multihash
-
     /// Retorna o barramento de eventos.
-    fn event_bus(&self) -> EventBus;
+    /// Modificado para retornar Arc para refletir arquitetura real
+    fn event_bus(&self) -> Arc<EventBus>;
 }
 
 /// equivalente a interface `EventLogStore` em go
 ///
-/// Uma store que se comporta como um log de eventos "append-only".
-/// Herda todas as funcionalidades da trait `Store`.
+/// Uma store que se comporta como um log de eventos "append-only" distribuído.
+/// Herda todas as funcionalidades da trait `Store` e adiciona operações
+/// específicas para logs sequenciais imutáveis.
+///
+/// Ideal para casos de uso como auditoria, event sourcing, e sistemas
+/// que requerem histórico completo e ordenado de eventos.
 #[async_trait::async_trait]
 pub trait EventLogStore: Store {
     /// Adiciona um novo dado ao log.
+    /// Os dados são anexados de forma sequencial e imutável.
+    ///
+    /// # Argumentos
+    /// * `data` - Os dados binários a serem adicionados ao log
+    ///
+    /// # Retorna
+    /// A operação ADD criada, contendo metadados do evento adicionado
     async fn add(&mut self, data: Vec<u8>) -> Result<Operation, Self::Error>;
 
     /// Obtém uma entrada específica do log pelo seu CID.
+    /// Permite acesso direto a qualquer entrada histórica.
+    ///
+    /// # Argumentos
+    /// * `cid` - O Content Identifier da entrada desejada
+    ///
+    /// # Retorna
+    /// A operação correspondente ao CID, ou erro se não encontrada
     async fn get(&self, cid: Cid) -> Result<Operation, Self::Error>;
 
     /// Retorna um stream de operações, com opções de filtro.
     /// Em Rust, em vez de passar um canal, é idiomático retornar um `Stream`.
-    // A assinatura exata do retorno pode variar, mas `Stream` é o conceito.
+    ///
+    /// # Nota
+    /// Esta funcionalidade está comentada até que a implementação de Stream seja finalizada.
     // async fn stream(&self, options: Option<StreamOptions>) -> Result<impl Stream<Item = Operation>, Self::Error>;
 
     /// Retorna uma lista de operações que ocorreram na store, com opções de filtro.
+    /// Permite consultas históricas com critérios específicos de tempo/posição.
+    ///
+    /// # Argumentos
+    /// * `options` - Filtros opcionais para limitar/ordenar os resultados
+    ///
+    /// # Retorna
+    /// Lista ordenada de operações que atendem aos critérios
     async fn list(&self, options: Option<StreamOptions>) -> Result<Vec<Operation>, Self::Error>;
 }
 
 /// equivalente a interface `KeyValueStore` em go
 ///
-/// Uma store que se comporta como um banco de dados chave-valor.
-/// Herda todas as funcionalidades da trait `Store`.
+/// Uma store que se comporta como um banco de dados chave-valor distribuído.
+/// Herda todas as funcionalidades da trait `Store` e adiciona operações
+/// específicas para pares chave-valor com semântica CRDT.
+///
+/// Todas as operações são replicadas automaticamente através da rede
+/// e mantêm consistência eventual entre os peers.
 #[async_trait::async_trait]
 pub trait KeyValueStore: Store {
     /// Retorna todos os pares chave-valor da store em um mapa.
+    /// Esta operação lê o estado atual do índice local.
     fn all(&self) -> std::collections::HashMap<String, Vec<u8>>;
 
     /// Define um valor para uma chave específica.
+    /// Cria uma nova operação PUT no log distribuído que será replicada.
+    ///
+    /// # Argumentos
+    /// * `key` - A chave para associar ao valor (não pode estar vazia)
+    /// * `value` - Os dados binários a serem armazenados
+    ///
+    /// # Retorna
+    /// A operação PUT criada, ou erro se a operação falhar
     async fn put(&mut self, key: &str, value: Vec<u8>) -> Result<Operation, Self::Error>;
 
     /// Remove uma chave e seu valor associado.
+    /// Cria uma nova operação DEL no log distribuído que será replicada.
+    ///
+    /// # Argumentos
+    /// * `key` - A chave a ser removida
+    ///
+    /// # Retorna
+    /// A operação DEL criada, ou erro se a chave não existir ou operação falhar
     async fn delete(&mut self, key: &str) -> Result<Operation, Self::Error>;
 
     /// Obtém o valor associado a uma chave.
+    /// Consulta o índice local para o estado mais recente.
+    ///
+    /// # Argumentos
+    /// * `key` - A chave a ser procurada
+    ///
+    /// # Retorna
+    /// `Some(Vec<u8>)` se a chave existir, `None` se não existir, ou erro se houver falha no acesso
     async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Self::Error>;
 }
 
@@ -550,50 +625,40 @@ pub struct DocumentStoreQueryOptions {
 /// Uma store que lida com documentos (objetos semi-estruturados).
 /// O tipo `interface{}` de Go é traduzido para `Box<dyn Any + Send + Sync>` em Rust
 /// para permitir o armazenamento de qualquer tipo de dado de forma dinâmica e segura.
+///
+/// Esta trait combina funcionalidades de store básica com operações específicas
+/// para documentos, incluindo consultas avançadas e operações em lote.
 #[async_trait::async_trait]
 pub trait DocumentStore: Store {
     /// Armazena um único documento.
-    async fn put(&mut self, document: Box<dyn Any + Send + Sync>)
-    -> Result<Operation, Self::Error>;
+    /// O documento deve implementar as traits Send + Sync para thread safety.
+    async fn put(&mut self, document: Document) -> Result<Operation, Self::Error>;
 
     /// Deleta um documento pela sua chave.
+    /// Retorna a operação de deleção que foi aplicada ao log.
     async fn delete(&mut self, key: &str) -> Result<Operation, Self::Error>;
 
     /// Adiciona múltiplos documentos em operações separadas e retorna a última.
-    async fn put_batch(
-        &mut self,
-        values: Vec<Box<dyn Any + Send + Sync>>,
-    ) -> Result<Operation, Self::Error>;
+    /// Cada documento é processado individualmente, criando uma entrada separada no log.
+    async fn put_batch(&mut self, values: Vec<Document>) -> Result<Operation, Self::Error>;
 
     /// Adiciona múltiplos documentos em uma única operação e a retorna.
-    async fn put_all(
-        &mut self,
-        values: Vec<Box<dyn Any + Send + Sync>>,
-    ) -> Result<Operation, Self::Error>;
+    /// Todos os documentos são incluídos em uma única entrada do log.
+    async fn put_all(&mut self, values: Vec<Document>) -> Result<Operation, Self::Error>;
 
     /// Recupera documentos por uma chave, com opções de busca.
+    /// Suporta busca case-insensitive e correspondências parciais baseadas nas opções.
     async fn get(
         &self,
         key: &str,
         opts: Option<DocumentStoreGetOptions>,
-    ) -> Result<Vec<Box<dyn Any + Send + Sync>>, Self::Error>;
+    ) -> Result<Vec<Document>, Self::Error>;
 
     /// Encontra documentos usando uma função de filtro (predicado).
     /// A função de filtro em Go é `func(doc interface{}) (bool, error)`, que é traduzida
     /// para uma closure que pode falhar (`Result<bool, ...>`).
-    async fn query(
-        &self,
-        filter: Pin<
-            Box<
-                dyn Fn(
-                        &Box<dyn Any + Send + Sync>,
-                    ) -> Pin<
-                        Box<dyn Future<Output = Result<bool, Box<dyn Error + Send + Sync>>> + Send>,
-                    > + Send
-                    + Sync,
-            >,
-        >,
-    ) -> Result<Vec<Box<dyn Any + Send + Sync>>, Self::Error>;
+    /// A closure deve ser thread-safe (Send + Sync) para permitir processamento paralelo.
+    async fn query(&self, filter: AsyncDocumentFilter) -> Result<Vec<Document>, Self::Error>;
 }
 
 /// equivalente a interface `StoreIndex` em go
@@ -601,56 +666,161 @@ pub trait DocumentStore: Store {
 /// Index contém o estado atual de uma store. Ele processa o log de
 /// operações (`OpLog`) para construir a visão mais recente dos dados,
 /// implementando a lógica do CRDT.
+///
+/// REFATORAÇÃO: Removido o método get() problemático que retornava referências
+/// incompatíveis com dados protegidos por lock. Adicionados métodos mais específicos
+/// e seguros para diferentes tipos de acesso aos dados.
 pub trait StoreIndex: Send + Sync {
     type Error: Error + Send + Sync + 'static;
 
-    /// Retorna o estado atual para uma determinada chave.
-    /// Retorna `Option` para indicar se a chave existe ou não.
-    fn get(&self, key: &str) -> Option<&(dyn Any + Send + Sync)>;
+    /// Verifica se uma chave existe no índice.
+    /// Método seguro que não requer acesso aos dados em si.
+    fn contains_key(&self, key: &str) -> std::result::Result<bool, Self::Error>;
+
+    /// Retorna uma cópia dos dados para uma chave específica como bytes.
+    /// Método seguro que funciona com qualquer implementação de sincronização.
+    fn get_bytes(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, Self::Error>;
+
+    /// Retorna todas as chaves disponíveis no índice.
+    /// Útil para iteração e operações de listagem.
+    fn keys(&self) -> std::result::Result<Vec<String>, Self::Error>;
+
+    /// Retorna o número de entradas no índice.
+    fn len(&self) -> std::result::Result<usize, Self::Error>;
+
+    /// Verifica se o índice está vazio.
+    fn is_empty(&self) -> std::result::Result<bool, Self::Error>;
 
     /// Atualiza o índice aplicando novas entradas do log de operações.
     /// Recebe `&mut self` pois este método modifica o estado do índice.
-    fn update_index(&mut self, log: &Log, entries: &[Entry]) -> Result<(), Self::Error>;
+    fn update_index(
+        &mut self,
+        log: &Log,
+        entries: &[Entry],
+    ) -> std::result::Result<(), Self::Error>;
+
+    /// Limpa todos os dados do índice.
+    /// Útil para reset ou reconstrução completa.
+    fn clear(&mut self) -> std::result::Result<(), Self::Error>;
 }
 
 /// equivalente a struct `NewStoreOptions` em go
 ///
 /// Opções detalhadas para a criação de uma nova instância de Store.
-/// Interfaces são representadas por `Arc<dyn Trait>` e ponteiros/tipos opcionais
-/// por `Option<T>`.
+/// Esta struct é o ponto central de configuração para todas as funcionalidades
+/// avançadas de uma store, incluindo índices, cache, replicação e telemetria.
+///
+/// # Organização dos campos:
+/// - **Core**: Campos essenciais para funcionamento básico
+/// - **Networking**: Configurações de rede e comunicação P2P  
+/// - **Performance**: Cache, índices e otimizações
+/// - **Observability**: Logging, telemetria e monitoramento
+/// - **Lifecycle**: Callbacks e gerenciamento de recursos
 pub struct NewStoreOptions {
+    // === CORE CONFIGURATION ===
+    /// Barramento de eventos para comunicação interna
     pub event_bus: Option<EventBus>,
-    pub index: Option<IndexConstructor>,
-    pub access_controller: Option<Arc<dyn AccessController>>,
-    pub cache: Option<Arc<dyn Datastore>>,
 
-    /// Closure para destruir o cache, pode falhar.
-    pub cache_destroy: Option<Box<dyn FnOnce() -> Result<(), Box<dyn Error + Send + Sync>>>>,
-    pub replication_concurrency: Option<u32>,
-    pub reference_count: Option<i32>,
-    pub replicate: Option<bool>,
-    pub max_history: Option<i32>,
+    /// Construtor do índice personalizado para a store
+    pub index: Option<IndexConstructor>,
+
+    /// Controlador de acesso para permissões e autenticação
+    pub access_controller: Option<Arc<dyn AccessController>>,
+
+    /// Diretório base para armazenamento de dados
     pub directory: String,
-    pub sort_fn: Option<SortFn>, // Tipo `SortFn` não está definido neste escopo
-    pub logger: Option<Logger>,
-    pub tracer: Option<Arc<TracerWrapper>>,
-    // Removido: pub io: Option<Arc<dyn IoInterface>> - A funcionalidade está em Entry::multihash
-    pub pubsub: Option<Arc<dyn PubSubInterface<Error = GuardianError>>>,
-    pub message_marshaler: Option<Arc<dyn MessageMarshaler<Error = GuardianError>>>,
+
+    /// Função de ordenação personalizada para entradas do log
+    pub sort_fn: Option<SortFn>,
+
+    // === NETWORKING & P2P ===
+    /// Identificador único do peer na rede P2P
     pub peer_id: PeerId,
+
+    /// Interface PubSub para comunicação distribuída
+    pub pubsub: Option<Arc<dyn PubSubInterface<Error = GuardianError>>>,
+
+    /// Canal direto para comunicação peer-to-peer
     pub direct_channel: Option<Arc<dyn DirectChannel<Error = GuardianError>>>,
 
-    /// Closure para ser executada no fechamento.
+    /// Marshaler para serialização de mensagens de rede
+    pub message_marshaler: Option<Arc<dyn MessageMarshaler<Error = GuardianError>>>,
+
+    // === PERFORMANCE & STORAGE ===
+    /// Sistema de cache para otimização de acesso a dados
+    pub cache: Option<Arc<dyn Datastore>>,
+
+    /// Callback para destruição do cache (pode falhar)
+    pub cache_destroy: Option<Box<dyn FnOnce() -> Result<(), Box<dyn Error + Send + Sync>>>>,
+
+    /// Número de workers para replicação concorrente
+    pub replication_concurrency: Option<u32>,
+
+    /// Contador de referências para garbage collection
+    pub reference_count: Option<i32>,
+
+    /// Limite máximo de entradas no histórico
+    pub max_history: Option<i32>,
+
+    // === BEHAVIOR FLAGS ===
+    /// Habilita/desabilita replicação automática
+    pub replicate: Option<bool>,
+
+    // === OBSERVABILITY ===
+    /// Sistema de logging estruturado
+    pub logger: Option<Logger>,
+
+    /// Tracer para telemetria distribuída (OpenTelemetry)
+    pub tracer: Option<Arc<TracerWrapper>>,
+
+    // === LIFECYCLE MANAGEMENT ===
+    /// Callback executado no fechamento da store
     pub close_func: Option<Box<dyn FnOnce() + Send>>,
 
-    /// Opções específicas para um tipo de store.
+    // === EXTENSIBILITY ===
+    /// Opções específicas do tipo de store (extensibilidade)
+    /// Permite que diferentes tipos de store tenham configurações customizadas
     pub store_specific_opts: Option<Box<dyn Any + Send + Sync>>,
+}
+
+impl Default for NewStoreOptions {
+    fn default() -> Self {
+        // Create a dummy PeerId for default - in real usage this should be properly generated
+        let peer_id = PeerId::from_bytes(&[0u8; 32]).unwrap_or_else(|_| {
+            // Fallback: generate a random PeerId
+            libp2p::identity::Keypair::generate_ed25519()
+                .public()
+                .to_peer_id()
+        });
+
+        Self {
+            event_bus: None,
+            index: None,
+            access_controller: None,
+            directory: String::new(),
+            sort_fn: None,
+            peer_id,
+            pubsub: None,
+            direct_channel: None,
+            message_marshaler: None,
+            cache: None,
+            cache_destroy: None,
+            replication_concurrency: None,
+            reference_count: None,
+            max_history: None,
+            replicate: None,
+            logger: None,
+            tracer: None,
+            close_func: None,
+            store_specific_opts: None,
+        }
+    }
 }
 
 /// equivalente a struct `DirectChannelOptions` em go
 ///
 /// Opções para configurar um `DirectChannel`.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct DirectChannelOptions {
     pub logger: Option<Logger>,
 }
@@ -660,7 +830,7 @@ pub struct DirectChannelOptions {
 /// Uma trait para a comunicação direta com outro par na rede.
 /// Os métodos são `async` pois envolvem operações de rede.
 #[async_trait::async_trait]
-pub trait DirectChannel: Send + Sync {
+pub trait DirectChannel: Send + Sync + std::any::Any {
     type Error: Error + Send + Sync + 'static;
 
     /// Espera até que a conexão com o outro par seja estabelecida.
@@ -671,6 +841,9 @@ pub trait DirectChannel: Send + Sync {
 
     /// Fecha a conexão.
     async fn close(&mut self) -> Result<(), Self::Error>;
+
+    /// Método auxiliar para downcast
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 /// equivalente a struct `EventPubSubPayload` em go
@@ -797,7 +970,7 @@ pub trait PubSubTopic: Send + Sync {
 ///
 /// Interface principal do sistema pub/sub.
 #[async_trait::async_trait]
-pub trait PubSubInterface: Send + Sync {
+pub trait PubSubInterface: Send + Sync + std::any::Any {
     type Error: Error + Send + Sync + 'static;
 
     /// Inscreve-se em um tópico.
@@ -805,6 +978,9 @@ pub trait PubSubInterface: Send + Sync {
         &mut self,
         topic: &str,
     ) -> Result<Arc<dyn PubSubTopic<Error = GuardianError>>, Self::Error>;
+
+    /// Método auxiliar para downcast
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 /// equivalente a struct `PubSubSubscriptionOptions` em go
@@ -817,7 +993,7 @@ pub struct PubSubSubscriptionOptions {
     pub tracer: Option<Arc<TracerWrapper>>,
 }
 
-/// EventPubSub::Leaveequivalente a struct `EventPubSubLeave` em go
+/// EventPubSub::Leave equivalente a struct `EventPubSubLeave` em go
 /// Representa um evento disparado quando um par (peer) sai
 /// de um tópico do canal Pub/Sub.
 ///
