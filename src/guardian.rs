@@ -1,8 +1,12 @@
 use crate::base_guardian::{GuardianDB as BaseGuardianDB, NewGuardianDBOptions};
 use crate::error::{GuardianError, Result};
-use crate::iface::{CreateDBOptions, DocumentStore, EventLogStore, KeyValueStore, Store};
+use crate::iface::{
+    AsyncDocumentFilter, CreateDBOptions, Document, DocumentStore, EventLogStore, KeyValueStore,
+    ProgressCallback, Store,
+};
 use crate::ipfs_core_api::client::IpfsClient;
-use std::{any::Any, sync::Arc};
+use parking_lot::RwLock;
+use std::sync::Arc;
 pub struct GuardianDB {
     base: BaseGuardianDB,
 }
@@ -11,7 +15,7 @@ impl GuardianDB {
     /// Cria uma nova instância do GuardianDB
     pub async fn new(ipfs: IpfsClient, options: Option<NewGuardianDBOptions>) -> Result<Self> {
         // Usar imports necessários
-        use crate::eqlabs_ipfs_log::identity::{Identity, Signatures};
+        use crate::ipfs_log::identity::{Identity, Signatures};
 
         // Criar uma identidade temporária para usar com new_orbit_db
         let signatures = Signatures::new("temp_sig", "temp_pub_sig");
@@ -128,7 +132,7 @@ impl Store for EventLogStoreWrapper {
         self.store.address()
     }
 
-    fn index(&self) -> &dyn crate::iface::StoreIndex<Error = GuardianError> {
+    fn index(&self) -> Box<dyn crate::iface::StoreIndex<Error = GuardianError> + Send + Sync> {
         self.store.index()
     }
 
@@ -140,7 +144,7 @@ impl Store for EventLogStoreWrapper {
         self.store.replication_status()
     }
 
-    fn replicator(&self) -> &crate::stores::replicator::replicator::Replicator {
+    fn replicator(&self) -> Option<Arc<crate::stores::replicator::replicator::Replicator>> {
         self.store.replicator()
     }
 
@@ -158,16 +162,12 @@ impl Store for EventLogStoreWrapper {
 
     async fn sync(
         &mut self,
-        _heads: Vec<crate::eqlabs_ipfs_log::entry::Entry>,
+        _heads: Vec<crate::ipfs_log::entry::Entry>,
     ) -> std::result::Result<(), Self::Error> {
         Ok(()) // Similar limitação
     }
 
-    async fn load_more_from(
-        &mut self,
-        _amount: u64,
-        _entries: Vec<crate::eqlabs_ipfs_log::entry::Entry>,
-    ) {
+    async fn load_more_from(&mut self, _amount: u64, _entries: Vec<crate::ipfs_log::entry::Entry>) {
         // Implementação vazia devido às limitações
     }
 
@@ -175,7 +175,7 @@ impl Store for EventLogStoreWrapper {
         Ok(())
     }
 
-    fn op_log(&self) -> &crate::eqlabs_ipfs_log::log::Log {
+    fn op_log(&self) -> Arc<RwLock<crate::ipfs_log::log::Log>> {
         self.store.op_log()
     }
 
@@ -187,7 +187,7 @@ impl Store for EventLogStoreWrapper {
         self.store.db_name()
     }
 
-    fn identity(&self) -> &crate::eqlabs_ipfs_log::identity::Identity {
+    fn identity(&self) -> &crate::ipfs_log::identity::Identity {
         self.store.identity()
     }
 
@@ -198,16 +198,14 @@ impl Store for EventLogStoreWrapper {
     async fn add_operation(
         &mut self,
         _op: crate::stores::operation::operation::Operation,
-        _on_progress_callback: Option<
-            tokio::sync::mpsc::Sender<crate::eqlabs_ipfs_log::entry::Entry>,
-        >,
-    ) -> std::result::Result<crate::eqlabs_ipfs_log::entry::Entry, Self::Error> {
+        _on_progress_callback: Option<ProgressCallback>,
+    ) -> std::result::Result<crate::ipfs_log::entry::Entry, Self::Error> {
         Err(GuardianError::Store(
             "add_operation não disponível através do wrapper".to_string(),
         ))
     }
 
-    fn logger(&self) -> &slog::Logger {
+    fn logger(&self) -> Arc<slog::Logger> {
         self.store.logger()
     }
 
@@ -215,7 +213,7 @@ impl Store for EventLogStoreWrapper {
         self.store.tracer()
     }
 
-    fn event_bus(&self) -> crate::pubsub::event::EventBus {
+    fn event_bus(&self) -> Arc<crate::pubsub::event::EventBus> {
         self.store.event_bus()
     }
 }
@@ -287,7 +285,7 @@ impl Store for KeyValueStoreWrapper {
         self.store.address()
     }
 
-    fn index(&self) -> &dyn crate::iface::StoreIndex<Error = GuardianError> {
+    fn index(&self) -> Box<dyn crate::iface::StoreIndex<Error = GuardianError> + Send + Sync> {
         self.store.index()
     }
 
@@ -299,7 +297,7 @@ impl Store for KeyValueStoreWrapper {
         self.store.replication_status()
     }
 
-    fn replicator(&self) -> &crate::stores::replicator::replicator::Replicator {
+    fn replicator(&self) -> Option<Arc<crate::stores::replicator::replicator::Replicator>> {
         self.store.replicator()
     }
 
@@ -317,23 +315,19 @@ impl Store for KeyValueStoreWrapper {
 
     async fn sync(
         &mut self,
-        _heads: Vec<crate::eqlabs_ipfs_log::entry::Entry>,
+        _heads: Vec<crate::ipfs_log::entry::Entry>,
     ) -> std::result::Result<(), Self::Error> {
         Ok(())
     }
 
-    async fn load_more_from(
-        &mut self,
-        _amount: u64,
-        _entries: Vec<crate::eqlabs_ipfs_log::entry::Entry>,
-    ) {
+    async fn load_more_from(&mut self, _amount: u64, _entries: Vec<crate::ipfs_log::entry::Entry>) {
     }
 
     async fn load_from_snapshot(&mut self) -> std::result::Result<(), Self::Error> {
         Ok(())
     }
 
-    fn op_log(&self) -> &crate::eqlabs_ipfs_log::log::Log {
+    fn op_log(&self) -> Arc<RwLock<crate::ipfs_log::log::Log>> {
         self.store.op_log()
     }
 
@@ -345,7 +339,7 @@ impl Store for KeyValueStoreWrapper {
         self.store.db_name()
     }
 
-    fn identity(&self) -> &crate::eqlabs_ipfs_log::identity::Identity {
+    fn identity(&self) -> &crate::ipfs_log::identity::Identity {
         self.store.identity()
     }
 
@@ -356,16 +350,14 @@ impl Store for KeyValueStoreWrapper {
     async fn add_operation(
         &mut self,
         _op: crate::stores::operation::operation::Operation,
-        _on_progress_callback: Option<
-            tokio::sync::mpsc::Sender<crate::eqlabs_ipfs_log::entry::Entry>,
-        >,
-    ) -> std::result::Result<crate::eqlabs_ipfs_log::entry::Entry, Self::Error> {
+        _on_progress_callback: Option<ProgressCallback>,
+    ) -> std::result::Result<crate::ipfs_log::entry::Entry, Self::Error> {
         Err(GuardianError::Store(
             "add_operation não disponível através do wrapper".to_string(),
         ))
     }
 
-    fn logger(&self) -> &slog::Logger {
+    fn logger(&self) -> Arc<slog::Logger> {
         self.store.logger()
     }
 
@@ -373,7 +365,7 @@ impl Store for KeyValueStoreWrapper {
         self.store.tracer()
     }
 
-    fn event_bus(&self) -> crate::pubsub::event::EventBus {
+    fn event_bus(&self) -> Arc<crate::pubsub::event::EventBus> {
         self.store.event_bus()
     }
 }
@@ -442,7 +434,7 @@ impl Store for DocumentStoreWrapper {
         self.store.address()
     }
 
-    fn index(&self) -> &dyn crate::iface::StoreIndex<Error = GuardianError> {
+    fn index(&self) -> Box<dyn crate::iface::StoreIndex<Error = GuardianError> + Send + Sync> {
         self.store.index()
     }
 
@@ -454,7 +446,7 @@ impl Store for DocumentStoreWrapper {
         self.store.replication_status()
     }
 
-    fn replicator(&self) -> &crate::stores::replicator::replicator::Replicator {
+    fn replicator(&self) -> Option<Arc<crate::stores::replicator::replicator::Replicator>> {
         self.store.replicator()
     }
 
@@ -472,23 +464,19 @@ impl Store for DocumentStoreWrapper {
 
     async fn sync(
         &mut self,
-        _heads: Vec<crate::eqlabs_ipfs_log::entry::Entry>,
+        _heads: Vec<crate::ipfs_log::entry::Entry>,
     ) -> std::result::Result<(), Self::Error> {
         Ok(())
     }
 
-    async fn load_more_from(
-        &mut self,
-        _amount: u64,
-        _entries: Vec<crate::eqlabs_ipfs_log::entry::Entry>,
-    ) {
+    async fn load_more_from(&mut self, _amount: u64, _entries: Vec<crate::ipfs_log::entry::Entry>) {
     }
 
     async fn load_from_snapshot(&mut self) -> std::result::Result<(), Self::Error> {
         Ok(())
     }
 
-    fn op_log(&self) -> &crate::eqlabs_ipfs_log::log::Log {
+    fn op_log(&self) -> Arc<RwLock<crate::ipfs_log::log::Log>> {
         self.store.op_log()
     }
 
@@ -500,7 +488,7 @@ impl Store for DocumentStoreWrapper {
         self.store.db_name()
     }
 
-    fn identity(&self) -> &crate::eqlabs_ipfs_log::identity::Identity {
+    fn identity(&self) -> &crate::ipfs_log::identity::Identity {
         self.store.identity()
     }
 
@@ -511,16 +499,14 @@ impl Store for DocumentStoreWrapper {
     async fn add_operation(
         &mut self,
         _op: crate::stores::operation::operation::Operation,
-        _on_progress_callback: Option<
-            tokio::sync::mpsc::Sender<crate::eqlabs_ipfs_log::entry::Entry>,
-        >,
-    ) -> std::result::Result<crate::eqlabs_ipfs_log::entry::Entry, Self::Error> {
+        _on_progress_callback: Option<ProgressCallback>,
+    ) -> std::result::Result<crate::ipfs_log::entry::Entry, Self::Error> {
         Err(GuardianError::Store(
             "add_operation não disponível através do wrapper".to_string(),
         ))
     }
 
-    fn logger(&self) -> &slog::Logger {
+    fn logger(&self) -> Arc<slog::Logger> {
         self.store.logger()
     }
 
@@ -528,7 +514,7 @@ impl Store for DocumentStoreWrapper {
         self.store.tracer()
     }
 
-    fn event_bus(&self) -> crate::pubsub::event::EventBus {
+    fn event_bus(&self) -> Arc<crate::pubsub::event::EventBus> {
         self.store.event_bus()
     }
 }
@@ -537,7 +523,7 @@ impl Store for DocumentStoreWrapper {
 impl DocumentStore for DocumentStoreWrapper {
     async fn put(
         &mut self,
-        _document: Box<dyn Any + Send + Sync>,
+        _document: Document,
     ) -> std::result::Result<crate::stores::operation::operation::Operation, Self::Error> {
         // Implementação básica - criaria operação PUT para documento
         Err(GuardianError::Store(
@@ -557,7 +543,7 @@ impl DocumentStore for DocumentStoreWrapper {
 
     async fn put_batch(
         &mut self,
-        _values: Vec<Box<dyn Any + Send + Sync>>,
+        _values: Vec<Document>,
     ) -> std::result::Result<crate::stores::operation::operation::Operation, Self::Error> {
         // Implementação básica - criaria múltiplas operações PUT
         Err(GuardianError::Store(
@@ -568,7 +554,7 @@ impl DocumentStore for DocumentStoreWrapper {
 
     async fn put_all(
         &mut self,
-        _values: Vec<Box<dyn Any + Send + Sync>>,
+        _values: Vec<Document>,
     ) -> std::result::Result<crate::stores::operation::operation::Operation, Self::Error> {
         // Implementação básica - criaria uma operação PUTALL
         Err(GuardianError::Store(
@@ -581,7 +567,7 @@ impl DocumentStore for DocumentStoreWrapper {
         &self,
         _key: &str,
         _opts: Option<crate::iface::DocumentStoreGetOptions>,
-    ) -> std::result::Result<Vec<Box<dyn Any + Send + Sync>>, Self::Error> {
+    ) -> std::result::Result<Vec<Document>, Self::Error> {
         // Implementação básica - buscaria documento por chave
         Err(GuardianError::Store(
             "DocumentStore::get não implementado".to_string(),
@@ -590,24 +576,8 @@ impl DocumentStore for DocumentStoreWrapper {
 
     async fn query(
         &self,
-        _filter: std::pin::Pin<
-            Box<
-                dyn Fn(
-                        &Box<dyn Any + Send + Sync>,
-                    ) -> std::pin::Pin<
-                        Box<
-                            dyn std::future::Future<
-                                    Output = std::result::Result<
-                                        bool,
-                                        Box<dyn std::error::Error + Send + Sync>,
-                                    >,
-                                > + Send,
-                        >,
-                    > + Send
-                    + Sync,
-            >,
-        >,
-    ) -> std::result::Result<Vec<Box<dyn Any + Send + Sync>>, Self::Error> {
+        _filter: AsyncDocumentFilter,
+    ) -> std::result::Result<Vec<Document>, Self::Error> {
         // Implementação básica - faria query nos documentos
         Err(GuardianError::Store(
             "DocumentStore::query não implementado".to_string(),
