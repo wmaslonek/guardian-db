@@ -2,7 +2,6 @@ use crate::error::{GuardianError, Result};
 use cid::Cid;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-// use crate::core::IpfsApi;
 
 /// equivalente a struct Manifest em go
 ///
