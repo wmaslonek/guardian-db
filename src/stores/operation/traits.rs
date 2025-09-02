@@ -1,4 +1,4 @@
-use crate::eqlabs_ipfs_log::entry::Entry;
+use crate::ipfs_log::entry::Entry;
 
 /// equivalente à interface OpDoc em go
 pub trait OpDoc {
