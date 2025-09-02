@@ -20,11 +20,13 @@ use parking_lot::RwLock;
 use rand::RngCore;
 use slog::{Discard, Logger, debug, error, o, warn};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+// Type aliases para simplificar tipos complexos
+type CloseKeystoreFn = Arc<RwLock<Option<Box<dyn Fn() -> Result<()> + Send + Sync>>>>;
 // Type alias para Store com GuardianError
 type GuardianStore = dyn Store<Error = GuardianError> + Send + Sync;
 
@@ -52,17 +54,20 @@ pub struct GuardianDB {
     identity: Arc<RwLock<Identity>>,
     id: Arc<RwLock<PeerId>>,
     keystore: Arc<RwLock<Option<Box<dyn Keystore + Send + Sync>>>>,
-    close_keystore: Arc<RwLock<Option<Box<dyn Fn() -> Result<()> + Send + Sync>>>>,
+    close_keystore: CloseKeystoreFn,
     logger: Logger,
     tracer: Arc<BoxedTracer>,
     stores: Arc<RwLock<HashMap<String, Arc<GuardianStore>>>>,
+    #[allow(dead_code)]
     direct_channel: Arc<dyn DirectChannel<Error = GuardianError> + Send + Sync>,
     access_controller_types: Arc<RwLock<HashMap<String, AccessControllerConstructor>>>,
     store_types: Arc<RwLock<HashMap<String, StoreConstructor>>>,
     directory: PathBuf,
     cache: Arc<RwLock<Arc<LevelDownCache>>>,
+    #[allow(dead_code)]
     pubsub: Option<Box<dyn PubSubInterface<Error = GuardianError>>>,
     event_bus: Arc<EventBusImpl>,
+    #[allow(dead_code)]
     message_marshaler: Box<dyn MessageMarshaler<Error = GuardianError>>,
     _monitor_handle: JoinHandle<()>, // Handle para a task em background, para que possa ser cancelada no Drop.
     cancellation_token: CancellationToken,
@@ -150,7 +155,7 @@ impl GuardianDB {
         let mut options = options.unwrap_or_default();
 
         // Extrair peer_id do HyperIpfsClient se possível, senão usar um aleatório
-        let peer_id = options.peer_id.unwrap_or_else(|| PeerId::random());
+        let peer_id = options.peer_id.unwrap_or_else(PeerId::random);
 
         // Se o diretório não for fornecido, usa um padrão baseado no peer_id
         let default_dir = PathBuf::from("./GuardianDB").join(peer_id.to_string());
@@ -202,7 +207,7 @@ impl GuardianDB {
             rng.fill_bytes(&mut secret_bytes);
 
             // Gerar chave pública a partir da privada (simplificado)
-            let pub_key_hex = hex::encode(&secret_bytes);
+            let pub_key_hex = hex::encode(secret_bytes);
 
             // Criar assinaturas criptográficas para a identidade
             let signatures = Signatures::new(
@@ -408,6 +413,7 @@ impl GuardianDB {
     }
 
     /// Processa um evento de troca de "heads", sincronizando as novas entradas com a store local.
+    #[allow(dead_code)]
     async fn handle_event_exchange_heads_internal(
         &self,
         msg: &MessageExchangeHeads,
@@ -686,7 +692,7 @@ impl GuardianDB {
 
         // Carrega o cache salvo localmente.
         let directory_path = PathBuf::from(&directory);
-        let _db_cache = self.load_cache(&directory_path, &db_address).await?;
+        self.load_cache(directory_path.as_path(), &db_address).await?;
 
         // Verifica se o banco de dados já existe localmente.
         let have_db = self.have_local_data(&db_address).await;
@@ -748,10 +754,12 @@ impl GuardianDB {
 
             options.overwrite = Some(true);
             // Para evitar o borrow check, criamos novas options
-            let mut new_options = CreateDBOptions::default();
-            new_options.overwrite = Some(true);
-            new_options.create = Some(true);
-            new_options.store_type = Some(store_type.to_string());
+            let new_options = CreateDBOptions {
+                overwrite: Some(true),
+                create: Some(true),
+                store_type: Some(store_type.to_string()),
+                ..Default::default()
+            };
 
             // Use Box::pin to break recursion
             return Box::pin(self.create(db_address, store_type, Some(new_options))).await;
@@ -761,7 +769,7 @@ impl GuardianDB {
             .map_err(|e| GuardianError::Other(format!("Erro ao fazer parse do endereço: {}", e)))?;
 
         let directory_path = PathBuf::from(&directory);
-        let _db_cache = self.load_cache(&directory_path, &parsed_address).await?;
+        self.load_cache(directory_path.as_path(), &parsed_address).await?;
 
         if options.local_only.unwrap_or(false) && !self.have_local_data(&parsed_address).await {
             return Err(GuardianError::NotFound(format!(
@@ -779,7 +787,7 @@ impl GuardianDB {
             );
 
             // Implementação de leitura do cache local
-            let _cache_key = format!("{}/_manifest", parsed_address.to_string());
+            let _cache_key = format!("{}/_manifest", parsed_address);
 
             // Tenta primeiro o cache, depois fallback para IPFS
             let cache_result = {
@@ -789,7 +797,7 @@ impl GuardianDB {
                 cache
                     .load_internal(&directory_str, &parsed_address as &dyn Address)
                     .ok()
-                    .and_then(|_| {
+                    .and({
                         // Se o cache foi carregado, verifica se tem o manifesto
                         // Por ora, assume que não tem dados no cache e vai para IPFS
                         None::<Vec<u8>>
@@ -888,7 +896,7 @@ impl GuardianDB {
                 })?;
 
         // Constrói e retorna o endereço final do GuardianDB
-        let addr_string = format!("/GuardianDB/{}/{}", manifest_hash.to_string(), name);
+        let addr_string = format!("/GuardianDB/{}/{}", manifest_hash, name);
         crate::address::parse(&addr_string)
             .map_err(|e| GuardianError::Other(format!("Erro ao fazer parse do endereço: {}", e)))
     }
@@ -897,13 +905,12 @@ impl GuardianDB {
     /// Carrega o cache para um determinado endereço de banco de dados.
     pub async fn load_cache(
         &self,
-        directory: &PathBuf,
+        directory: &Path,
         db_address: &GuardianDBAddress,
     ) -> Result<()> {
         // Carrega o cache usando nossa implementação LevelDownCache
         let cache = self.cache.read();
         let directory_str = directory.to_string_lossy();
-        let address_box: Box<dyn Address> = Box::new(db_address.clone());
 
         debug!(self.logger, "Carregando cache para endereço";
             "address" => db_address.to_string(),
@@ -912,7 +919,7 @@ impl GuardianDB {
 
         // Carrega o cache específico para este endereço
         let _loaded_cache = cache
-            .load_internal(&directory_str, address_box.as_ref())
+            .load_internal(&directory_str, db_address)
             .map_err(|e| GuardianError::Other(format!("Falha ao carregar cache: {}", e)))?;
 
         debug!(self.logger, "Cache carregado com sucesso"; "address" => db_address.to_string());
@@ -922,15 +929,14 @@ impl GuardianDB {
     /// equivalente a func (o *GuardianDB) haveLocalData(...) em go
     /// Verifica se o manifesto de um banco de dados existe no cache local.
     pub async fn have_local_data(&self, db_address: &GuardianDBAddress) -> bool {
-        let _cache_key = format!("{}/_manifest", db_address.to_string());
+        let _cache_key = format!("{}/_manifest", db_address);
 
         // Usa nossa implementação de cache para verificar se os dados existem
         let cache = self.cache.read();
         let directory_str = "./GuardianDB"; // Diretório padrão
-        let address_box: Box<dyn Address> = Box::new(db_address.clone());
 
         // Tenta carregar o cache e verificar se o manifesto existe
-        match cache.load_internal(&directory_str, address_box.as_ref()) {
+        match cache.load_internal(directory_str, db_address) {
             Ok(_wrapped_cache) => {
                 // Verifica se a chave do manifesto existe no cache
                 // Por enquanto, retorna false até implementação completa do has()
@@ -944,20 +950,19 @@ impl GuardianDB {
     /// Adiciona o hash do manifesto de um banco de dados ao cache local.
     pub async fn add_manifest_to_cache(
         &self,
-        directory: &PathBuf,
+        directory: &Path,
         db_address: &GuardianDBAddress,
     ) -> Result<()> {
-        let cache_key = format!("{}/_manifest", db_address.to_string());
+        let cache_key = format!("{}/_manifest", db_address);
         let root_hash_bytes = db_address.get_root().to_string().into_bytes();
 
         // Usa nossa implementação de cache para armazenar o manifesto
         let cache = self.cache.read();
         let directory_str = directory.to_string_lossy();
-        let address_box: Box<dyn Address> = Box::new(db_address.clone());
 
         // Carrega ou cria o datastore para este endereço
         let _wrapped_cache = cache
-            .load_internal(&directory_str, address_box.as_ref())
+            .load_internal(&directory_str, db_address)
             .map_err(|e| GuardianError::Other(format!("Falha ao carregar cache: {}", e)))?;
 
         // Armazena o hash do manifesto no cache
