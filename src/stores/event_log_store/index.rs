@@ -1,8 +1,8 @@
-use crate::eqlabs_ipfs_log::{entry::Entry, log::Log};
-use crate::error::{GuardianError, Result};
+use crate::error::GuardianError;
 use crate::iface::StoreIndex;
+use crate::ipfs_log::{entry::Entry, log::Log};
 use parking_lot::RwLock;
-use std::{any::Any, sync::Arc};
+use std::sync::Arc;
 
 /// Equivalente a struct "eventIndex" em go.
 /// `EventIndex` armazena uma cópia do log completo para queries e stream de eventos.
@@ -56,31 +56,68 @@ impl EventIndex {
 }
 
 /// Implementação do trait StoreIndex para EventIndex.
-/// Isto garante a compatibilidade com a interface, substituindo a verificação
-/// `var _ iface.StoreIndex = &eventIndex{}` do Go.
+/// Agora usando a trait refatorada que resolve os problemas de compatibilidade
+/// com dados protegidos por locks.
 impl StoreIndex for EventIndex {
     type Error = GuardianError;
 
-    /// Equivalente a função "Get" em go.
-    /// Para EventLogStore, retorna todas as entradas do log.
-    /// A chave é ignorada pois EventLog é um log sequencial.
-    fn get(&self, _key: &str) -> Option<&(dyn Any + Send + Sync)> {
-        // Devido às limitações do trait StoreIndex que retorna uma referência,
-        // e nossa implementação usar Arc<RwLock<>>, não podemos retornar uma
-        // referência direta. Use os métodos específicos como get_all_entries()
-        // para acesso aos dados.
-        //
-        // Esta limitação é arquitetural - o trait foi projetado para estruturas
-        // que podem retornar referencias diretas, não para dados protegidos por locks.
-        None
+    /// Verifica se uma chave existe no índice.
+    /// Para EventLogStore, a chave é interpretada como um índice numérico.
+    fn contains_key(&self, key: &str) -> std::result::Result<bool, Self::Error> {
+        if let Ok(index) = key.parse::<usize>() {
+            let cache = self.entries_cache.read();
+            Ok(index < cache.len())
+        } else {
+            Ok(false)
+        }
     }
 
-    /// Equivalente a função "UpdateIndex" em go.
+    /// Retorna uma entrada específica como bytes.
+    /// Para EventLogStore, retorna o payload da entrada no índice especificado.
+    fn get_bytes(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, Self::Error> {
+        if let Ok(index) = key.parse::<usize>() {
+            let cache = self.entries_cache.read();
+            if let Some(entry) = cache.get(index) {
+                // Retorna o payload da entrada como bytes
+                Ok(Some(entry.payload().as_bytes().to_vec()))
+            } else {
+                Ok(None)
+            }
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Retorna todas as "chaves" disponíveis (índices) como strings.
+    fn keys(&self) -> std::result::Result<Vec<String>, GuardianError> {
+        let cache = self.entries_cache.read();
+
+        // Return indices as string keys
+        let keys: Vec<String> = (0..cache.len()).map(|i| i.to_string()).collect();
+
+        Ok(keys)
+    }
+
+    /// Retorna o número de entradas no log.
+    fn len(&self) -> std::result::Result<usize, Self::Error> {
+        let cache = self.entries_cache.read();
+        Ok(cache.len())
+    }
+
+    /// Verifica se o log está vazio.
+    fn is_empty(&self) -> std::result::Result<bool, Self::Error> {
+        let cache = self.entries_cache.read();
+        Ok(cache.is_empty())
+    }
+
     /// Substitui o índice interno pelo novo log fornecido e atualiza o cache.
-    ///
-    /// Nota: Como Log não implementa Clone, vamos reconstruir o cache
+    /// Como Log não implementa Clone, vamos reconstruir o cache
     /// diretamente das entradas fornecidas, que é mais eficiente.
-    fn update_index(&mut self, _log: &Log, entries: &[Entry]) -> Result<()> {
+    fn update_index(
+        &mut self,
+        _log: &Log,
+        entries: &[Entry],
+    ) -> std::result::Result<(), Self::Error> {
         // Atualiza o cache diretamente com as entradas fornecidas
         {
             let mut cache = self.entries_cache.write();
@@ -88,6 +125,13 @@ impl StoreIndex for EventIndex {
             cache.extend_from_slice(entries);
         }
 
+        Ok(())
+    }
+
+    /// Limpa todas as entradas do log.
+    fn clear(&mut self) -> std::result::Result<(), Self::Error> {
+        let mut cache = self.entries_cache.write();
+        cache.clear();
         Ok(())
     }
 }
@@ -103,7 +147,7 @@ pub fn new_event_index(_params: &[u8]) -> Box<dyn StoreIndex<Error = GuardianErr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eqlabs_ipfs_log::{
+    use crate::ipfs_log::{
         entry::Entry,
         identity::{Identity, Signatures},
     };
@@ -183,34 +227,77 @@ mod tests {
         let params = b"test_params";
         let index_box = new_event_index(params);
 
-        // Verify it returns a valid StoreIndex
-        assert!(index_box.get("test").is_none()); // Should return None as per implementation
+        // Verify it returns a valid StoreIndex with the new interface
+        assert!(index_box.is_empty().unwrap()); // Should be empty initially
+        assert_eq!(index_box.len().unwrap(), 0); // Should have length 0
     }
 
     #[test]
     fn test_store_index_trait_implementation() {
-        let index = EventIndex::new();
+        let mut index = EventIndex::new();
 
-        // Test get method (should return None due to architectural limitations)
-        assert!(index.get("any_key").is_none());
+        // Test new trait methods using the internal EventIndex methods
+        assert!(index.is_empty());
+        assert_eq!(index.len(), 0);
+        assert!(index.get_all_entries().is_empty());
 
-        // Test update_index with a simplified approach
-        // Since creating a real Log is complex, we'll test the core functionality
-        // by directly manipulating the internal state and then calling update_index
+        // Test trait methods
+        assert!(
+            (&index as &dyn StoreIndex<Error = GuardianError>)
+                .is_empty()
+                .unwrap()
+        );
+        assert_eq!(
+            (&index as &dyn StoreIndex<Error = GuardianError>)
+                .len()
+                .unwrap(),
+            0
+        );
+        assert!(
+            (&index as &dyn StoreIndex<Error = GuardianError>)
+                .keys()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            !(&index as &dyn StoreIndex<Error = GuardianError>)
+                .contains_key("0")
+                .unwrap()
+        );
+        assert!(
+            (&index as &dyn StoreIndex<Error = GuardianError>)
+                .get_bytes("0")
+                .unwrap()
+                .is_none()
+        );
 
-        // Create a minimal log for testing - this tests the basic functionality
-        // without the complexity of full IPFS setup
-        let _identity = (*create_test_identity()).clone();
+        // Test after adding some entries to cache
+        {
+            let mut cache = index.entries_cache.write();
+            cache.push(create_test_entry("test1"));
+            cache.push(create_test_entry("test2"));
+        }
 
-        // For this test, we'll create a simple log structure
-        // In real usage, the Log would be properly initialized by the BaseStore
+        // Test with data using trait methods
+        let store_index = &index as &dyn StoreIndex<Error = GuardianError>;
+        assert!(!store_index.is_empty().unwrap());
+        assert_eq!(store_index.len().unwrap(), 2);
+        assert_eq!(store_index.keys().unwrap(), vec!["0", "1"]);
+        assert!(store_index.contains_key("0").unwrap());
+        assert!(store_index.contains_key("1").unwrap());
+        assert!(!store_index.contains_key("2").unwrap());
 
-        // Skip the complex IpfsClient setup and just test that update_index accepts parameters
-        // and executes without panicking
-        let _entries: Vec<Entry> = vec![];
+        // Test get_bytes
+        let bytes_0 = store_index.get_bytes("0").unwrap();
+        assert!(bytes_0.is_some());
+        assert_eq!(bytes_0.unwrap(), b"test1".to_vec());
 
-        // Note: We can't easily create a real Log here without async setup,
-        // so we'll test the other functionality instead
+        let bytes_1 = store_index.get_bytes("1").unwrap();
+        assert!(bytes_1.is_some());
+        assert_eq!(bytes_1.unwrap(), b"test2".to_vec());
+
+        // Test clear
+        index.clear().unwrap();
         assert!(index.is_empty());
         assert_eq!(index.len(), 0);
     }
