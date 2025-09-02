@@ -1,5 +1,5 @@
-use crate::eqlabs_ipfs_log::entry::Entry;
 use crate::error::{GuardianError, Result};
+use crate::ipfs_log::entry::Entry;
 use serde::{Deserialize, Serialize};
 use serde_json;
 
@@ -44,10 +44,10 @@ pub struct Operation {
     #[serde(rename = "op")]
     pub op: String,
 
-    #[serde(rename = "value", skip_serializing_if = "Vec::is_empty")]
+    #[serde(rename = "value", skip_serializing_if = "Vec::is_empty", default)]
     pub value: Vec<u8>,
 
-    #[serde(rename = "docs", skip_serializing_if = "Vec::is_empty")]
+    #[serde(rename = "docs", skip_serializing_if = "Vec::is_empty", default)]
     pub docs: Vec<OpDoc>,
 
     #[serde(skip)]
@@ -136,11 +136,11 @@ pub fn parse_operation(entry: Entry) -> Result<Operation> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eqlabs_ipfs_log::identity::Identity;
+    use crate::ipfs_log::identity::Identity;
 
     fn create_test_identity() -> Identity {
         let signatures =
-            crate::eqlabs_ipfs_log::identity::Signatures::new("test_id_sign", "test_pub_sign");
+            crate::ipfs_log::identity::Signatures::new("test_id_sign", "test_pub_sign");
         Identity::new("test_peer", "test_pub_key", signatures)
     }
 
