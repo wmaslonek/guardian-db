@@ -13,6 +13,12 @@ pub struct KvIndex {
     index: Arc<RwLock<HashMap<String, Vec<u8>>>>,
 }
 
+impl Default for KvIndex {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl KvIndex {
     /// equivalente a função NewKVIndex em go.
     /// Em Rust, é um construtor associado à struct.
