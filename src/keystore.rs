@@ -19,9 +19,9 @@ impl SledKeystore {
     pub fn new(path: Option<std::path::PathBuf>) -> Result<Self> {
         let db = match path {
             Some(p) => sled::open(p)
-                .map_err(|e| GuardianError::Other(format!("Erro ao abrir sled: {}", e).into()))?,
+                .map_err(|e| GuardianError::Other(format!("Erro ao abrir sled: {}", e)))?,
             None => sled::Config::new().temporary(true).open().map_err(|e| {
-                GuardianError::Other(format!("Erro ao criar sled temporário: {}", e).into())
+                GuardianError::Other(format!("Erro ao criar sled temporário: {}", e))
             })?,
         };
 
@@ -36,7 +36,7 @@ impl SledKeystore {
     /// Armazena um Keypair libp2p com codificação protobuf
     pub async fn put_keypair(&self, key: &str, keypair: &Keypair) -> Result<()> {
         let encoded = keypair.to_protobuf_encoding().map_err(|e| {
-            GuardianError::Other(format!("Erro ao codificar keypair: {}", e).into())
+            GuardianError::Other(format!("Erro ao codificar keypair: {}", e))
         })?;
         self.put(key, &encoded).await
     }
@@ -46,7 +46,7 @@ impl SledKeystore {
         match self.get(key).await? {
             Some(bytes) => {
                 let keypair = Keypair::from_protobuf_encoding(&bytes).map_err(|e| {
-                    GuardianError::Other(format!("Erro ao decodificar keypair: {}", e).into())
+                    GuardianError::Other(format!("Erro ao decodificar keypair: {}", e))
                 })?;
                 Ok(Some(keypair))
             }
@@ -63,7 +63,7 @@ impl SledKeystore {
             .map(|k| k.map(|key| String::from_utf8_lossy(&key).to_string()))
             .collect();
 
-        keys.map_err(|e| GuardianError::Other(format!("Erro ao listar chaves: {}", e).into()))
+        keys.map_err(|e| GuardianError::Other(format!("Erro ao listar chaves: {}", e)))
     }
 
     /// Fecha o banco de dados, fazendo flush dos dados pendentes
@@ -71,7 +71,7 @@ impl SledKeystore {
         self.db
             .flush_async()
             .await
-            .map_err(|e| GuardianError::Other(format!("Erro ao fechar keystore: {}", e).into()))?;
+            .map_err(|e| GuardianError::Other(format!("Erro ao fechar keystore: {}", e)))?;
         Ok(())
     }
 }
@@ -80,14 +80,14 @@ impl SledKeystore {
 impl KeystoreInterface for SledKeystore {
     async fn put(&self, key: &str, value: &[u8]) -> Result<()> {
         self.db.insert(key, value).map_err(|e| {
-            GuardianError::Other(format!("Erro ao inserir no keystore: {}", e).into())
+            GuardianError::Other(format!("Erro ao inserir no keystore: {}", e))
         })?;
         Ok(())
     }
 
     async fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
         match self.db.get(key).map_err(|e| {
-            GuardianError::Other(format!("Erro ao recuperar do keystore: {}", e).into())
+            GuardianError::Other(format!("Erro ao recuperar do keystore: {}", e))
         })? {
             Some(bytes) => Ok(Some(bytes.to_vec())),
             None => Ok(None),
@@ -96,13 +96,13 @@ impl KeystoreInterface for SledKeystore {
 
     async fn has(&self, key: &str) -> Result<bool> {
         Ok(self.db.contains_key(key).map_err(|e| {
-            GuardianError::Other(format!("Erro ao verificar chave no keystore: {}", e).into())
+            GuardianError::Other(format!("Erro ao verificar chave no keystore: {}", e))
         })?)
     }
 
     async fn delete(&self, key: &str) -> Result<()> {
         self.db.remove(key).map_err(|e| {
-            GuardianError::Other(format!("Erro ao remover do keystore: {}", e).into())
+            GuardianError::Other(format!("Erro ao remover do keystore: {}", e))
         })?;
         Ok(())
     }
