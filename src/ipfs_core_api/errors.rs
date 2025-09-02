@@ -1,4 +1,4 @@
-// ipfs_core_api/errors.rs - Tratamento de erros específicos da API IPFS
+// Tratamento de erros específicos da API IPFS
 //
 // Estende o sistema de erros do GuardianDB com erros específicos do IPFS
 
