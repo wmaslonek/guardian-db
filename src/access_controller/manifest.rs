@@ -3,9 +3,12 @@ use crate::error::{GuardianError, Result};
 use cid::Cid;
 use ipfs_api_backend_hyper::IpfsClient;
 use serde::{Deserialize, Serialize};
-use slog::Logger;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+
+// Type aliases para simplificar tipos complexos
+type LoggerFuture<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>>;
+type LoggerClosure = Box<dyn for<'a> Fn(&'a dyn AccessController) -> LoggerFuture<'a> + Send + Sync>;
 
 /// equivalente a Manifest em go
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -64,7 +67,7 @@ impl<'de> Deserialize<'de> for CreateAccessControllerOptions {
     where
         D: serde::Deserializer<'de>,
     {
-        use serde::de::{self, MapAccess, Visitor};
+        use serde::de::{MapAccess, Visitor};
         use std::fmt;
 
         struct OptionsVisitor;
@@ -84,7 +87,7 @@ impl<'de> Deserialize<'de> for CreateAccessControllerOptions {
                 V: MapAccess<'de>,
             {
                 let mut skip_manifest = false;
-                let mut address = Cid::default();
+                let address = Cid::default();
                 let mut type_field = String::new();
                 let mut name = String::new();
                 let mut access = HashMap::new();
@@ -391,13 +394,7 @@ pub fn create_manifest_with_validation(
 // Retorna uma closure que pode ser aplicada a qualquer AccessController
 pub fn with_logger(
     logger: Arc<slog::Logger>,
-) -> Box<
-    dyn Fn(
-            &dyn AccessController,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>
-        + Send
-        + Sync,
-> {
+) -> LoggerClosure {
     Box::new(move |ac: &dyn AccessController| {
         let logger_clone = logger.clone();
         Box::pin(async move {
