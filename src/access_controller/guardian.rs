@@ -1,15 +1,17 @@
 use crate::access_controller::manifest::CreateAccessControllerOptions;
 use crate::access_controller::{manifest::ManifestParams, utils};
-use crate::address::{Address, GuardianDBAddress};
+use crate::address::Address;
 use crate::error::{GuardianError, Result};
 use crate::iface::{CreateDBOptions, GuardianDBKVStoreProvider, KeyValueStore};
 use crate::ipfs_log::{access_controller, identity_provider::IdentityProvider};
-use async_trait::async_trait;
 use log::warn;
 use slog::Logger;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{RwLock, broadcast};
+
+// Type alias para simplificar tipos complexos
+type KVStoreType = RwLock<Option<Arc<tokio::sync::Mutex<Box<dyn KeyValueStore<Error = GuardianError>>>>>>;
 
 // Simple string wrapper that implements Address for return values
 #[derive(Debug, Clone)]
@@ -47,8 +49,7 @@ pub struct GuardianDBAccessController {
 
     /// O armazém de chave-valor para as permissões. Envolto em RwLock e Option
     /// porque pode ser substituído dinamicamente pela função `load`.
-    kv_store:
-        RwLock<Option<Arc<tokio::sync::Mutex<Box<dyn KeyValueStore<Error = GuardianError>>>>>>,
+    kv_store: KVStoreType,
 
     /// Opções de manifesto.
     options: Box<dyn ManifestParams>,
@@ -114,7 +115,7 @@ impl GuardianDBAccessController {
         for (role, key_bytes) in all_data {
             let authorized_keys: Vec<String> = serde_json::from_slice(&key_bytes)?;
 
-            let entry = authorizations_set.entry(role).or_insert_with(HashSet::new);
+            let entry = authorizations_set.entry(role).or_default();
             for key in authorized_keys {
                 entry.insert(key);
             }
@@ -166,6 +167,7 @@ impl GuardianDBAccessController {
     }
 
     /// equivalente a Grant em go
+    #[allow(dead_code)]
     pub async fn grant(&self, capability: &str, key_id: &str) -> Result<()> {
         let store_guard = self.kv_store.read().await;
         let store_arc = store_guard
@@ -199,6 +201,7 @@ impl GuardianDBAccessController {
     }
 
     /// equivalente a Revoke em go
+    #[allow(dead_code)]
     pub async fn revoke(&self, capability: &str, key_id: &str) -> Result<()> {
         let store_guard = self.kv_store.read().await;
         let store_arc = store_guard
