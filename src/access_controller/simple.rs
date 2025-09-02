@@ -29,13 +29,13 @@ impl SimpleAccessController {
         // Garante que pelo menos as categorias básicas existam
         allowed_keys
             .entry("read".to_string())
-            .or_insert_with(Vec::new);
+            .or_default();
         allowed_keys
             .entry("write".to_string())
-            .or_insert_with(Vec::new);
+            .or_default();
         allowed_keys
             .entry("admin".to_string())
-            .or_insert_with(Vec::new);
+            .or_default();
 
         slog::info!(logger, "Created SimpleAccessController";
             "categories" => ?allowed_keys.keys().collect::<Vec<_>>(),
@@ -51,6 +51,7 @@ impl SimpleAccessController {
     }
 
     /// Cria um novo SimpleAccessController com apenas logger (compatibilidade com código existente)
+    #[allow(dead_code)]
     pub fn new_simple(logger: slog::Logger) -> Self {
         Self::new(logger, None)
     }
@@ -66,12 +67,14 @@ impl SimpleAccessController {
     }
 
     /// Lista todas as capacidades disponíveis
+    #[allow(dead_code)]
     pub async fn list_capabilities(&self) -> Vec<String> {
         let state = self.state.read().await;
         state.allowed_keys.keys().cloned().collect()
     }
 
     /// Verifica se uma chave tem uma capacidade específica
+    #[allow(dead_code)]
     pub async fn has_capability(&self, capability: &str, key_id: &str) -> bool {
         let state = self.state.read().await;
 
