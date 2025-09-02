@@ -1,8 +1,8 @@
 use crate::data_store::Datastore;
-use crate::eqlabs_ipfs_log::{entry::Entry, identity::Identity};
 use crate::error::{GuardianError, Result};
 use crate::iface::{self, EventLogStore, Store, StreamOptions};
 use crate::ipfs_core_api::client::IpfsClient;
+use crate::ipfs_log::{entry::Entry, identity::Identity};
 use crate::pubsub::event::EventBus;
 use crate::stores::base_store::base_store::BaseStore;
 use crate::stores::operation::{operation, operation::Operation};
@@ -65,7 +65,7 @@ impl Store for OrbitDBEventLogStore {
         todo!("Address access needs proper implementation")
     }
 
-    fn index(&self) -> &dyn crate::iface::StoreIndex<Error = GuardianError> {
+    fn index(&self) -> Box<dyn crate::iface::StoreIndex<Error = GuardianError> + Send + Sync> {
         // Temporary placeholder - will need proper implementation
         todo!("Index implementation needed")
     }
@@ -80,9 +80,9 @@ impl Store for OrbitDBEventLogStore {
         crate::stores::replicator::replication_info::ReplicationInfo::new()
     }
 
-    fn replicator(&self) -> &crate::stores::replicator::replicator::Replicator {
-        // For now, return a placeholder
-        todo!("Replicator access needs proper implementation")
+    fn replicator(&self) -> Option<Arc<crate::stores::replicator::replicator::Replicator>> {
+        // For now, return None
+        None
     }
 
     fn cache(&self) -> Arc<dyn Datastore> {
@@ -99,17 +99,13 @@ impl Store for OrbitDBEventLogStore {
 
     async fn sync(
         &mut self,
-        heads: Vec<crate::eqlabs_ipfs_log::entry::Entry>,
+        heads: Vec<crate::ipfs_log::entry::Entry>,
     ) -> std::result::Result<(), Self::Error> {
         self.basestore.sync(heads).await
     }
 
-    async fn load_more_from(
-        &mut self,
-        _amount: u64,
-        entries: Vec<crate::eqlabs_ipfs_log::entry::Entry>,
-    ) {
-        self.basestore.load_more_from(entries)
+    async fn load_more_from(&mut self, _amount: u64, entries: Vec<crate::ipfs_log::entry::Entry>) {
+        let _ = self.basestore.load_more_from(entries);
     }
 
     async fn load_from_snapshot(&mut self) -> std::result::Result<(), Self::Error> {
@@ -118,7 +114,7 @@ impl Store for OrbitDBEventLogStore {
         Ok(())
     }
 
-    fn op_log(&self) -> &crate::eqlabs_ipfs_log::log::Log {
+    fn op_log(&self) -> Arc<parking_lot::RwLock<crate::ipfs_log::log::Log>> {
         // This needs to be refactored - for now return a placeholder
         todo!("OpLog access needs proper implementation")
     }
@@ -143,14 +139,12 @@ impl Store for OrbitDBEventLogStore {
     async fn add_operation(
         &mut self,
         op: Operation,
-        on_progress_callback: Option<
-            tokio::sync::mpsc::Sender<crate::eqlabs_ipfs_log::entry::Entry>,
-        >,
-    ) -> std::result::Result<crate::eqlabs_ipfs_log::entry::Entry, Self::Error> {
+        on_progress_callback: Option<tokio::sync::mpsc::Sender<crate::ipfs_log::entry::Entry>>,
+    ) -> std::result::Result<crate::ipfs_log::entry::Entry, Self::Error> {
         self.basestore.add_operation(op, on_progress_callback).await
     }
 
-    fn logger(&self) -> &slog::Logger {
+    fn logger(&self) -> Arc<slog::Logger> {
         // For now, return a placeholder
         todo!("Logger access needs proper implementation")
     }
@@ -159,9 +153,9 @@ impl Store for OrbitDBEventLogStore {
         self.basestore.tracer()
     }
 
-    fn event_bus(&self) -> EventBus {
+    fn event_bus(&self) -> Arc<EventBus> {
         // TODO: Convert from Arc<EventBus> to EventBus - for now returning a new instance
-        crate::pubsub::event::EventBus::new()
+        Arc::new(crate::pubsub::event::EventBus::new())
     }
 }
 
