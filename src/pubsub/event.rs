@@ -18,6 +18,12 @@ pub struct EventBus {
     channels: Arc<RwLock<HashMap<TypeId, Box<dyn Any + Send + Sync>>>>,
 }
 
+impl Default for EventBus {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EventBus {
     /// Cria um novo Event Bus
     pub fn new() -> Self {
@@ -34,10 +40,10 @@ impl EventBus {
         let type_id = TypeId::of::<T>();
         let mut channels = self.channels.write().await;
 
-        if !channels.contains_key(&type_id) {
+        channels.entry(type_id).or_insert_with(|| {
             let (sender, _) = broadcast::channel::<T>(1024); // Buffer de 1024 eventos
-            channels.insert(type_id, Box::new(sender));
-        }
+            Box::new(sender)
+        });
 
         let sender = channels
             .get(&type_id)
@@ -56,10 +62,10 @@ impl EventBus {
         let type_id = TypeId::of::<T>();
         let mut channels = self.channels.write().await;
 
-        if !channels.contains_key(&type_id) {
+        channels.entry(type_id).or_insert_with(|| {
             let (sender, _) = broadcast::channel::<T>(1024);
-            channels.insert(type_id, Box::new(sender));
-        }
+            Box::new(sender)
+        });
 
         let sender = channels
             .get(&type_id)
