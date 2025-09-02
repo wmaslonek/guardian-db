@@ -1,7 +1,9 @@
-use crate::eqlabs_ipfs_log::{entry::Entry, log::Log};
 use crate::iface::{CreateDocumentDBOptions, StoreIndex};
+use crate::ipfs_log::{entry::Entry, log::Log};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
+
+type Result<T> = std::result::Result<T, crate::error::GuardianError>;
 
 /// DocumentIndex mantém um índice de chave-valor em memória para a DocumentStore.
 pub struct DocumentIndex {
@@ -44,18 +46,43 @@ impl DocumentIndex {
 impl StoreIndex for DocumentIndex {
     type Error = crate::error::GuardianError;
 
-    /// equivalente a Get em go
-    /// Busca um valor no índice pela sua chave.
-    /// Retorna `Some(valor)` se a chave existir, ou `None` caso contrário.
-    fn get(&self, _key: &str) -> Option<&(dyn std::any::Any + Send + Sync)> {
-        // This is a limitation - we can't return a reference to the lock guard
-        // For now, return None until we can restructure the trait properly
-        None
+    /// Verifica se uma chave existe no índice.
+    fn contains_key(&self, key: &str) -> std::result::Result<bool, Self::Error> {
+        let index_lock = self.index.read().unwrap();
+        Ok(index_lock.contains_key(key))
+    }
+
+    /// Retorna uma cópia dos dados para uma chave específica como bytes.
+    fn get_bytes(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, Self::Error> {
+        let index_lock = self.index.read().unwrap();
+        Ok(index_lock.get(key).cloned())
+    }
+
+    /// Retorna todas as chaves disponíveis no índice.
+    fn keys(&self) -> std::result::Result<Vec<String>, Self::Error> {
+        let index_lock = self.index.read().unwrap();
+        Ok(index_lock.keys().cloned().collect())
+    }
+
+    /// Retorna o número de entradas no índice.
+    fn len(&self) -> std::result::Result<usize, Self::Error> {
+        let index_lock = self.index.read().unwrap();
+        Ok(index_lock.len())
+    }
+
+    /// Verifica se o índice está vazio.
+    fn is_empty(&self) -> std::result::Result<bool, Self::Error> {
+        let index_lock = self.index.read().unwrap();
+        Ok(index_lock.is_empty())
     }
 
     /// equivalente a UpdateIndex em go
     /// Atualiza o índice processando as entradas do log de operações (oplog).
-    fn update_index(&mut self, _log: &Log, entries: &[Entry]) -> Result<(), Self::Error> {
+    fn update_index(
+        &mut self,
+        _log: &Log,
+        entries: &[Entry],
+    ) -> std::result::Result<(), Self::Error> {
         // Um conjunto para rastrear chaves já processadas, garantindo que
         // apenas a operação mais recente para cada chave seja aplicada.
         let mut handled = HashSet::new();
@@ -96,6 +123,13 @@ impl StoreIndex for DocumentIndex {
             }
         }
 
+        Ok(())
+    }
+
+    /// Limpa todos os dados do índice.
+    fn clear(&mut self) -> std::result::Result<(), Self::Error> {
+        let mut index = self.index.write().unwrap();
+        index.clear();
         Ok(())
     }
 }
