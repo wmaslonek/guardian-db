@@ -2,8 +2,8 @@ use crate::access_controller::{
     manifest::CreateAccessControllerOptions, manifest::Manifest, manifest::ManifestParams,
 };
 use crate::address::Address;
-use crate::eqlabs_ipfs_log::{access_controller::LogEntry, identity_provider::IdentityProvider};
 use crate::error::{GuardianError, Result};
+use crate::ipfs_log::{access_controller::LogEntry, identity_provider::IdentityProvider};
 use cid::Cid;
 use futures::TryStreamExt;
 use ipfs_api_backend_hyper::{IpfsApi, IpfsClient};
@@ -53,7 +53,7 @@ impl IpfsAccessController {
         &self,
         entry: &dyn LogEntry,
         identity_provider: &dyn IdentityProvider,
-        _additional_context: &dyn crate::eqlabs_ipfs_log::access_controller::CanAppendAdditionalContext,
+        _additional_context: &dyn crate::ipfs_log::access_controller::CanAppendAdditionalContext,
     ) -> Result<()> {
         let state = self.state.read().await;
         let key = entry.get_identity().id();
