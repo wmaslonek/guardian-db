@@ -5,6 +5,7 @@ use std::cmp::Ordering;
 ///
 /// [Lamport clock]: https://en.wikipedia.org/wiki/Lamport_clock
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct LamportClock {
     id: String,
     time: u64,
@@ -13,15 +14,6 @@ pub struct LamportClock {
 // Explicit Send + Sync implementations for LamportClock
 unsafe impl Send for LamportClock {}
 unsafe impl Sync for LamportClock {}
-
-impl Default for LamportClock {
-    fn default() -> Self {
-        Self {
-            id: String::new(),
-            time: 0,
-        }
-    }
-}
 
 impl LamportClock {
     /// Constructs a new Lamport clock with the given identifier.
@@ -59,7 +51,7 @@ impl LamportClock {
 
     /// Merges `o` to `self` in the following manner:
     /// * if `self.time < o.time`, set `self.time = o.time`,
-    /// otherwise do nothing
+    ///   otherwise do nothing
     /// * `o` is never modified
     pub fn merge(&mut self, o: &LamportClock) {
         if self.time < o.time {
@@ -85,16 +77,14 @@ impl Ord for LamportClock {
             } else {
                 Ordering::Greater
             }
-        } else {
-            if delta < 0 {
-                Ordering::Less
-            } else if delta > 0 {
-                Ordering::Greater
-            }
-            //is this necessary/hoped for?
-            else {
-                Ordering::Equal
-            }
+        } else if delta < 0 {
+            Ordering::Less
+        } else if delta > 0 {
+            Ordering::Greater
+        }
+        //is this necessary/hoped for?
+        else {
+            Ordering::Equal
         }
     }
 }
