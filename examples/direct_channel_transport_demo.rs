@@ -2,20 +2,17 @@ use guardian_db::error::{GuardianError, Result};
 use guardian_db::pubsub::direct_channel::{SwarmManager, create_test_peer_id};
 use libp2p::{
     Multiaddr, PeerId,
-    gossipsub::{Behaviour, ConfigBuilder, MessageAuthenticity, TopicHash, ValidationMode},
+    gossipsub::TopicHash,
     identity::Keypair,
-    noise, tcp, yamux,
 };
-use slog::{Drain, Logger};
+use slog::Drain;
 use std::{
     collections::HashMap,
-    sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::sync::{Mutex, RwLock, mpsc};
 
 /// Demonstra uso do transport real em SwarmBuilder
-pub async fn demonstrate_swarm_integration(swarm_manager: &SwarmManager) -> Result<()> {
+pub async fn demonstrate_swarm_integration(_swarm_manager: &SwarmManager) -> Result<()> {
     println!("🔗 Demonstrando integração real com SwarmBuilder...");
 
     let keypair = Keypair::generate_ed25519();
@@ -45,7 +42,7 @@ pub async fn demonstrate_swarm_integration(swarm_manager: &SwarmManager) -> Resu
 }
 
 /// Demonstra uso do transport real em cenários de produção
-pub async fn demonstrate_real_transport_usage(swarm_manager: &SwarmManager) -> Result<()> {
+pub async fn demonstrate_real_transport_usage(_swarm_manager: &SwarmManager) -> Result<()> {
     println!("🚀 Demonstrando uso real do transport em produção...");
 
     // Cenários de uso real que seriam suportados
@@ -88,7 +85,7 @@ pub async fn demonstrate_real_transport_usage(swarm_manager: &SwarmManager) -> R
 }
 
 /// Executa testes de carga no transport
-pub async fn load_test_transport(swarm_manager: &SwarmManager) -> Result<()> {
+pub async fn load_test_transport(_swarm_manager: &SwarmManager) -> Result<()> {
     println!("⚡ Executando teste de carga no transport...");
 
     let start_time = std::time::Instant::now();
@@ -98,10 +95,10 @@ pub async fn load_test_transport(swarm_manager: &SwarmManager) -> Result<()> {
     // Simula teste de carga
     let mut handles = Vec::new();
 
-    for connection_id in 0..concurrent_connections {
+    for _connection_id in 0..concurrent_connections {
         let handle = tokio::spawn(async move {
             // Simula conexão e envio de mensagens
-            for message_id in 0..messages_per_connection {
+            for _message_id in 0..messages_per_connection {
                 // Simula processamento de mensagem
                 tokio::time::sleep(Duration::from_micros(10)).await;
             }
@@ -135,7 +132,7 @@ pub async fn load_test_transport(swarm_manager: &SwarmManager) -> Result<()> {
 
 /// Coleta métricas detalhadas de performance do transport
 pub async fn collect_transport_metrics(
-    swarm_manager: &SwarmManager,
+    _swarm_manager: &SwarmManager,
 ) -> Result<HashMap<String, f64>> {
     println!("📈 Coletando métricas de performance do transport...");
 
@@ -193,7 +190,7 @@ pub async fn collect_transport_metrics(
 }
 
 /// Executa benchmark de performance do transport
-pub async fn benchmark_transport_performance(swarm_manager: &SwarmManager) -> Result<()> {
+pub async fn benchmark_transport_performance(_swarm_manager: &SwarmManager) -> Result<()> {
     println!("🏁 Executando benchmark de performance do transport...");
 
     let start_time = std::time::Instant::now();
@@ -233,7 +230,7 @@ pub async fn benchmark_transport_performance(swarm_manager: &SwarmManager) -> Re
 }
 
 /// Testa robustez do transport com cenários de falha
-pub async fn test_transport_resilience(swarm_manager: &SwarmManager) -> Result<()> {
+pub async fn test_transport_resilience(_swarm_manager: &SwarmManager) -> Result<()> {
     println!("🛡️ Testando robustez do transport...");
 
     let scenarios = vec![
@@ -263,7 +260,7 @@ pub async fn test_transport_resilience(swarm_manager: &SwarmManager) -> Result<(
 }
 
 /// Demonstra configuração completa do transport para integração com SwarmBuilder
-pub async fn create_production_transport(swarm_manager: &SwarmManager) -> Result<String> {
+pub async fn create_production_transport(_swarm_manager: &SwarmManager) -> Result<String> {
     println!("🏭 Criando transport de produção para integração com Swarm...");
 
     let keypair = Keypair::generate_ed25519();
@@ -296,7 +293,7 @@ pub async fn create_production_transport(swarm_manager: &SwarmManager) -> Result
 }
 
 /// Testa conectividade do transport configurado
-pub async fn test_transport_connectivity(swarm_manager: &SwarmManager) -> Result<()> {
+pub async fn test_transport_connectivity(_swarm_manager: &SwarmManager) -> Result<()> {
     println!("🌐 Testando conectividade do transport...");
 
     let keypair = Keypair::generate_ed25519();
