@@ -1,9 +1,8 @@
-use crate::eqlabs_ipfs_log::{entry::Entry, log::Log};
 use crate::error::GuardianError;
 use crate::iface::StoreIndex;
+use crate::ipfs_log::{entry::Entry, log::Log};
 use crate::stores::operation::operation::Operation;
 use parking_lot::RwLock;
-use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -29,11 +28,34 @@ impl KvIndex {
 impl StoreIndex for KvIndex {
     type Error = GuardianError;
 
-    /// equivalente a função Get em go
-    fn get(&self, _key: &str) -> Option<&(dyn Any + Send + Sync)> {
-        // Para compatibilidade com trait, retorna None temporariamente
-        // TODO: Refatorar para suportar referencias seguras
-        None
+    /// Verifica se uma chave existe no índice.
+    fn contains_key(&self, key: &str) -> std::result::Result<bool, Self::Error> {
+        let index = self.index.read();
+        Ok(index.contains_key(key))
+    }
+
+    /// Retorna uma cópia dos dados para uma chave específica como bytes.
+    fn get_bytes(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, Self::Error> {
+        let index = self.index.read();
+        Ok(index.get(key).cloned())
+    }
+
+    /// Retorna todas as chaves disponíveis no índice.
+    fn keys(&self) -> std::result::Result<Vec<String>, Self::Error> {
+        let index = self.index.read();
+        Ok(index.keys().cloned().collect())
+    }
+
+    /// Retorna o número de entradas no índice.
+    fn len(&self) -> std::result::Result<usize, Self::Error> {
+        let index = self.index.read();
+        Ok(index.len())
+    }
+
+    /// Verifica se o índice está vazio.
+    fn is_empty(&self) -> std::result::Result<bool, Self::Error> {
+        let index = self.index.read();
+        Ok(index.is_empty())
     }
 
     /// equivalente a função UpdateIndex em go
@@ -89,6 +111,13 @@ impl StoreIndex for KvIndex {
             }
         }
 
+        Ok(())
+    }
+
+    /// Limpa todos os dados do índice.
+    fn clear(&mut self) -> std::result::Result<(), Self::Error> {
+        let mut index = self.index.write();
+        index.clear();
         Ok(())
     }
 }
