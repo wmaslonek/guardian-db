@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 /// Tipos de erro específicos para guardian-db
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone)]
 pub enum GuardianError {
     #[error("Store error: {0}")]
     Store(String),
@@ -40,25 +40,59 @@ pub enum GuardianError {
     DatabaseAlreadyExists(String),
 
     #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
+    Io(String),
 
     #[error("JSON error: {0}")]
-    Json(#[from] serde_json::Error),
+    Json(String),
 
     #[error("CID error: {0}")]
-    Cid(#[from] cid::Error),
+    Cid(String),
 
     #[error("CBOR error: {0}")]
-    Cbor(#[from] serde_cbor::Error),
+    Cbor(String),
 
     #[error("IPFS API error: {0}")]
-    IpfsApi(#[from] ipfs_api_backend_hyper::Error),
+    IpfsApi(String),
 
     #[error("Datastore error: {0}")]
     Datastore(String),
 
+    #[error("Lock poisoned")]
+    LockPoisoned,
+
     #[error("Other error: {0}")]
     Other(String),
+}
+
+// Implementações From para conversões de erro com Clone
+impl From<std::io::Error> for GuardianError {
+    fn from(err: std::io::Error) -> Self {
+        GuardianError::Io(err.to_string())
+    }
+}
+
+impl From<serde_json::Error> for GuardianError {
+    fn from(err: serde_json::Error) -> Self {
+        GuardianError::Json(err.to_string())
+    }
+}
+
+impl From<cid::Error> for GuardianError {
+    fn from(err: cid::Error) -> Self {
+        GuardianError::Cid(err.to_string())
+    }
+}
+
+impl From<serde_cbor::Error> for GuardianError {
+    fn from(err: serde_cbor::Error) -> Self {
+        GuardianError::Cbor(err.to_string())
+    }
+}
+
+impl From<ipfs_api_backend_hyper::Error> for GuardianError {
+    fn from(err: ipfs_api_backend_hyper::Error) -> Self {
+        GuardianError::IpfsApi(err.to_string())
+    }
 }
 
 // Removendo conversões de anyhow já que não vamos mais usar
