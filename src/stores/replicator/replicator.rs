@@ -24,13 +24,14 @@ use tracing::{Level, info, span, warn};
 /// Note: This is now primarily used for creating ProcessQueueItems
 #[derive(Clone, Debug)]
 pub struct ProcessItem {
+    #[allow(dead_code)]
     hash: Cid,
     #[allow(dead_code)]
     entry: Option<Entry>,
 }
 
 impl ProcessItem {
-    pub fn new(hash: Cid) -> ProcessQueueItem {
+    pub fn from_hash(hash: Cid) -> ProcessQueueItem {
         ProcessQueueItem::Hash(crate::stores::replicator::queue::ProcessHash::new(hash))
     }
 
@@ -244,7 +245,7 @@ impl Replicator {
     ) -> Result<Self> {
         let options = opts.unwrap_or_default();
 
-        let event_bus = options.event_bus.unwrap_or_else(|| EventBus::new());
+        let event_bus = options.event_bus.unwrap_or_default();
 
         // Inicializa os emissores de eventos
         let emitters = ReplicatorEmitters::new(&event_bus).await?;
@@ -252,7 +253,7 @@ impl Replicator {
         let logger = options
             .logger
             .unwrap_or_else(|| slog::Logger::root(slog::Discard, slog::o!()));
-        let tracer = options.tracer.unwrap(); // `default` já fornece um NoopTracer.
+        let tracer = options.tracer.expect("tracer should be provided by default options");
 
         // Define a concorrência padrão se não for fornecida.
         let concurrency = concurrency.unwrap_or(32);
@@ -314,13 +315,15 @@ impl Replicator {
         let ctx = opentelemetry::Context::current();
         ctx.span().add_event("replicator-load".to_string(), vec![]);
 
+        // Converte Vec<Box<Entry>> para Vec<Entry>
+        let entries: Vec<Entry> = entries.into_iter().map(|boxed| *boxed).collect();
+
         // O padrão `rootContextWithCancel` do Go é substituído pelo `tokio::select!`
         // para cancelar a operação se o replicator for parado.
         tokio::select! {
             // Se o token de cancelamento principal for acionado, a função termina.
             _ = self.root_cancellation_token.cancelled() => {
                 warn!("Load cancelled because replicator was stopped.");
-                return;
             }
             // Caso contrário, executa a lógica de carregamento.
             res = self.perform_load(entries) => {
@@ -332,7 +335,7 @@ impl Replicator {
     }
 
     /// Função auxiliar que contém a lógica principal de `Load`.
-    async fn perform_load(&self, entries: Vec<Box<Entry>>) -> Result<()> {
+    async fn perform_load(&self, entries: Vec<Entry>) -> Result<()> {
         // Envolve o JoinSet em Arc<Mutex<>> para compartilhamento seguro entre tarefas.
         let join_set: Arc<Mutex<JoinSet<Result<()>>>> = Arc::new(Mutex::new(JoinSet::new()));
 
@@ -348,7 +351,7 @@ impl Replicator {
                 }
 
                 // Emite o evento `LoadAdded` para a nova entrada adicionada
-                let load_added_event = EventLoadAdded::new(hash, *entry);
+                let load_added_event = EventLoadAdded::new(hash, entry.clone());
                 if let Err(e) = self.emitters.evt_load_added.emit(load_added_event) {
                     warn!("Unable to emit event load added: {:?}", e);
                 }
@@ -423,7 +426,7 @@ impl Replicator {
     fn add_entry_to_queue(
         &self,
         state: &mut tokio::sync::RwLockWriteGuard<'_, ReplicatorState>,
-        entry: Box<Entry>,
+        entry: Entry,
     ) -> bool {
         let hash = Cid::try_from(entry.hash()).unwrap_or_default();
 
@@ -446,7 +449,7 @@ impl Replicator {
     async fn wait_for_process_slot(&self) -> Option<ProcessQueueItem> {
         let mut state = self.state.write().await;
 
-        let item = state.queue.next()?;
+        let item = state.queue.pop_next()?;
         let hash = item.get_hash();
 
         state.tasks_in_progress += 1;
@@ -472,11 +475,11 @@ impl Replicator {
     // As funções `is_idle` e `idle` são necessárias por `process_entry_done`.
     // Equivalentes a isIdle e idle em go (não thread-safe)
     fn is_idle(&self, state: &tokio::sync::RwLockWriteGuard<'_, ReplicatorState>) -> bool {
-        if state.tasks_in_progress > 0 || state.queue.len() > 0 {
+        if state.tasks_in_progress > 0 || !state.queue.is_empty() {
             return false;
         }
 
-        for (_, task_state) in &state.tasks {
+        for task_state in state.tasks.values() {
             if matches!(task_state, QueuedState::Added | QueuedState::Fetching) {
                 return false;
             }
@@ -571,7 +574,7 @@ impl<'a> ReplicatorRef<'a> {
     async fn wait_for_process_slot(&self) -> Option<ProcessQueueItem> {
         let mut state = self.state.write().await;
 
-        let item = state.queue.next()?;
+        let item = state.queue.pop_next()?;
         let hash = item.get_hash();
 
         state.tasks_in_progress += 1;
@@ -597,11 +600,11 @@ impl<'a> ReplicatorRef<'a> {
     /// Versão de `is_idle` para ReplicatorRef
     #[allow(dead_code)]
     fn is_idle(&self, state: &tokio::sync::RwLockWriteGuard<'_, ReplicatorState>) -> bool {
-        if state.tasks_in_progress > 0 || state.queue.len() > 0 {
+        if state.tasks_in_progress > 0 || !state.queue.is_empty() {
             return false;
         }
 
-        for (_, task_state) in &state.tasks {
+        for task_state in state.tasks.values() {
             if matches!(task_state, QueuedState::Added | QueuedState::Fetching) {
                 return false;
             }
@@ -708,7 +711,7 @@ impl<'a> ReplicatorRef<'a> {
         let address_str = format!("/GuardianDB/{}", hash);
         let address = crate::address::parse(&address_str).unwrap_or_else(|_| {
             // Fallback: usa o parse com apenas o hash
-            crate::address::parse(&hash.to_string()).unwrap()
+            crate::address::parse(&hash.to_string()).expect("Failed to parse hash as address")
         });
         let progress_event = EventLoadProgress {
             address: Arc::new(address),
@@ -817,7 +820,7 @@ impl Replicator {
         let address_str = format!("/GuardianDB/{}", hash);
         let address = crate::address::parse(&address_str).unwrap_or_else(|_| {
             // Fallback: usa o parse com apenas o hash
-            crate::address::parse(&hash.to_string()).unwrap()
+            crate::address::parse(&hash.to_string()).expect("Failed to parse hash as address in second process_hash")
         });
         let progress_event = EventLoadProgress {
             address: Arc::new(address),
