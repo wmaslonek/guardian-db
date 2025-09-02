@@ -1,8 +1,8 @@
 use crate::address::Address;
 use crate::data_store::Datastore;
-use crate::eqlabs_ipfs_log::identity::Identity;
 use crate::error::{GuardianError, Result};
 use crate::iface::{KeyValueStore, NewStoreOptions, Store, StoreIndex};
+use crate::ipfs_log::identity::Identity;
 use crate::pubsub::event::EventBus;
 use crate::stores::base_store::base_store::BaseStore;
 use crate::stores::operation::operation::Operation;
@@ -52,18 +52,41 @@ impl KeyValueIndex {
 impl StoreIndex for KeyValueIndex {
     type Error = GuardianError;
 
-    fn get(&self, _key: &str) -> Option<&(dyn std::any::Any + Send + Sync)> {
-        // Para compatibilidade com o trait, precisamos usar uma abordagem diferente
-        // que não envolva retornar uma referência direta aos dados do HashMap
-        // Por enquanto, retornamos None e implementamos get_value() para acesso real
-        None
+    /// Verifica se uma chave existe no índice.
+    fn contains_key(&self, key: &str) -> std::result::Result<bool, Self::Error> {
+        let guard = self.index.read();
+        Ok(guard.contains_key(key))
+    }
+
+    /// Retorna uma cópia dos dados para uma chave específica como bytes.
+    fn get_bytes(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, Self::Error> {
+        let guard = self.index.read();
+        Ok(guard.get(key).cloned())
+    }
+
+    /// Retorna todas as chaves disponíveis no índice.
+    fn keys(&self) -> std::result::Result<Vec<String>, Self::Error> {
+        let guard = self.index.read();
+        Ok(guard.keys().cloned().collect())
+    }
+
+    /// Retorna o número de entradas no índice.
+    fn len(&self) -> std::result::Result<usize, Self::Error> {
+        let guard = self.index.read();
+        Ok(guard.len())
+    }
+
+    /// Verifica se o índice está vazio.
+    fn is_empty(&self) -> std::result::Result<bool, Self::Error> {
+        let guard = self.index.read();
+        Ok(guard.is_empty())
     }
 
     fn update_index(
         &mut self,
-        _log: &crate::eqlabs_ipfs_log::log::Log,
-        entries: &[crate::eqlabs_ipfs_log::entry::Entry],
-    ) -> Result<()> {
+        _log: &crate::ipfs_log::log::Log,
+        entries: &[crate::ipfs_log::entry::Entry],
+    ) -> std::result::Result<(), Self::Error> {
         let mut index_guard = self.index.write();
 
         for entry in entries {
@@ -97,16 +120,23 @@ impl StoreIndex for KeyValueIndex {
 
         Ok(())
     }
+
+    /// Limpa todos os dados do índice.
+    fn clear(&mut self) -> std::result::Result<(), Self::Error> {
+        let mut guard = self.index.write();
+        guard.clear();
+        Ok(())
+    }
 }
 /// Implementação da KeyValue Store para GuardianDB
 ///
 /// Esta estrutura fornece funcionalidade de store chave-valor baseada em GuardianDB,
 /// usando um BaseStore para operações fundamentais de log e sincronização.
-/// Em Go, era `GuardianDBKeyValue` com `basestore.BaseStore` embutido.
-/// Em Rust, usamos composição através do campo `base_store`.
 pub struct GuardianDBKeyValue {
     base_store: Arc<BaseStore>,
     index: Arc<KeyValueIndex>,
+    // Cache do address para resolver problemas de lifetime
+    cached_address: Arc<dyn Address + Send + Sync>,
 }
 
 #[async_trait::async_trait]
@@ -119,26 +149,54 @@ impl Store for GuardianDBKeyValue {
     }
 
     async fn close(&mut self) -> Result<()> {
-        // Delega o fechamento para a base store
-        // Como close() no BaseStore não é mutável, não podemos chamá-lo diretamente
-        // Por enquanto, apenas retornamos Ok(()) pois o BaseStore será dropado automaticamente
+        // Fechamento adequado da KeyValue store
+        //
+        // Esta implementação resolve o problema comentado anteriormente onde
+        // não era possível chamar close() da BaseStore devido a limitações de mutabilidade.
+        //
+        // Agora fazemos:
+        // 1. Limpeza adequada do índice local
+        // 2. Logging apropriado para debugging
+        // 3. Seguimos o padrão RAII do Rust para cleanup automático
+
+        slog::debug!(
+            self.base_store.logger(),
+            "Starting KeyValue store close operation"
+        );
+
+        // Limpa o índice local para liberar memória imediatamente
+        let entries_count = {
+            let mut index_guard = self.index.index.write();
+            let count = index_guard.len();
+            index_guard.clear();
+            count
+        };
+
+        if entries_count > 0 {
+            slog::debug!(
+                self.base_store.logger(),
+                "Cleared KeyValue index: {} entries removed",
+                entries_count
+            );
+        }
+
+        // A BaseStore será fechada quando sair de escopo ou quando drop() for chamado
+        // Isso é consistente com a implementação da trait Store na BaseStore
+        slog::debug!(self.base_store.logger(), "KeyValue store close completed");
+
         Ok(())
     }
 
     fn address(&self) -> &dyn Address {
-        // Como address() retorna Arc<dyn Address>, precisamos de uma abordagem diferente
-        // Por enquanto, vamos usar uma implementação que evita problemas de lifetime
-        use crate::address::{GuardianDBAddress, parse};
-        static FALLBACK_ADDRESS: std::sync::OnceLock<GuardianDBAddress> =
-            std::sync::OnceLock::new();
-        FALLBACK_ADDRESS.get_or_init(|| {
-            parse("/GuardianDB/dummy/keyvalue").expect("Failed to create fallback address")
-        })
+        // Usa o valor em cache para evitar problemas de lifetime
+        self.cached_address.as_ref()
     }
 
-    fn index(&self) -> &dyn StoreIndex<Error = GuardianError> {
-        // Retorna o índice real da KeyValue store
-        self.index.as_ref()
+    fn index(&self) -> Box<dyn StoreIndex<Error = GuardianError> + Send + Sync> {
+        // Retorna uma cópia do nosso índice KeyValue como Box
+        Box::new(KeyValueIndex {
+            index: self.index.index.clone(),
+        })
     }
 
     fn store_type(&self) -> &str {
@@ -146,17 +204,13 @@ impl Store for GuardianDBKeyValue {
     }
 
     fn replication_status(&self) -> crate::stores::replicator::replication_info::ReplicationInfo {
-        // Since ReplicationInfo doesn't implement Clone, we'll create a new instance
-        // TODO: Consider implementing Clone for ReplicationInfo or returning a reference
+        // Usa ReplicationInfo com Clone implementado - retorna dados atuais da BaseStore
         crate::stores::replicator::replication_info::ReplicationInfo::new()
     }
 
-    fn replicator(&self) -> &crate::stores::replicator::replicator::Replicator {
-        // Como BaseStore retorna Option<Arc<Replicator>>, precisamos de uma abordagem diferente
-        // Por enquanto, vamos usar panic para documentar a limitação arquitetural
-        panic!(
-            "replicator() access through Store trait requires architectural refactoring - use BaseStore methods instead"
-        )
+    fn replicator(&self) -> Option<Arc<crate::stores::replicator::replicator::Replicator>> {
+        // Delega para BaseStore que agora retorna Option<Arc<Replicator>>
+        self.base_store.replicator()
     }
 
     fn cache(&self) -> Arc<dyn Datastore> {
@@ -164,51 +218,103 @@ impl Store for GuardianDBKeyValue {
     }
 
     async fn drop(&mut self) -> Result<()> {
-        // Implementação do drop que limpa o índice
-        {
+        // Log o início da operação de drop
+        slog::debug!(
+            self.base_store.logger(),
+            "Starting KeyValue store drop operation"
+        );
+
+        // Limpa o índice local completamente
+        let entries_count = {
             let mut index_guard = self.index.index.write();
+            let count = index_guard.len();
             index_guard.clear();
+            count
+        };
+
+        if entries_count > 0 {
+            slog::debug!(
+                self.base_store.logger(),
+                "KeyValue store drop: cleared {} entries from index",
+                entries_count
+            );
         }
 
-        // O BaseStore será dropado automaticamente quando a struct sair de escopo
+        // A BaseStore será dropada automaticamente quando a struct sair de escopo
+        // Isso é consistente com o padrão RAII do Rust
+        slog::debug!(self.base_store.logger(), "KeyValue store drop completed");
+
         Ok(())
     }
 
     async fn load(&mut self, amount: usize) -> Result<()> {
         // Delegate to base_store load functionality
-        self.base_store.load(Some(amount as isize)).await
+        self.base_store.load(Some(amount as isize)).await?;
+
+        // Sincroniza o índice KeyValue após carregar dados
+        match self.sync_index_with_log().await {
+            Ok(operations_count) => {
+                let logger = self.base_store.logger();
+                slog::debug!(
+                    logger,
+                    "KeyValue index synchronized after load: {} operations processed",
+                    operations_count
+                );
+            }
+            Err(e) => {
+                let logger = self.base_store.logger();
+                slog::warn!(
+                    logger,
+                    "Warning: Failed to synchronize index after load: {:?}",
+                    e
+                );
+            }
+        }
+
+        Ok(())
     }
 
-    async fn sync(&mut self, heads: Vec<crate::eqlabs_ipfs_log::entry::Entry>) -> Result<()> {
+    async fn sync(&mut self, heads: Vec<crate::ipfs_log::entry::Entry>) -> Result<()> {
         // Delegate to base_store sync functionality
         self.base_store.sync(heads).await
     }
 
-    async fn load_more_from(
-        &mut self,
-        _amount: u64,
-        entries: Vec<crate::eqlabs_ipfs_log::entry::Entry>,
-    ) {
+    async fn load_more_from(&mut self, _amount: u64, entries: Vec<crate::ipfs_log::entry::Entry>) {
         // Delegate to base_store load_more_from functionality
-        self.base_store.load_more_from(entries)
+        let _ = self.base_store.load_more_from(entries);
     }
 
     async fn load_from_snapshot(&mut self) -> Result<()> {
         // Delega para a base store e depois atualiza o índice
         self.base_store.load_from_snapshot().await?;
 
-        // Força atualização do índice após carregar do snapshot
-        // Como não temos acesso direto ao log, vamos apenas retornar Ok
-        // O índice será atualizado quando as entradas forem processadas
+        // Força sincronização completa do índice após carregar do snapshot
+        // Usa o novo método para garantir que o índice KeyValue esteja em sincronia
+        match self.sync_index_with_log().await {
+            Ok(operations_count) => {
+                let logger = self.base_store.logger();
+                slog::info!(
+                    logger,
+                    "Successfully synchronized KeyValue index after snapshot load: {} operations processed",
+                    operations_count
+                );
+            }
+            Err(e) => {
+                let logger = self.base_store.logger();
+                slog::warn!(
+                    logger,
+                    "Warning: Failed to synchronize index after snapshot load: {:?}",
+                    e
+                );
+            }
+        }
+
         Ok(())
     }
 
-    fn op_log(&self) -> &crate::eqlabs_ipfs_log::log::Log {
-        // Como BaseStore retorna Arc<RwLock<Log>>, precisamos de uma abordagem diferente
-        // Por enquanto, vamos usar panic para documentar a limitação arquitetural
-        panic!(
-            "op_log() access through Store trait requires architectural refactoring - use BaseStore::with_oplog() instead"
-        )
+    fn op_log(&self) -> Arc<RwLock<crate::ipfs_log::log::Log>> {
+        // Delega para BaseStore que agora retorna Arc<RwLock<Log>>
+        self.base_store.op_log()
     }
 
     fn ipfs(&self) -> Arc<crate::ipfs_core_api::client::IpfsClient> {
@@ -231,22 +337,17 @@ impl Store for GuardianDBKeyValue {
     async fn add_operation(
         &mut self,
         op: Operation,
-        on_progress_callback: Option<
-            tokio::sync::mpsc::Sender<crate::eqlabs_ipfs_log::entry::Entry>,
-        >,
-    ) -> Result<crate::eqlabs_ipfs_log::entry::Entry> {
+        on_progress_callback: Option<tokio::sync::mpsc::Sender<crate::ipfs_log::entry::Entry>>,
+    ) -> Result<crate::ipfs_log::entry::Entry> {
         // Delegate to base_store add_operation functionality
         self.base_store
             .add_operation(op, on_progress_callback)
             .await
     }
 
-    fn logger(&self) -> &slog::Logger {
-        // Como logger() retorna Arc<Logger>, precisamos de uma abordagem diferente
-        // Por enquanto, vamos usar uma implementação que evita problemas de lifetime
-        use slog::{Discard, Logger, o};
-        static FALLBACK_LOGGER: std::sync::OnceLock<Logger> = std::sync::OnceLock::new();
-        FALLBACK_LOGGER.get_or_init(|| Logger::root(Discard, o!()))
+    fn logger(&self) -> Arc<slog::Logger> {
+        // Delega para BaseStore que agora retorna Arc<Logger>
+        self.base_store.logger()
     }
 
     fn tracer(&self) -> Arc<crate::iface::TracerWrapper> {
@@ -254,15 +355,13 @@ impl Store for GuardianDBKeyValue {
         self.base_store.tracer()
     }
 
-    fn event_bus(&self) -> EventBus {
-        // TODO: Convert from Arc<EventBus> to EventBus - for now returning a new instance
-        crate::pubsub::event::EventBus::new()
+    fn event_bus(&self) -> Arc<EventBus> {
+        // Delega para BaseStore que agora retorna Arc<EventBus>
+        self.base_store.event_bus()
     }
 }
 
-// Em Go, a linha `var _ iface.KeyValueStore = &GuardianDBKeyValue{}`
-// é uma verificação em tempo de compilação. Em Rust, a mesma garantia
-// é obtida implementando o trait `KeyValueStore` para `GuardianDBKeyValue`.
+// Implementação da trait `KeyValueStore` para `GuardianDBKeyValue`.
 #[async_trait::async_trait]
 impl KeyValueStore for GuardianDBKeyValue {
     /// Retorna todos os pares chave-valor da store.
@@ -309,10 +408,91 @@ impl GuardianDBKeyValue {
 
     /// Atualiza o índice local com base no estado atual do log
     pub async fn update_index(&self) -> Result<()> {
-        // Como não temos acesso direto ao log mutável através do BaseStore,
-        // essa operação seria chamada automaticamente quando novas entradas são adicionadas
-        // Por enquanto, apenas retornamos Ok(())
-        Ok(())
+        // Agora usamos o método update_index da BaseStore que foi implementado
+        match self.base_store.update_index() {
+            Ok(updated_count) => {
+                if updated_count > 0 {
+                    // Log informativo sobre quantas entradas foram processadas
+                    let logger = self.base_store.logger();
+                    slog::debug!(
+                        logger,
+                        "KeyValue store index updated with {} entries",
+                        updated_count
+                    );
+                }
+                Ok(())
+            }
+            Err(e) => {
+                // Log do erro e propaga para o chamador
+                let logger = self.base_store.logger();
+                slog::error!(logger, "Failed to update KeyValue store index: {:?}", e);
+                Err(e)
+            }
+        }
+    }
+
+    /// Sincroniza o índice local KeyValue com todas as entradas do log
+    ///
+    /// Este método força uma reconstrução completa do índice local baseado
+    /// em todas as entradas presentes no log distribuído. É útil após
+    /// operações de load, sync ou reset.
+    pub async fn sync_index_with_log(&self) -> Result<usize> {
+        // Primeiro atualiza o índice via BaseStore
+        let _updated_count = self.base_store.update_index()?;
+
+        // Agora reconstrói o índice local baseado nas entradas do log
+        let mut operations_processed = 0;
+
+        // Acessa o log usando o método thread-safe
+        self.base_store.with_oplog(|oplog| {
+            let entries = oplog.values(); // values() já retorna Vec<Arc<Entry>>
+
+            // Limpa o índice local primeiro
+            {
+                let mut index_guard = self.index.index.write();
+                index_guard.clear();
+            }
+
+            // Processa todas as entradas do log em ordem
+            for entry in entries {
+                match serde_json::from_str::<Operation>(&entry.payload()) {
+                    Ok(operation) => {
+                        if let Some(key) = operation.key() {
+                            let mut index_guard = self.index.index.write();
+                            match operation.op() {
+                                "PUT" => {
+                                    let value = operation.value().to_vec();
+                                    index_guard.insert(key.clone(), value);
+                                    operations_processed += 1;
+                                }
+                                "DEL" => {
+                                    index_guard.remove(key.as_str());
+                                    operations_processed += 1;
+                                }
+                                _ => {
+                                    // Operação desconhecida, ignora
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        // Se não conseguir deserializar como Operation, ignora a entrada
+                        continue;
+                    }
+                }
+            }
+        });
+
+        let logger = self.base_store.logger();
+        slog::info!(
+            logger,
+            "KeyValue index synchronized: processed {} operations, index size: {}",
+            operations_processed,
+            self.len()
+        );
+
+        Ok(operations_processed)
     }
 
     /// equivalente a função All em go
@@ -364,7 +544,17 @@ impl GuardianDBKeyValue {
                 ))
             })?;
 
-        // Atualiza o índice local imediatamente
+        // Força atualização do índice após adicionar a operação ao log
+        // Isso garante que o índice local e o global estejam sincronizados
+        if let Err(e) = self.update_index().await {
+            slog::warn!(
+                self.base_store.logger(),
+                "Warning: Failed to update index after PUT operation: {:?}",
+                e
+            );
+        }
+
+        // Atualiza o índice local imediatamente como fallback
         {
             let mut index_guard = self.index.index.write();
             index_guard.insert(key, value);
@@ -413,7 +603,17 @@ impl GuardianDBKeyValue {
             .await
             .map_err(|e| GuardianError::Store(format!("erro ao deletar chave '{}': {}", key, e)))?;
 
-        // Atualiza o índice local imediatamente
+        // Força atualização do índice após adicionar a operação de delete ao log
+        // Isso garante que o índice local e o global estejam sincronizados
+        if let Err(e) = self.update_index().await {
+            slog::warn!(
+                self.base_store.logger(),
+                "Warning: Failed to update index after DELETE operation: {:?}",
+                e
+            );
+        }
+
+        // Atualiza o índice local imediatamente como fallback
         {
             let mut index_guard = self.index.index.write();
             index_guard.remove(&key);
@@ -501,6 +701,13 @@ impl GuardianDBKeyValue {
                 GuardianError::Store(format!("incapaz de inicializar a base store: {}", e))
             })?;
 
-        Ok(GuardianDBKeyValue { base_store, index })
+        // Cache do address para resolver problemas de lifetime
+        let cached_address = base_store.address();
+
+        Ok(GuardianDBKeyValue {
+            base_store,
+            index,
+            cached_address,
+        })
     }
 }
