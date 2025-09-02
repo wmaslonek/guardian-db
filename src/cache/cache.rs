@@ -484,6 +484,10 @@ impl Datastore for SledDatastore {
         debug!(self.logger, "Cache list_keys completed"; "keys_count" => keys.len());
         Ok(keys)
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 /// Factory function para criar instâncias de cache
