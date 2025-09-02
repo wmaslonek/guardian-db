@@ -1,7 +1,6 @@
-use crate::eqlabs_ipfs_log::{entry::Entry, log::Log};
 use crate::error::GuardianError;
 use crate::iface::StoreIndex;
-use std::any::Any;
+use crate::ipfs_log::{entry::Entry, log::Log};
 
 /// Equivalente à `noopIndex struct{}` do Go.
 ///
@@ -29,12 +28,29 @@ impl StoreIndex for NoopIndex {
     /// GuardianError implementa std::error::Error e é adequado para bibliotecas.
     type Error = GuardianError;
 
-    /// Equivalente à função `Get` em Go.
-    ///
-    /// A função não faz nada e sempre retorna `None`, que é o
-    /// equivalente idiomático em Rust para o `nil` do Go neste contexto.
-    fn get(&self, _key: &str) -> Option<&(dyn Any + Send + Sync)> {
-        None
+    /// Verifica se uma chave existe no índice.
+    fn contains_key(&self, _key: &str) -> std::result::Result<bool, Self::Error> {
+        Ok(false)
+    }
+
+    /// Retorna uma cópia dos dados para uma chave específica como bytes.
+    fn get_bytes(&self, _key: &str) -> std::result::Result<Option<Vec<u8>>, Self::Error> {
+        Ok(None)
+    }
+
+    /// Retorna todas as chaves disponíveis no índice.
+    fn keys(&self) -> std::result::Result<Vec<String>, Self::Error> {
+        Ok(Vec::new())
+    }
+
+    /// Retorna o número de entradas no índice.
+    fn len(&self) -> std::result::Result<usize, Self::Error> {
+        Ok(0)
+    }
+
+    /// Verifica se o índice está vazio.
+    fn is_empty(&self) -> std::result::Result<bool, Self::Error> {
+        Ok(true)
     }
 
     /// Equivalente à função `UpdateIndex` em Go.
@@ -47,6 +63,11 @@ impl StoreIndex for NoopIndex {
         _oplog: &Log,
         _entries: &[Entry],
     ) -> std::result::Result<(), Self::Error> {
+        Ok(())
+    }
+
+    /// Limpa todos os dados do índice.
+    fn clear(&mut self) -> std::result::Result<(), Self::Error> {
         Ok(())
     }
 }
