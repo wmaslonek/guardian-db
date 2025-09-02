@@ -177,10 +177,10 @@ pub fn ensure_address(address: &str) -> String {
     }
 
     // A lógica em Go usa `strings.Split` e verifica a última parte.
-    // `split('/').last()` em Rust emula esse comportamento.
-    // Ex: "foo/bar/_access".split('/').last() -> Some("_access")
-    // Ex: "foo/bar/_access/".split('/').last() -> Some("")
-    if address.split('/').last() == Some("_access") {
+    // `split('/').next_back()` é mais eficiente que last() para DoubleEndedIterator.
+    // Ex: "foo/bar/_access".split('/').next_back() -> Some("_access")
+    // Ex: "foo/bar/_access/".split('/').next_back() -> Some("")
+    if address.split('/').next_back() == Some("_access") {
         return address.to_string();
     }
 
