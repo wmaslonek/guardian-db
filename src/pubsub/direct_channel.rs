@@ -2744,7 +2744,10 @@ impl SwarmManager {
             mdns_registration,
             service_resolution,
             service_monitoring,
-            a_record, ptr_record, srv_record, txt_record
+            a_record,
+            ptr_record,
+            srv_record,
+            txt_record
         );
 
         slog::info!(

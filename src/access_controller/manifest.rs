@@ -8,7 +8,8 @@ use std::sync::{Arc, Mutex};
 
 // Type aliases para simplificar tipos complexos
 type LoggerFuture<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>>;
-type LoggerClosure = Box<dyn for<'a> Fn(&'a dyn AccessController) -> LoggerFuture<'a> + Send + Sync>;
+type LoggerClosure =
+    Box<dyn for<'a> Fn(&'a dyn AccessController) -> LoggerFuture<'a> + Send + Sync>;
 
 /// equivalente a Manifest em go
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -392,9 +393,7 @@ pub fn create_manifest_with_validation(
 // equivalente a WithLogger em go
 // Função de alta ordem para configurar um logger (padrão de opção funcional).
 // Retorna uma closure que pode ser aplicada a qualquer AccessController
-pub fn with_logger(
-    logger: Arc<slog::Logger>,
-) -> LoggerClosure {
+pub fn with_logger(logger: Arc<slog::Logger>) -> LoggerClosure {
     Box::new(move |ac: &dyn AccessController| {
         let logger_clone = logger.clone();
         Box::pin(async move {

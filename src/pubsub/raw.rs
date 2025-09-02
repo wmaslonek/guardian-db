@@ -288,7 +288,8 @@ impl PubSubInterface for RawPubSub {
         });
 
         // Registra o tópico na subscrição do IPFS
-        let _subscription_stream = self.ipfs_client
+        let _subscription_stream = self
+            .ipfs_client
             .pubsub_subscribe(topic_name)
             .await
             .map_err(|e| GuardianError::Ipfs(format!("Erro ao subscrever tópico IPFS: {}", e)))?;

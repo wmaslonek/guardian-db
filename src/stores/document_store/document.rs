@@ -170,8 +170,9 @@ impl GuardianDBDocumentStore {
 
         // 2. Faz o "downcast" das opções específicas para o tipo esperado.
         //    O `take()` remove o valor da Option, permitindo-nos tomar posse do Box.
-        let specific_opts_box = options.store_specific_opts.take()
-            .ok_or_else(|| GuardianError::InvalidArgument("StoreSpecificOpts is required".to_string()))?;
+        let specific_opts_box = options.store_specific_opts.take().ok_or_else(|| {
+            GuardianError::InvalidArgument("StoreSpecificOpts is required".to_string())
+        })?;
         let doc_opts_box = specific_opts_box
             .downcast::<CreateDocumentDBOptions>()
             .map_err(|_| {

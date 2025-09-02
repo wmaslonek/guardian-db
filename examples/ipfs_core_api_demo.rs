@@ -3,10 +3,7 @@
 // Este exemplo demonstra como usar a nova API IPFS Core modular
 
 use guardian_db::error::Result;
-use guardian_db::ipfs_core_api::{
-    ClientConfig, IpfsClient,
-    compat::IpfsClientAdapter,
-};
+use guardian_db::ipfs_core_api::{ClientConfig, IpfsClient, compat::IpfsClientAdapter};
 use std::io::Cursor;
 use tracing::{Level, info};
 

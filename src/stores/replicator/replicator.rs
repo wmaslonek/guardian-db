@@ -253,7 +253,9 @@ impl Replicator {
         let logger = options
             .logger
             .unwrap_or_else(|| slog::Logger::root(slog::Discard, slog::o!()));
-        let tracer = options.tracer.expect("tracer should be provided by default options");
+        let tracer = options
+            .tracer
+            .expect("tracer should be provided by default options");
 
         // Define a concorrência padrão se não for fornecida.
         let concurrency = concurrency.unwrap_or(32);
@@ -820,7 +822,8 @@ impl Replicator {
         let address_str = format!("/GuardianDB/{}", hash);
         let address = crate::address::parse(&address_str).unwrap_or_else(|_| {
             // Fallback: usa o parse com apenas o hash
-            crate::address::parse(&hash.to_string()).expect("Failed to parse hash as address in second process_hash")
+            crate::address::parse(&hash.to_string())
+                .expect("Failed to parse hash as address in second process_hash")
         });
         let progress_event = EventLoadProgress {
             address: Arc::new(address),

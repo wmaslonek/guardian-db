@@ -1,10 +1,6 @@
 use guardian_db::error::{GuardianError, Result};
 use guardian_db::pubsub::direct_channel::{SwarmManager, create_test_peer_id};
-use libp2p::{
-    Multiaddr, PeerId,
-    gossipsub::TopicHash,
-    identity::Keypair,
-};
+use libp2p::{Multiaddr, PeerId, gossipsub::TopicHash, identity::Keypair};
 use slog::Drain;
 use std::{
     collections::HashMap,

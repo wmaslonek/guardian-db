@@ -317,7 +317,8 @@ impl Log {
             &self
                 .heads
                 .iter()
-                .chain(other.heads.iter()).cloned()
+                .chain(other.heads.iter())
+                .cloned()
                 .collect::<Vec<_>>()[..],
         );
         let merged_heads: Vec<Arc<Entry>> = all_heads
@@ -472,10 +473,7 @@ impl Log {
 
     fn dedup(v: &[Arc<Entry>]) -> Vec<Arc<Entry>> {
         let mut s = HashSet::new();
-        v.iter()
-            .filter(|x| s.insert(x.hash()))
-            .cloned()
-            .collect()
+        v.iter().filter(|x| s.insert(x.hash())).cloned().collect()
     }
 
     pub fn set_identity(&mut self, identity: Identity) {

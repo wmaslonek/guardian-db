@@ -4,8 +4,7 @@ use std::cmp::Ordering;
 /// A [Lamport clock] for partial chronological ordering of unconnected events.
 ///
 /// [Lamport clock]: https://en.wikipedia.org/wiki/Lamport_clock
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct LamportClock {
     id: String,
     time: u64,

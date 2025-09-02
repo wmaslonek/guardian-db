@@ -11,7 +11,8 @@ use std::sync::Arc;
 use tokio::sync::{RwLock, broadcast};
 
 // Type alias para simplificar tipos complexos
-type KVStoreType = RwLock<Option<Arc<tokio::sync::Mutex<Box<dyn KeyValueStore<Error = GuardianError>>>>>>;
+type KVStoreType =
+    RwLock<Option<Arc<tokio::sync::Mutex<Box<dyn KeyValueStore<Error = GuardianError>>>>>>;
 
 // Simple string wrapper that implements Address for return values
 #[derive(Debug, Clone)]

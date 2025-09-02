@@ -52,10 +52,7 @@ pub trait Cache: Send + Sync {
     /// Cria uma nova instância de cache no caminho especificado
     /// Retorna um Datastore e uma função de cleanup
     #[allow(clippy::new_ret_no_self)]
-    fn new(
-        path: &str,
-        opts: Option<Options>,
-    ) -> NewCacheResult
+    fn new(path: &str, opts: Option<Options>) -> NewCacheResult
     where
         Self: Sized,
     {
@@ -64,11 +61,7 @@ pub trait Cache: Send + Sync {
 
     /// Carrega um cache para um determinado endereço de banco de dados e um diretório raiz.
     // equivalente a Load em go
-    fn load(
-        &self,
-        directory: &str,
-        db_address: &dyn Address,
-    ) -> Result<DatastoreBox>;
+    fn load(&self, directory: &str, db_address: &dyn Address) -> Result<DatastoreBox>;
 
     /// Fecha um cache e todos os seus armazenamentos de dados associados.
     // equivalente a Close em go
@@ -95,10 +88,7 @@ impl SledCache {
     }
 
     /// Factory method para criar instâncias de cache
-    pub fn create_cache_instance(
-        path: &str,
-        opts: Options,
-    ) -> NewCacheResult {
+    pub fn create_cache_instance(path: &str, opts: Options) -> NewCacheResult {
         let logger = opts
             .logger
             .clone()
@@ -122,9 +112,10 @@ impl SledCache {
                             "path" => &path_clone,
                             "error" => %e
                         );
-                        Err(GuardianError::Other(
-                            format!("Failed to cleanup cache: {}", e),
-                        ))
+                        Err(GuardianError::Other(format!(
+                            "Failed to cleanup cache: {}",
+                            e
+                        )))
                     }
                 }
             } else {

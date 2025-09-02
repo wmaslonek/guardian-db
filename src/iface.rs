@@ -29,11 +29,14 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 // Type aliases para reduzir complexidade de tipos
-type KeyExtractorFn = Arc<dyn Fn(&serde_json::Value) -> Result<String, GuardianError> + Send + Sync>;
+type KeyExtractorFn =
+    Arc<dyn Fn(&serde_json::Value) -> Result<String, GuardianError> + Send + Sync>;
 type MarshalFn = Arc<dyn Fn(&serde_json::Value) -> Result<Vec<u8>, GuardianError> + Send + Sync>;
 type UnmarshalFn = Arc<dyn Fn(&[u8]) -> Result<serde_json::Value, GuardianError> + Send + Sync>;
 type ItemFactoryFn = Arc<dyn Fn() -> serde_json::Value + Send + Sync>;
-type CleanupCallback = Box<dyn FnOnce() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> + Send + Sync>;
+type CleanupCallback = Box<
+    dyn FnOnce() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> + Send + Sync,
+>;
 // Temporary type definitions until proper modules are available
 pub type SortFn = fn(&Entry, &Entry) -> std::cmp::Ordering;
 

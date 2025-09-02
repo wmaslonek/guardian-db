@@ -27,15 +27,9 @@ impl SimpleAccessController {
         let mut allowed_keys = initial_keys.unwrap_or_default();
 
         // Garante que pelo menos as categorias básicas existam
-        allowed_keys
-            .entry("read".to_string())
-            .or_default();
-        allowed_keys
-            .entry("write".to_string())
-            .or_default();
-        allowed_keys
-            .entry("admin".to_string())
-            .or_default();
+        allowed_keys.entry("read".to_string()).or_default();
+        allowed_keys.entry("write".to_string()).or_default();
+        allowed_keys.entry("admin".to_string()).or_default();
 
         slog::info!(logger, "Created SimpleAccessController";
             "categories" => ?allowed_keys.keys().collect::<Vec<_>>(),

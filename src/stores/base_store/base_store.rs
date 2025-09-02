@@ -869,12 +869,12 @@ impl BaseStore {
             let guard = self.replication_status.lock();
             guard.get_progress().await
         };
-        
+
         let current_max = {
             let guard = self.replication_status.lock();
             guard.get_max().await
         };
-        
+
         let (new_progress, new_max) = f(current_progress, current_max);
 
         // Segunda fase: atualizar valores sem manter o lock durante await
@@ -882,7 +882,7 @@ impl BaseStore {
             let guard = self.replication_status.lock();
             guard.set_progress(new_progress).await;
         }
-        
+
         {
             let guard = self.replication_status.lock();
             guard.set_max(new_max).await;
@@ -945,10 +945,10 @@ impl BaseStore {
             let mut joinset_guard = self.tasks.lock();
             joinset_guard.abort_all(); // Aborta todas as tarefas imediatamente
         }
-        
+
         // Espera um tempo razoável para as tarefas terminarem graciosamente
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        
+
         debug!(self.logger, "Background tasks shutdown completed");
 
         // Fecha todos os emissores de eventos de forma adequada
@@ -2080,9 +2080,7 @@ impl BaseStore {
             }
 
             // Verifica se já temos esta entrada no oplog
-            let already_exists = self
-                .log_and_index
-                .with_oplog(|oplog| oplog.has(hash));
+            let already_exists = self.log_and_index.with_oplog(|oplog| oplog.has(hash));
 
             if already_exists {
                 debug!(self.logger, "Sync: head already exists in oplog");
@@ -2110,10 +2108,7 @@ impl BaseStore {
             );
 
             // Converte Vec<Entry> para Vec<Box<Entry>> conforme esperado pelo replicador
-            let boxed_heads: Vec<Box<Entry>> = verified_heads
-                .into_iter()
-                .map(Box::new)
-                .collect();
+            let boxed_heads: Vec<Box<Entry>> = verified_heads.into_iter().map(Box::new).collect();
 
             // Chama o método load() do replicador que processará as entradas na fila
             replicator.load(boxed_heads).await;

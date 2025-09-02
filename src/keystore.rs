@@ -35,9 +35,9 @@ impl SledKeystore {
 
     /// Armazena um Keypair libp2p com codificação protobuf
     pub async fn put_keypair(&self, key: &str, keypair: &Keypair) -> Result<()> {
-        let encoded = keypair.to_protobuf_encoding().map_err(|e| {
-            GuardianError::Other(format!("Erro ao codificar keypair: {}", e))
-        })?;
+        let encoded = keypair
+            .to_protobuf_encoding()
+            .map_err(|e| GuardianError::Other(format!("Erro ao codificar keypair: {}", e)))?;
         self.put(key, &encoded).await
     }
 
@@ -79,16 +79,18 @@ impl SledKeystore {
 #[async_trait]
 impl KeystoreInterface for SledKeystore {
     async fn put(&self, key: &str, value: &[u8]) -> Result<()> {
-        self.db.insert(key, value).map_err(|e| {
-            GuardianError::Other(format!("Erro ao inserir no keystore: {}", e))
-        })?;
+        self.db
+            .insert(key, value)
+            .map_err(|e| GuardianError::Other(format!("Erro ao inserir no keystore: {}", e)))?;
         Ok(())
     }
 
     async fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
-        match self.db.get(key).map_err(|e| {
-            GuardianError::Other(format!("Erro ao recuperar do keystore: {}", e))
-        })? {
+        match self
+            .db
+            .get(key)
+            .map_err(|e| GuardianError::Other(format!("Erro ao recuperar do keystore: {}", e)))?
+        {
             Some(bytes) => Ok(Some(bytes.to_vec())),
             None => Ok(None),
         }
@@ -101,9 +103,9 @@ impl KeystoreInterface for SledKeystore {
     }
 
     async fn delete(&self, key: &str) -> Result<()> {
-        self.db.remove(key).map_err(|e| {
-            GuardianError::Other(format!("Erro ao remover do keystore: {}", e))
-        })?;
+        self.db
+            .remove(key)
+            .map_err(|e| GuardianError::Other(format!("Erro ao remover do keystore: {}", e)))?;
         Ok(())
     }
 }

@@ -692,7 +692,8 @@ impl GuardianDB {
 
         // Carrega o cache salvo localmente.
         let directory_path = PathBuf::from(&directory);
-        self.load_cache(directory_path.as_path(), &db_address).await?;
+        self.load_cache(directory_path.as_path(), &db_address)
+            .await?;
 
         // Verifica se o banco de dados já existe localmente.
         let have_db = self.have_local_data(&db_address).await;
@@ -769,7 +770,8 @@ impl GuardianDB {
             .map_err(|e| GuardianError::Other(format!("Erro ao fazer parse do endereço: {}", e)))?;
 
         let directory_path = PathBuf::from(&directory);
-        self.load_cache(directory_path.as_path(), &parsed_address).await?;
+        self.load_cache(directory_path.as_path(), &parsed_address)
+            .await?;
 
         if options.local_only.unwrap_or(false) && !self.have_local_data(&parsed_address).await {
             return Err(GuardianError::NotFound(format!(
@@ -903,11 +905,7 @@ impl GuardianDB {
 
     /// equivalente a func (o *GuardianDB) loadCache(...) em go
     /// Carrega o cache para um determinado endereço de banco de dados.
-    pub async fn load_cache(
-        &self,
-        directory: &Path,
-        db_address: &GuardianDBAddress,
-    ) -> Result<()> {
+    pub async fn load_cache(&self, directory: &Path, db_address: &GuardianDBAddress) -> Result<()> {
         // Carrega o cache usando nossa implementação LevelDownCache
         let cache = self.cache.read();
         let directory_str = directory.to_string_lossy();

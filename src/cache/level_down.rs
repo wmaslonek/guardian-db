@@ -42,8 +42,7 @@ impl WrappedCache {
         _ctx: &mut dyn core::any::Any,
         key: &Key,
     ) -> std::result::Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-        self
-            .db
+        self.db
             .contains_key(key.as_bytes())
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
     }
