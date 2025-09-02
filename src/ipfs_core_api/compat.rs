@@ -1,4 +1,4 @@
-// ipfs_core_api/compat.rs - Camada de compatibilidade
+// Camada de compatibilidade
 //
 // Mantém compatibilidade com código existente que usava ipfs_api_backend_hyper
 
@@ -279,6 +279,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore] // Requires running IPFS daemon
     async fn test_adapter_add_and_cat() {
         let adapter = IpfsClientAdapter::development().await.unwrap();
 
@@ -297,6 +298,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore] // Requires running IPFS daemon
     async fn test_adapter_pubsub() {
         let adapter = IpfsClientAdapter::development().await.unwrap();
 
@@ -323,6 +325,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore] // Requires running IPFS daemon
     async fn test_compat_trait() {
         let client = IpfsClient::development().await.unwrap();
 
@@ -336,6 +339,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore] // Requires running IPFS daemon
     async fn test_dag_operations() {
         let adapter = IpfsClientAdapter::development().await.unwrap();
 
@@ -347,6 +351,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore] // Requires running IPFS daemon
     async fn test_pin_operations() {
         let adapter = IpfsClientAdapter::development().await.unwrap();
 
@@ -369,6 +374,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore] // Requires running IPFS daemon
     async fn test_node_info() {
         let adapter = IpfsClientAdapter::development().await.unwrap();
 
@@ -378,6 +384,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore] // Requires running IPFS daemon
     async fn test_channel_id_compatibility() {
         let adapter = IpfsClientAdapter::development().await.unwrap();
         let other_peer = libp2p::PeerId::random();
