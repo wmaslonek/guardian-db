@@ -36,7 +36,7 @@ impl DirectChannel for Channels {
         let mut subs = self.subs.write().await;
 
         // Só executa a lógica se não estivermos já inscritos no canal com este peer.
-        if !subs.contains_key(&target) {
+        if let std::collections::hash_map::Entry::Vacant(e) = subs.entry(target) {
             info!(logger = ?self.logger, peer = %target, topic = %id, "Iniciando conexão e inscrição no canal.");
 
             // Cria um "token filho" para esta conexão específica.
@@ -48,7 +48,7 @@ impl DirectChannel for Channels {
             let stream = self.ipfs_client.pubsub_subscribe(&id).await?;
 
             // Armazena o token da nova subscrição no mapa.
-            subs.insert(target, child_token.clone());
+            e.insert(child_token.clone());
 
             // Clona as referências necessárias para a nova tarefa assíncrona.
             let self_clone = self.clone();
@@ -148,7 +148,7 @@ impl Channels {
         let id = self.get_channel_id(&target);
         let mut subs = self.subs.write().await;
 
-        if !subs.contains_key(&target) {
+        if let std::collections::hash_map::Entry::Vacant(e) = subs.entry(target) {
             debug!(logger = ?self.logger, topic = %id, "inscrevendo-se no tópico");
 
             // Substitui c.ipfs.PubSub().Subscribe(ctx, id, options.PubSub.Discover(true))
@@ -158,7 +158,7 @@ impl Channels {
 
             let cancel_token = CancellationToken::new();
 
-            subs.insert(target, cancel_token.clone());
+            e.insert(cancel_token.clone());
 
             // Spawna a task para monitorar o tópico, equivalente à goroutine
             let self_clone = self.clone();
@@ -184,12 +184,8 @@ impl Channels {
     // equivalente a Send em go
     pub async fn send(&self, p: PeerId, head: &[u8]) -> Result<()> {
         let id = {
-            let subs = self.subs.read().await;
-            if subs.contains_key(&p) {
-                self.get_channel_id(&p)
-            } else {
-                self.get_channel_id(&p)
-            }
+            let _subs = self.subs.read().await;
+            self.get_channel_id(&p)
         };
 
         // Substitui c.ipfs.PubSub().Publish(ctx, id, head)
@@ -216,7 +212,7 @@ impl Channels {
         loop {
             tokio::select! {
                 _ = &mut timeout => {
-                     return Err(GuardianError::Other(format!("timeout esperando pelo peer {} no canal {}", other_peer, channel_id).into()));
+                     return                     Err(GuardianError::Network(format!("timeout esperando pelo peer {} no canal {}", other_peer, channel_id)));
                 }
                 _ = interval.tick() => {
                     // Substitui c.ipfs.PubSub().Peers(ctx, options.PubSub.Topic(channelID))
@@ -231,7 +227,7 @@ impl Channels {
                         Err(e) => {
                             error!(logger = ?self.logger, "falha ao obter peers do pubsub: {}", e);
                             // Retorna o erro em caso de falha na chamada da nossa API IPFS
-                            return Err(e.into());
+                            return Err(e);
                         }
                     }
                 }
@@ -311,7 +307,7 @@ pub async fn new_channel_factory(ipfs_client: Arc<IpfsClient>) -> Result<DirectC
     let factory = move |emitter: Arc<dyn DirectChannelEmitter<Error = GuardianError>>,
                         opts: Option<DirectChannelOptions>| {
         let ipfs_client = ipfs_client.clone();
-        let self_id = self_id.clone();
+        let self_id = self_id;
 
         Box::pin(async move {
             let opts = opts.unwrap_or_default();
