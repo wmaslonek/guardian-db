@@ -49,6 +49,12 @@ pub struct GuardianDBIdentityProvider {
     provider_type: String,
 }
 
+impl Default for GuardianDBIdentityProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GuardianDBIdentityProvider {
     pub fn new() -> Self {
         Self {
