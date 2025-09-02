@@ -1,5 +1,5 @@
 use crate::address::Address;
-use crate::eqlabs_ipfs_log::entry::Entry;
+use crate::ipfs_log::entry::Entry;
 use cid::Cid;
 use libp2p::core::PeerId;
 use std::sync::Arc;
@@ -14,6 +14,7 @@ pub enum Event {
     Replicated(EventReplicated),
     Replicate(EventReplicate),
     NewPeer(EventNewPeer),
+    Reset(EventReset),
 }
 
 // -----------------------------------------------------------------------------
@@ -58,8 +59,6 @@ pub struct EventReplicateProgress {
     pub address: Arc<dyn Address + Send + Sync>,
     pub hash: Cid,
     pub entry: Entry,
-    // O campo `ReplicationStatus` do Go foi omitido,
-    // pois seus dados (`Max` e `Progress`) já foram extraídos.
 }
 
 impl std::fmt::Debug for EventReplicateProgress {
@@ -311,5 +310,26 @@ impl EventNewPeer {
     /// equivalente a NewEventNewPeer em go
     pub fn new(p: PeerId) -> Self {
         Self { peer: p }
+    }
+}
+
+/// Um evento enviado quando a store é resetada.
+/// equivalente a EventReset em go
+#[derive(Debug, Clone)]
+pub struct EventReset {
+    pub address: Arc<dyn Address + Send + Sync>,
+    pub timestamp: u64,
+}
+
+impl PartialEq for EventReset {
+    fn eq(&self, other: &Self) -> bool {
+        self.address.equals(other.address.as_ref()) && self.timestamp == other.timestamp
+    }
+}
+
+impl EventReset {
+    /// equivalente a NewEventReset em go
+    pub fn new(address: Arc<dyn Address + Send + Sync>, timestamp: u64) -> Self {
+        Self { address, timestamp }
     }
 }
