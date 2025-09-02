@@ -16,6 +16,7 @@ pub struct WrappedCache {
     id: String,
     db: Db,
     manager_map: Weak<Mutex<HashMap<String, Arc<WrappedCache>>>>,
+    #[allow(dead_code)]
     logger: Logger,
     closed: Mutex<bool>,
 }
@@ -41,10 +42,10 @@ impl WrappedCache {
         _ctx: &mut dyn core::any::Any,
         key: &Key,
     ) -> std::result::Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-        Ok(self
+        self
             .db
             .contains_key(key.as_bytes())
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?)
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
     }
 
     pub fn get_size(
@@ -344,10 +345,10 @@ impl Cache for LevelDownCache {
     fn load(
         &self,
         directory: &str,
-        db_address: &Box<dyn Address>,
+        db_address: &dyn Address,
     ) -> Result<Box<dyn Datastore + Send + Sync>> {
         let wrapped_cache = self
-            .load_internal(directory, db_address.as_ref())
+            .load_internal(directory, db_address)
             .map_err(|e| GuardianError::Other(format!("Failed to load cache: {}", e)))?;
         Ok(Box::new(DatastoreWrapper {
             cache: wrapped_cache,
@@ -365,8 +366,8 @@ impl Cache for LevelDownCache {
         Ok(())
     }
 
-    fn destroy(&self, directory: &str, db_address: &Box<dyn Address>) -> Result<()> {
-        self.destroy_internal(directory, db_address.as_ref())
+    fn destroy(&self, directory: &str, db_address: &dyn Address) -> Result<()> {
+        self.destroy_internal(directory, db_address)
             .map_err(|e| GuardianError::Other(format!("Failed to destroy cache: {}", e)))?;
         Ok(())
     }
@@ -434,7 +435,7 @@ mod tests {
     #[tokio::test]
     async fn test_datastore_wrapper_basic_operations() {
         let cache = LevelDownCache::new(None);
-        let mock_address = Box::new(MockAddress::new("test_root", "test_path")) as Box<dyn Address>;
+        let mock_address = MockAddress::new("test_root", "test_path");
 
         let datastore = cache.load(IN_MEMORY_DIRECTORY, &mock_address).unwrap();
 
@@ -458,7 +459,7 @@ mod tests {
     #[tokio::test]
     async fn test_datastore_wrapper_query() {
         let cache = LevelDownCache::new(None);
-        let mock_address = Box::new(MockAddress::new("test_root", "test_path")) as Box<dyn Address>;
+        let mock_address = MockAddress::new("test_root", "test_path");
 
         let datastore = cache.load(IN_MEMORY_DIRECTORY, &mock_address).unwrap();
 
@@ -507,8 +508,7 @@ mod tests {
     #[ignore] // Test takes too long in CI environment
     async fn test_cache_lifecycle() {
         let mut cache = LevelDownCache::new(None);
-        let mock_address =
-            Box::new(MockAddress::new("test_root", "lifecycle_test")) as Box<dyn Address>;
+        let mock_address = MockAddress::new("test_root", "lifecycle_test");
 
         // Load cache
         let datastore = cache.load(IN_MEMORY_DIRECTORY, &mock_address).unwrap();
