@@ -1,7 +1,7 @@
 use crate::access_controller::manifest::ManifestParams;
-use crate::eqlabs_ipfs_log::access_controller;
-use crate::eqlabs_ipfs_log::identity_provider::IdentityProvider;
 use crate::error::Result;
+use crate::ipfs_log::access_controller;
+use crate::ipfs_log::identity_provider::IdentityProvider;
 use async_trait::async_trait;
 use slog::Logger;
 use std::sync::Arc;
