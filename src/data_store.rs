@@ -58,6 +58,7 @@ impl Key {
     }
 
     /// Cria uma chave raiz vazia
+    #[allow(dead_code)]
     pub fn root() -> Self {
         Self { segments: vec![] }
     }
@@ -75,6 +76,7 @@ impl Key {
     }
 
     /// Retorna a chave pai, se existir
+    #[allow(dead_code)]
     pub fn parent(&self) -> Option<Self> {
         if self.segments.is_empty() {
             None
@@ -124,6 +126,7 @@ impl Key {
     }
 
     /// Converte para bytes UTF-8
+    #[allow(dead_code)]
     pub fn as_bytes(&self) -> Vec<u8> {
         self.as_str().into_bytes()
     }
@@ -187,6 +190,7 @@ impl Query {
     }
 
     /// Cria uma query que retorna todos os itens
+    #[allow(dead_code)]
     pub fn all() -> Self {
         Self::default()
     }
@@ -215,6 +219,7 @@ impl QueryBuilder {
     }
 
     /// Define a ordem de classificação
+    #[allow(dead_code)]
     pub fn order(mut self, o: Order) -> Self {
         self.order = o;
         self
