@@ -1,9 +1,9 @@
 use crate::access_controller::manifest::CreateAccessControllerOptions;
 use crate::access_controller::{manifest::ManifestParams, utils};
 use crate::address::{Address, GuardianDBAddress};
-use crate::eqlabs_ipfs_log::{access_controller, identity_provider::IdentityProvider};
 use crate::error::{GuardianError, Result};
 use crate::iface::{CreateDBOptions, GuardianDBKVStoreProvider, KeyValueStore};
+use crate::ipfs_log::{access_controller, identity_provider::IdentityProvider};
 use async_trait::async_trait;
 use log::warn;
 use slog::Logger;
