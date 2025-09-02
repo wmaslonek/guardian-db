@@ -1,16 +1,13 @@
-// Implementação de Keystore para rust-guardian-db
-// Compatível com eqlabs_ipfs_log e usando libp2p_identity + sled
-
 use crate::error::{GuardianError, Result};
 use async_trait::async_trait;
 use libp2p_identity::Keypair;
 use sled::Db;
 use std::sync::Arc;
 
-use crate::eqlabs_ipfs_log::identity_provider::Keystore as KeystoreInterface;
+use crate::ipfs_log::identity_provider::Keystore as KeystoreInterface;
 
 /// Implementação de Keystore que usa sled como backend de persistência
-/// e é compatível com a interface do eqlabs_ipfs_log
+/// e é compatível com a interface do ipfs_log
 #[derive(Clone, Debug)]
 pub struct SledKeystore {
     db: Db,
