@@ -67,7 +67,7 @@ impl Identity {
         Identity {
             id: id.to_owned(),
             pub_key: pub_key.to_owned(),
-            signatures: signatures,
+            signatures,
         }
     }
 
@@ -181,6 +181,12 @@ pub trait Identificator {
 pub struct DefaultIdentificator {
     secp: Secp256k1<All>,
     keystore: HashMap<String, Keys>,
+}
+
+impl Default for DefaultIdentificator {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DefaultIdentificator {
