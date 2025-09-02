@@ -1,10 +1,12 @@
-use crate::eqlabs_ipfs_log::{entry::Entry, log::Log};
 use crate::error::Result;
 use crate::iface::TracerWrapper;
+use crate::ipfs_log::{entry::Entry, log::Log};
 use crate::pubsub::event::{Emitter, EventBus}; // Usando nosso EventBus
 use crate::stores::events::{EventLoad, EventLoadProgress, EventReplicated};
 use crate::stores::replicator::events::{EventLoadAdded, EventLoadEnd};
-use crate::stores::replicator::queue::ProcessQueue;
+use crate::stores::replicator::queue::{
+    ProcessItem as ProcessItemTrait, ProcessQueue, ProcessQueueItem,
+}; // Import trait
 use crate::stores::replicator::traits::StoreInterface;
 use cid::Cid;
 use ipfs_api_backend_hyper::IpfsApi;
@@ -19,6 +21,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Level, info, span, warn};
 
 /// Concrete implementation of ProcessItem for the replicator
+/// Note: This is now primarily used for creating ProcessQueueItems
 #[derive(Clone, Debug)]
 pub struct ProcessItem {
     hash: Cid,
@@ -26,23 +29,13 @@ pub struct ProcessItem {
     entry: Option<Entry>,
 }
 
-impl crate::stores::replicator::queue::ProcessItem for ProcessItem {
-    fn get_hash(&self) -> Cid {
-        self.hash
-    }
-}
-
 impl ProcessItem {
-    pub fn new(hash: Cid) -> Self {
-        Self { hash, entry: None }
+    pub fn new(hash: Cid) -> ProcessQueueItem {
+        ProcessQueueItem::Hash(crate::stores::replicator::queue::ProcessHash::new(hash))
     }
 
-    pub fn from_entry(entry: Entry) -> Self {
-        let hash = Cid::try_from(entry.hash()).unwrap_or_default();
-        Self {
-            hash,
-            entry: Some(entry),
-        }
+    pub fn from_entry(entry: Entry) -> ProcessQueueItem {
+        ProcessQueueItem::Entry(crate::stores::replicator::queue::ProcessEntry::new(entry))
     }
 }
 
@@ -107,7 +100,8 @@ impl ReplicatorInterface for Replicator {
             let state = &self.state.read().await;
 
             // 1. Verifica se o hash já existe no log da store principal.
-            let in_log = self.store.op_log().get(&hash_owned.to_string()).is_some();
+            let op_log_arc = self.store.op_log_arc();
+            let in_log = op_log_arc.read().get(&hash_owned.to_string()).is_some();
             if in_log {
                 return true;
             }
@@ -354,7 +348,7 @@ impl Replicator {
                 }
 
                 // Emite o evento `LoadAdded` para a nova entrada adicionada
-                let load_added_event = EventLoadAdded::new(hash, entry);
+                let load_added_event = EventLoadAdded::new(hash, *entry);
                 if let Err(e) = self.emitters.evt_load_added.emit(load_added_event) {
                     warn!("Unable to emit event load added: {:?}", e);
                 }
@@ -425,7 +419,6 @@ impl Replicator {
         Ok(())
     }
 
-    // ==== Métodos auxiliares privados (movidos para dentro do `impl Replicator` em Rust)===
     // equivalente a AddEntryToQueue em go (não thread-safe, requer lock externo)
     fn add_entry_to_queue(
         &self,
@@ -435,14 +428,14 @@ impl Replicator {
         let hash = Cid::try_from(entry.hash()).unwrap_or_default();
 
         // Verifica se o hash já está na store ou na fila de tarefas.
-        let in_log = self.store.op_log().get(&hash.to_string()).is_some();
+        let op_log_arc = self.store.op_log_arc();
+        let in_log = op_log_arc.read().get(&hash.to_string()).is_some();
         if state.tasks.contains_key(&hash) || in_log {
             return true; // "exist" é true, já existe.
         }
 
-        // Adiciona à fila e ao mapa de tarefas.
-        let item = ProcessItem::new(hash);
-        state.queue.add(Box::new(item));
+        // Adiciona à fila usando a nova API
+        state.queue.add_hash(hash);
         state.tasks.insert(hash, QueuedState::Added);
 
         false // "exist" é false, foi adicionado agora.
@@ -450,9 +443,7 @@ impl Replicator {
 
     // equivalente a waitForProcessSlot em go
     /// Pega o próximo item da fila e atualiza seu estado para `Fetching`.
-    async fn wait_for_process_slot(
-        &self,
-    ) -> Option<Box<dyn crate::stores::replicator::queue::ProcessItem + Send + Sync>> {
+    async fn wait_for_process_slot(&self) -> Option<ProcessQueueItem> {
         let mut state = self.state.write().await;
 
         let item = state.queue.next()?;
@@ -577,9 +568,7 @@ impl<'a> ReplicatorRef<'a> {
 
     /// Versão de `wait_for_process_slot` para ReplicatorRef
     #[allow(dead_code)]
-    async fn wait_for_process_slot(
-        &self,
-    ) -> Option<Box<dyn crate::stores::replicator::queue::ProcessItem + Send + Sync>> {
+    async fn wait_for_process_slot(&self) -> Option<ProcessQueueItem> {
         let mut state = self.state.write().await;
 
         let item = state.queue.next()?;
@@ -645,7 +634,7 @@ impl<'a> ReplicatorRef<'a> {
     #[allow(dead_code)]
     async fn process_items(
         &self,
-        items: Vec<Box<dyn crate::stores::replicator::queue::ProcessItem + Send + Sync>>,
+        items: Vec<ProcessQueueItem>,
         _join_set: Arc<Mutex<JoinSet<Result<()>>>>,
     ) -> Result<()> {
         for item in items {
@@ -679,10 +668,7 @@ impl<'a> ReplicatorRef<'a> {
 
     /// Versão de `process_hash` para ReplicatorRef - implementação real
     #[allow(dead_code)]
-    async fn process_hash(
-        &self,
-        item: Box<dyn crate::stores::replicator::queue::ProcessItem + Send + Sync>,
-    ) -> Result<Vec<Cid>> {
+    async fn process_hash(&self, item: ProcessQueueItem) -> Result<Vec<Cid>> {
         let hash = item.get_hash();
 
         // Usa o cliente IPFS da store para buscar o log
@@ -755,19 +741,18 @@ impl<'a> ReplicatorRef<'a> {
         state: &mut tokio::sync::RwLockWriteGuard<'_, ReplicatorState>,
         hash: Cid,
     ) -> bool {
-        let in_log = self.store.op_log().get(&hash.to_string()).is_some();
+        let op_log_arc = self.store.op_log_arc();
+        let in_log = op_log_arc.read().get(&hash.to_string()).is_some();
         if state.tasks.contains_key(&hash) || in_log {
             return true; // Já existe
         }
 
-        let item = ProcessItem::new(hash);
-        state.queue.add(Box::new(item));
+        // Usa a nova API da fila
+        state.queue.add_hash(hash);
         state.tasks.insert(hash, QueuedState::Added);
 
         false // Foi adicionado agora
     }
-
-    //===Fim métodos auxiliares privados===
 }
 
 impl Replicator {
@@ -777,13 +762,14 @@ impl Replicator {
         state: &mut tokio::sync::RwLockWriteGuard<'_, ReplicatorState>,
         hash: Cid,
     ) -> bool {
-        let in_log = self.store.op_log().get(&hash.to_string()).is_some();
+        let op_log_arc = self.store.op_log_arc();
+        let in_log = op_log_arc.read().get(&hash.to_string()).is_some();
         if state.tasks.contains_key(&hash) || in_log {
             return true; // Já existe.
         }
 
-        let item = ProcessItem::new(hash);
-        state.queue.add(Box::new(item));
+        // Usa a nova API da fila
+        state.queue.add_hash(hash);
         state.tasks.insert(hash, QueuedState::Added);
 
         false // Foi adicionado agora.
@@ -791,10 +777,7 @@ impl Replicator {
 
     // equivalente a processHash em go
     /// Busca o log associado a um `ProcessItem` do IPFS.
-    async fn process_hash(
-        &self,
-        item: Box<dyn crate::stores::replicator::queue::ProcessItem + Send + Sync>,
-    ) -> Result<Vec<Cid>> {
+    async fn process_hash(&self, item: ProcessQueueItem) -> Result<Vec<Cid>> {
         let hash = item.get_hash();
 
         // Usa o cliente IPFS da store para buscar o log
