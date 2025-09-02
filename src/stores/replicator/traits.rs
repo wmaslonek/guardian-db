@@ -1,35 +1,78 @@
+//! # Traits do Módulo Replicator
+//!
+//! Este módulo define as interfaces fundamentais para o sistema de replicação
+//! do GuardianDB. Ele fornece abstrações que permitem a sincronização de dados
+//! entre diferentes instâncias de stores na rede distribuída.
+//!
+//! ## Arquitetura
+//!
+//! O sistema de replicação é baseado em três traits principais:
+//!
+//! 1. **`StoreInterface`**: Define como o replicador acessa dados da store
+//! 2. **`Replicator`**: Interface pública para operações de replicação
+//! 3. **`ReplicationInfo`**: Rastreamento do progresso de replicação
+//!
+//! ## Equivalências Go
+//!
+//! Este módulo é equivalente aos interfaces Go:
+//! - `storeInterface` → `StoreInterface`
+//! - `Replicator` → `Replicator`
+//! - `ReplicationInfo` → `ReplicationInfo`
+
 use crate::access_controller::traits::AccessController;
-use crate::eqlabs_ipfs_log::{entry::Entry, identity::Identity, log::Log};
+use crate::ipfs_log::{entry::Entry, identity::Identity, log::Log};
 use crate::pubsub::event::EventBus; // Usando nosso EventBus
 use cid::Cid;
 use ipfs_api_backend_hyper::IpfsClient;
 use std::future::Future;
-// Removido: use crate::stores::base_store::base_store::IpfsLogIo;
-// A funcionalidade de I/O está implementada diretamente em Entry::multihash
+use std::sync::Arc;
 
+/// Tipo de função para ordenar entradas no log.
+///
+/// Define como duas entradas devem ser comparadas durante operações
+/// de ordenação no processo de replicação.
+///
+/// # Parâmetros
+/// - `a`: Primeira entrada para comparação
+/// - `b`: Segunda entrada para comparação
+///
+/// # Retorna
+/// `std::cmp::Ordering` indicando a relação de ordem entre as entradas
 pub type SortFn = fn(a: &Entry, b: &Entry) -> std::cmp::Ordering;
+
+/// Resultado padrão para operações de replicação
+pub type ReplicationResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+/// Hash de entrada usado para identificação única
+pub type EntryHash = String;
 
 // equivalente a storeInterface em go
 /// Um trait usado para evitar ciclos de importação, definindo a interface
 /// que o Replicator espera que uma `Store` implemente.
+///
+/// Esta interface abstrai as operações essenciais que o replicador
+/// precisa para acessar e manipular dados de uma store.
 pub trait StoreInterface: Send + Sync {
-    /// Retorna o log de operações (OpLog) da store.
-    fn op_log(&self) -> &Log;
+    /// Retorna uma referência compartilhada ao log de operações (OpLog) da store.
+    /// Este log contém todas as entradas ordenadas cronologicamente.
+    /// Usando Arc<RwLock<Log>> para compatibilidade com arquitetura thread-safe.
+    fn op_log_arc(&self) -> Arc<parking_lot::RwLock<Log>>;
 
     /// Retorna a instância da API do IPFS.
+    /// Usado para buscar dados distribuídos da rede IPFS.
     fn ipfs(&self) -> &IpfsClient;
 
     /// Retorna a identidade da store.
+    /// Identifica unicamente esta instância na rede.
     fn identity(&self) -> &Identity;
 
     /// Retorna o controlador de acesso da store.
+    /// Gerencia permissões e autorização para operações.
     fn access_controller(&self) -> &dyn AccessController;
 
     /// Retorna a função de ordenação para as entradas do log.
+    /// Define como as entradas devem ser ordenadas durante a replicação.
     fn sort_fn(&self) -> SortFn;
-
-    // Removido: fn io() - A funcionalidade de I/O está implementada
-    // diretamente nos métodos Entry::multihash() e Entry::from_multihash()
 }
 
 // equivalente a Replicator em go
@@ -47,10 +90,17 @@ pub trait Replicator {
 
     /// Retorna o barramento de eventos para escutar os eventos de replicação.
     fn event_bus(&self) -> EventBus;
+
+    /// Determina se um hash específico deve ser excluído da replicação.
+    /// Retorna `true` se o hash já existe no log ou foi processado com sucesso.
+    fn should_exclude(&self, hash: &Cid) -> impl Future<Output = bool> + Send;
 }
 
 // equivalente a ReplicationInfo em go
 /// Mantém informações sobre o estado atual da replicação.
+///
+/// Este trait fornece uma interface thread-safe para rastrear
+/// o progresso da replicação entre diferentes instâncias de store.
 pub trait ReplicationInfo: Send + Sync {
     /// Retorna o progresso atual (número de entradas processadas).
     fn get_progress(&self) -> impl Future<Output = usize> + Send;
