@@ -1,8 +1,3 @@
-// ipfs_core_api/mod.rs - Módulo principal da API IPFS Core 100% Rust
-//
-// Este módulo reorganiza e expande a funcionalidade do antigo kubo_core_api
-// com uma arquitetura modular e limpa.
-
 pub mod client;
 pub mod compat;
 pub mod config;
