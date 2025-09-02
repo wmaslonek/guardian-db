@@ -7,6 +7,11 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+// Type aliases para simplificar tipos complexos
+type DatastoreBox = Box<dyn Datastore + Send + Sync>;
+type CleanupFn = Box<dyn FnOnce() -> Result<()> + Send + Sync>;
+type NewCacheResult = Result<(DatastoreBox, CleanupFn)>;
+
 // equivalente à struct Options em go
 /// Define as opções para a criação de um cache.
 #[derive(Debug, Clone)]
@@ -46,13 +51,11 @@ impl Default for Options {
 pub trait Cache: Send + Sync {
     /// Cria uma nova instância de cache no caminho especificado
     /// Retorna um Datastore e uma função de cleanup
+    #[allow(clippy::new_ret_no_self)]
     fn new(
         path: &str,
         opts: Option<Options>,
-    ) -> Result<(
-        Box<dyn Datastore + Send + Sync>,
-        Box<dyn FnOnce() -> Result<()> + Send + Sync>,
-    )>
+    ) -> NewCacheResult
     where
         Self: Sized,
     {
@@ -64,8 +67,8 @@ pub trait Cache: Send + Sync {
     fn load(
         &self,
         directory: &str,
-        db_address: &Box<dyn Address>,
-    ) -> Result<Box<dyn Datastore + Send + Sync>>;
+        db_address: &dyn Address,
+    ) -> Result<DatastoreBox>;
 
     /// Fecha um cache e todos os seus armazenamentos de dados associados.
     // equivalente a Close em go
@@ -73,7 +76,7 @@ pub trait Cache: Send + Sync {
 
     /// Remove todos os dados em cache de um banco de dados.
     // equivalente a Destroy em go
-    fn destroy(&self, directory: &str, db_address: &Box<dyn Address>) -> Result<()>;
+    fn destroy(&self, directory: &str, db_address: &dyn Address) -> Result<()>;
 }
 
 /// Implementação de cache usando Sled como backend
@@ -95,10 +98,7 @@ impl SledCache {
     pub fn create_cache_instance(
         path: &str,
         opts: Options,
-    ) -> Result<(
-        Box<dyn Datastore + Send + Sync>,
-        Box<dyn FnOnce() -> Result<()> + Send + Sync>,
-    )> {
+    ) -> NewCacheResult {
         let logger = opts
             .logger
             .clone()
@@ -123,7 +123,7 @@ impl SledCache {
                             "error" => %e
                         );
                         Err(GuardianError::Other(
-                            format!("Failed to cleanup cache: {}", e).into(),
+                            format!("Failed to cleanup cache: {}", e),
                         ))
                     }
                 }
@@ -149,9 +149,9 @@ impl Cache for SledCache {
     fn load(
         &self,
         directory: &str,
-        db_address: &Box<dyn Address>,
+        db_address: &dyn Address,
     ) -> Result<Box<dyn Datastore + Send + Sync>> {
-        let cache_key = Self::generate_cache_key(directory, db_address.as_ref());
+        let cache_key = Self::generate_cache_key(directory, db_address);
         let logger = self
             .options
             .logger
@@ -204,8 +204,8 @@ impl Cache for SledCache {
         Ok(())
     }
 
-    fn destroy(&self, directory: &str, db_address: &Box<dyn Address>) -> Result<()> {
-        let cache_key = Self::generate_cache_key(directory, db_address.as_ref());
+    fn destroy(&self, directory: &str, db_address: &dyn Address) -> Result<()> {
+        let cache_key = Self::generate_cache_key(directory, db_address);
         let logger = self
             .options
             .logger
@@ -231,7 +231,7 @@ impl Cache for SledCache {
         // Remove arquivos do disco (apenas se não for em memória)
         if directory != ":memory:" && Path::new(&cache_key).exists() {
             std::fs::remove_dir_all(&cache_key).map_err(|e| {
-                GuardianError::Other(format!("Failed to remove cache directory: {}", e).into())
+                GuardianError::Other(format!("Failed to remove cache directory: {}", e))
             })?;
 
             info!(logger, "Cache directory removed"; "path" => &cache_key);
