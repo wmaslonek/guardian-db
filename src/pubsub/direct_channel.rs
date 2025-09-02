@@ -25,7 +25,9 @@ use tokio::sync::{Mutex, RwLock, mpsc};
 
 // Equivalente às constantes globais em go
 const PROTOCOL: &str = "/go-orbit-db/direct-channel/1.2.0";
+#[allow(dead_code)]
 const DELIMITED_READ_MAX_SIZE: usize = 1024 * 1024 * 4; // 4mb
+#[allow(dead_code)]
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 const MAX_MESSAGE_SIZE: usize = 1024 * 1024; // 1MB
@@ -713,7 +715,7 @@ impl SwarmManager {
             .listen_on(listen_addr_ipv4.clone())
             .map_err(|e| GuardianError::Other(format!("Erro listen: {}", e)))?;
 
-        let local_peer_id = swarm_result.local_peer_id().clone();
+        let local_peer_id = *swarm_result.local_peer_id();
 
         slog::info!(
             self.logger,
@@ -749,6 +751,7 @@ impl SwarmManager {
     }
 
     /// Valida as etapas de construção do transport chain
+    #[allow(dead_code)]
     async fn validate_transport_chain_steps(&self) -> Result<()> {
         slog::debug!(self.logger, "Validando etapas do transport chain...");
 
@@ -1005,7 +1008,7 @@ impl SwarmManager {
             // Simula validação de cada otimização
             tokio::time::sleep(Duration::from_millis(10)).await;
 
-            match opt_name.as_ref() {
+            match *opt_name {
                 "connection_pooling" => {
                     // Valida se connection pooling está funcionando
                     if !opt_config.contains("max_per_peer") {
@@ -2736,15 +2739,12 @@ impl SwarmManager {
             .await?;
 
         let registration_info = format!(
-            "RealServiceRegistration[service_info={}, mdns_registration={}, service_resolution={}, service_monitoring={}, dns_records={}]",
+            "RealServiceRegistration[service_info={}, mdns_registration={}, service_resolution={}, service_monitoring={}, dns_records=A:{},PTR:{},SRV:{},TXT:{}]",
             real_service_info,
             mdns_registration,
             service_resolution,
             service_monitoring,
-            format!(
-                "A:{},PTR:{},SRV:{},TXT:{}",
-                a_record, ptr_record, srv_record, txt_record
-            )
+            a_record, ptr_record, srv_record, txt_record
         );
 
         slog::info!(
@@ -2903,7 +2903,7 @@ impl SwarmManager {
 
         for part in parts {
             if let Ok(num) = part.parse::<u8>() {
-                if part != &num.to_string() {
+                if part != num.to_string() {
                     return false; // Rejeita leading zeros como "01"
                 }
             } else {
@@ -3094,7 +3094,7 @@ impl SwarmManager {
 
         // Configurações avançadas de SRV
         let load_balancing_enabled = true;
-        let failover_priority_groups = vec![
+        let failover_priority_groups = [
             (0, "primary"),    // Prioridade 0 = primário
             (10, "secondary"), // Prioridade 10 = secundário
             (20, "backup"),    // Prioridade 20 = backup
@@ -3142,7 +3142,7 @@ impl SwarmManager {
         // Configuração de interface binding
         let bind_all_interfaces = true;
         let interface_selection_strategy = "adaptive"; // adaptive, manual, automatic
-        let interface_priority = vec![("ethernet", 1), ("wifi", 2), ("loopback", 3)];
+        let interface_priority = [("ethernet", 1), ("wifi", 2), ("loopback", 3)];
 
         // Configuração de multicast
         let multicast_enabled = true;
@@ -3424,7 +3424,7 @@ impl SwarmManager {
         // Simulação da construção do comando para daemon mDNS
         let command_type = "REGISTER_SERVICE";
         let command_version = "1.0";
-        let command_flags = vec!["FLUSH_CACHE", "ANNOUNCE", "PROBE"];
+        let command_flags = ["FLUSH_CACHE", "ANNOUNCE", "PROBE"];
 
         let command = format!(
             "RegistrationCommand[type={}, version={}, flags={}, data_reference={}]",
@@ -3492,7 +3492,7 @@ impl SwarmManager {
         let dns_resolution_working = true; // Simula teste de resolução DNS
         let announcements_sent = true; // Simula verificação de announcements
 
-        let verification_checks = vec![
+        let verification_checks = [
             ("response_code", response_code_check),
             ("status", status_check),
             ("message", message_check),
@@ -3640,7 +3640,7 @@ impl SwarmManager {
         slog::debug!(self.logger, "Configurando tratamento de erros...");
 
         // Estratégias de error handling
-        let error_strategies = vec![
+        let error_strategies = [
             ("connection_lost", "auto_reconnect"),
             ("registration_failed", "retry_with_backoff"),
             ("conflict_detected", "automatic_resolution"),
@@ -3783,7 +3783,7 @@ impl SwarmManager {
         let response_prioritization_enabled = true;
 
         // Configuração de fallback strategies
-        let fallback_strategies = vec![
+        let fallback_strategies = [
             "unicast_query",       // Se multicast falhar
             "different_interface", // Tentar outra interface
             "alternative_server",  // Usar servidor DNS alternativo
@@ -3832,7 +3832,7 @@ impl SwarmManager {
         // Configuração de health monitoring
         let health_monitoring_enabled = true;
         let health_check_interval = Duration::from_secs(30);
-        let health_check_methods = vec![
+        let health_check_methods = [
             "service_query",     // Query o próprio serviço
             "peer_discovery",    // Verificar se peers conseguem descobrir
             "resolution_test",   // Testar resolução DNS
@@ -3841,7 +3841,7 @@ impl SwarmManager {
 
         // Configuração de performance monitoring
         let performance_monitoring_enabled = true;
-        let performance_metrics = vec![
+        let performance_metrics = [
             "query_response_time",
             "resolution_success_rate",
             "announcement_frequency",
@@ -3857,7 +3857,7 @@ impl SwarmManager {
 
         // Configuração de alerting
         let alerting_enabled = true;
-        let alert_thresholds = vec![
+        let alert_thresholds = [
             ("response_time_high", "> 1000ms"),
             ("success_rate_low", "< 95%"),
             ("conflicts_high", "> 5/hour"),
@@ -4119,7 +4119,7 @@ impl SwarmManager {
         let discovery_timeout = Duration::from_secs(30);
 
         // Configuração de filtros de descoberta
-        let service_type_filters = vec![
+        let service_type_filters = [
             "_berty-direct-channel._tcp.local.",
             "_guardian-db._tcp.local.",
             "_p2p._tcp.local.",
@@ -5116,7 +5116,7 @@ impl SwarmManager {
         // mdns.start().await?;
 
         let mdns_service =
-            format!("MdnsService[status=initialized, config=applied, discovery=local]");
+            "MdnsService[status=initialized, config=applied, discovery=local]".to_string();
 
         slog::info!(
             self.logger,
@@ -5140,9 +5140,7 @@ impl SwarmManager {
         // para cada bootstrap node: kademlia.add_address(&peer_id, multiaddr);
         // kademlia.bootstrap(&mut rand::thread_rng())?;
 
-        let kademlia_service = format!(
-            "KademliaService[status=initialized, config=applied, discovery=global, bootstrap=configured]"
-        );
+        let kademlia_service = "KademliaService[status=initialized, config=applied, discovery=global, bootstrap=configured]".to_string();
 
         slog::info!(
             self.logger,
@@ -5694,7 +5692,7 @@ impl SwarmManager {
         // Configurações de whitelist/blacklist
         let topic_whitelist_enabled = true;
         let topic_blacklist_enabled = true;
-        let allowed_topic_patterns = vec![
+        let allowed_topic_patterns = [
             format!("{}/.*", PROTOCOL),   // Tópicos do protocolo
             "guardian-db/.*".to_string(), // Tópicos do guardian-db
             "discovery/.*".to_string(),   // Tópicos de discovery
@@ -5807,7 +5805,7 @@ impl SwarmManager {
 
         // Configurações de geolocation filtering
         let geo_filtering_enabled = true;
-        let blocked_countries = vec!["suspicious_regions"]; // Regiões bloqueadas
+        let blocked_countries = ["suspicious_regions"]; // Regiões bloqueadas
         let max_connections_per_ip = 50; // Por endereço IP
         let max_connections_per_subnet = 500; // Por subnet
 
@@ -5910,7 +5908,7 @@ impl SwarmManager {
 
         // Configurações de behavioral analysis
         let behavioral_analysis_enabled = true;
-        let suspicious_patterns = vec![
+        let suspicious_patterns = [
             "rapid_connection_attempts",
             "message_flooding",
             "invalid_protocol_usage",
@@ -5978,7 +5976,7 @@ impl SwarmManager {
 
         // Configurações de protocol security
         let protocol_whitelisting = true;
-        let allowed_protocols = vec!["tcp", "noise", "yamux", "gossipsub"];
+        let allowed_protocols = ["tcp", "noise", "yamux", "gossipsub"];
         let protocol_version_enforcement = true;
         let deprecated_protocol_blocking = true;
 
@@ -6026,8 +6024,8 @@ impl SwarmManager {
 
         // Configurações de alertas
         let real_time_alerts_enabled = true;
-        let alert_severity_levels = vec!["low", "medium", "high", "critical"];
-        let alert_channels = vec!["log", "metrics", "webhook"]; // Canais de alerta
+        let alert_severity_levels = ["low", "medium", "high", "critical"];
+        let alert_channels = ["log", "metrics", "webhook"]; // Canais de alerta
 
         // Configurações de métricas
         let security_metrics_enabled = true;
@@ -6614,6 +6612,7 @@ impl LibP2PInterface for GossipsubInterface {
 // Estado interno do DirectChannel
 #[derive(Debug, Clone)]
 struct ChannelState {
+    #[allow(dead_code)]
     peer_id: PeerId,
     topic: TopicHash,
     connection_status: ConnectionStatus,
@@ -6627,6 +6626,7 @@ enum ConnectionStatus {
     Disconnected,
     Connecting,
     Connected,
+    #[allow(dead_code)]
     Error(String),
 }
 
@@ -7429,7 +7429,7 @@ impl LibP2PInterface for ProductionLibP2PInterface {
         // Inicializa mesh do tópico
         {
             let mut mesh = futures::executor::block_on(self.topic_mesh.write());
-            mesh.entry(topic.clone()).or_insert_with(Vec::new);
+            mesh.entry(topic.clone()).or_default();
         }
 
         // Implementação real: usa instância do Gossipsub para inscrever
