@@ -207,7 +207,7 @@ impl PsTopic {
         let mut subscription = self.ps.api.pubsub_subscribe(&self.topic).await?;
 
         let (tx, rx) = mpsc::channel(128);
-        let self_peer_id = self.ps.id.clone(); // Clona o ID para usar na task
+        let self_peer_id = self.ps.id; // Usa o ID diretamente já que PeerId implementa Copy
         let cancellation_token = self.cancellation_token.clone();
         let topic_name = self.topic.clone();
 
