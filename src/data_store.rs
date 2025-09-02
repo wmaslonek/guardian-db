@@ -6,7 +6,7 @@ use std::fmt::{Display, Formatter, Result as FmtResult};
 /// Fornece uma interface assíncrona para operações CRUD básicas
 /// e queries com filtros avançados.
 #[async_trait::async_trait]
-pub trait Datastore: Send + Sync {
+pub trait Datastore: Send + Sync + std::any::Any {
     /// Recupera um valor associado à chave
     async fn get(&self, key: &[u8]) -> DbResult<Option<Vec<u8>>>;
 
@@ -24,6 +24,9 @@ pub trait Datastore: Send + Sync {
 
     /// Retorna todas as chaves com um determinado prefixo
     async fn list_keys(&self, prefix: &[u8]) -> DbResult<Vec<Key>>;
+
+    /// Método auxiliar para downcast
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 /// Representa uma chave hierárquica no datastore
