@@ -75,7 +75,7 @@ impl EmitterInterface for EventEmitter {
     async fn subscribe(&self) -> (mpsc::Receiver<Event>, CancellationToken) {
         let mut guard = self.internal.lock().await;
         let bus = guard.get_bus_mut();
-        let mut sub = bus
+        let sub = bus
             .subscribe::<EventBox>()
             .await
             .expect("não foi possível se inscrever");
@@ -382,7 +382,6 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::time::Duration;
-    use tokio::time::timeout;
 
     // Teste simplificado para debug
     #[tokio::test]
