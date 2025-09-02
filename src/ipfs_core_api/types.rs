@@ -3,7 +3,6 @@
 // Centraliza todos os tipos de dados usados pela API IPFS Core
 
 use crate::error::Result;
-use cid::Cid;
 use futures::stream::Stream;
 use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
