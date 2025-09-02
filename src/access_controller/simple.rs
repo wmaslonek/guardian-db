@@ -1,8 +1,8 @@
 use crate::access_controller::manifest::{CreateAccessControllerOptions, ManifestParams};
 use crate::access_controller::traits::AccessController;
 use crate::address::Address;
-use crate::eqlabs_ipfs_log::{access_controller::LogEntry, identity_provider::IdentityProvider};
 use crate::error::{GuardianError, Result};
+use crate::ipfs_log::{access_controller::LogEntry, identity_provider::IdentityProvider};
 use async_trait::async_trait;
 use slog::{self, Logger};
 use std::collections::HashMap;
@@ -499,7 +499,7 @@ impl AccessController for SimpleAccessController {
         &self,
         entry: &dyn LogEntry,
         identity_provider: &dyn IdentityProvider,
-        _additional_context: &dyn crate::eqlabs_ipfs_log::access_controller::CanAppendAdditionalContext,
+        _additional_context: &dyn crate::ipfs_log::access_controller::CanAppendAdditionalContext,
     ) -> Result<()> {
         let state = self.state.read().await;
 
