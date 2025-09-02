@@ -64,7 +64,7 @@ impl LogAndIndex {
         F: FnOnce(&Log) -> R,
     {
         let guard = self.oplog.read();
-        f(&*guard)
+        f(&guard)
     }
 
     /// Acesso thread-safe ao oplog para modificações
@@ -73,7 +73,7 @@ impl LogAndIndex {
         F: FnOnce(&mut Log) -> R,
     {
         let mut guard = self.oplog.write();
-        f(&mut *guard)
+        f(&mut guard)
     }
 
     /// Acesso thread-safe ao índice ativo
@@ -112,7 +112,7 @@ impl LogAndIndex {
         match self.with_index_mut(|index| {
             // Criamos uma referência temporária ao oplog para a atualização
             let oplog_guard = self.oplog.read();
-            index.update_index(&*oplog_guard, &entries)
+            index.update_index(&oplog_guard, &entries)
         })? {
             Some(_result) => Ok(entries.len()),
             None => Ok(0), // Nenhum índice ativo
@@ -442,13 +442,10 @@ impl BaseStore {
         let parsed_address = crate::address::parse(&address_string)
             .map_err(|e| GuardianError::Store(format!("Failed to parse address: {}", e)))?;
 
-        // Converte para Box<dyn Address> conforme esperado pela trait Cache
-        let boxed_address: Box<dyn Address> = Box::new(parsed_address);
-
         // Carrega o cache usando a interface padrão
         // Usa "./cache" como diretório padrão para cache persistente
         let boxed_datastore = cache_manager
-            .load("./cache", &boxed_address)
+            .load("./cache", &parsed_address)
             .map_err(|e| GuardianError::Store(format!("Failed to create cache: {}", e)))?;
 
         // Converte Box<dyn Datastore + Send + Sync> para Arc<dyn Datastore>
@@ -475,8 +472,8 @@ impl BaseStore {
             temp_logger,
             "Cache configuration details";
             "directory" => "./cache",
-            "address_root" => %boxed_address.get_root(),
-            "address_path" => boxed_address.get_path()
+            "address_root" => %parsed_address.get_root(),
+            "address_path" => parsed_address.get_path()
         );
 
         Ok(arc_datastore)
@@ -862,17 +859,34 @@ impl BaseStore {
     }
 
     /// Atualiza o status de replicação de forma thread-safe
+    #[allow(clippy::await_holding_lock)]
     pub async fn update_replication_status<F>(&self, f: F)
     where
         F: FnOnce(usize, usize) -> (usize, usize),
     {
-        let guard = self.replication_status.lock();
-        let current_progress = guard.get_progress().await;
-        let current_max = guard.get_max().await;
+        // Primeira fase: obter valores atuais sem manter o lock durante await
+        let current_progress = {
+            let guard = self.replication_status.lock();
+            guard.get_progress().await
+        };
+        
+        let current_max = {
+            let guard = self.replication_status.lock();
+            guard.get_max().await
+        };
+        
         let (new_progress, new_max) = f(current_progress, current_max);
 
-        guard.set_progress(new_progress).await;
-        guard.set_max(new_max).await;
+        // Segunda fase: atualizar valores sem manter o lock durante await
+        {
+            let guard = self.replication_status.lock();
+            guard.set_progress(new_progress).await;
+        }
+        
+        {
+            let guard = self.replication_status.lock();
+            guard.set_max(new_max).await;
+        }
     }
 
     /// Equivalente à função `isClosed` em Go.
@@ -907,7 +921,8 @@ impl BaseStore {
         );
 
         // Para o replicator completamente se existir
-        if let Some(replicator) = self.replicator.read().clone() {
+        let replicator = self.replicator.read().clone();
+        if let Some(replicator) = replicator {
             debug!(self.logger, "Stopping replicator");
 
             // Chama o método stop() do replicador
@@ -929,11 +944,11 @@ impl BaseStore {
         {
             let mut joinset_guard = self.tasks.lock();
             joinset_guard.abort_all(); // Aborta todas as tarefas imediatamente
-
-            // Espera um tempo razoável para as tarefas terminarem graciosamente
-            drop(joinset_guard); // Libera o lock antes do sleep
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         }
+        
+        // Espera um tempo razoável para as tarefas terminarem graciosamente
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        
         debug!(self.logger, "Background tasks shutdown completed");
 
         // Fecha todos os emissores de eventos de forma adequada
@@ -1341,7 +1356,7 @@ impl BaseStore {
             let _destroy = opts
                 .cache_destroy
                 .take()
-                .unwrap_or_else(|| Box::new(|| Ok(())));
+                .unwrap_or_else(|| Box::new(|| std::result::Result::<(), Box<dyn std::error::Error + Send + Sync + 'static>>::Ok(())));
             (cache, _destroy)
         } else {
             // Usar implementação de cache baseada em sled
@@ -1349,15 +1364,15 @@ impl BaseStore {
             (
                 cache_impl,
                 Box::new(
-                    move || -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
-                        Ok(())
+                    move || -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+                        std::result::Result::<(), Box<dyn std::error::Error + Send + Sync + 'static>>::Ok(())
                     },
                 )
                     as Box<
                         dyn FnOnce() -> std::result::Result<
                             (),
-                            Box<dyn std::error::Error + Send + Sync>,
-                        >,
+                            Box<dyn std::error::Error + Send + Sync + 'static>,
+                        > + Send + Sync,
                     >,
             )
         };
@@ -1411,7 +1426,7 @@ impl BaseStore {
             let key_hash = {
                 use sha2::{Digest, Sha256};
                 let mut hasher = Sha256::new();
-                hasher.update(&public_key.encode_protobuf());
+                hasher.update(public_key.encode_protobuf());
                 hasher.finalize()
             };
 
@@ -1862,12 +1877,12 @@ impl BaseStore {
                 let mut count = 0;
                 for entry in &entries {
                     // Verifica se a entrada já existe
-                    if !oplog.has(&entry.hash().to_string()) {
+                    if !oplog.has(entry.hash()) {
                         // Para entradas existentes, fazemos join ao invés de append
                         // Cria um log temporário com a entrada e faz join
                         match self.create_temporary_log_with_entry(entry) {
                             Ok(temp_log) => {
-                                if let Some(_) = oplog.join(&temp_log, None) {
+                                if oplog.join(&temp_log, None).is_some() {
                                     count += 1;
                                     debug!(
                                         self.logger,
@@ -1931,21 +1946,18 @@ impl BaseStore {
                 let mut count = 0;
                 for entry in &entries {
                     // Verifica se a entrada já existe
-                    if !oplog.has(&entry.hash().to_string()) {
+                    if !oplog.has(entry.hash()) {
                         // Para processamento direto, usa append com payload
-                        match entry.get_payload() {
-                            payload => {
-                                if let Ok(payload_str) = std::str::from_utf8(payload) {
-                                    oplog.append(payload_str, None);
-                                    count += 1;
-                                } else {
-                                    warn!(
-                                        self.logger,
-                                        "Failed to convert payload to string for entry {}",
-                                        entry.hash()
-                                    );
-                                }
-                            }
+                        let payload = entry.get_payload();
+                        if let Ok(payload_str) = std::str::from_utf8(payload) {
+                            oplog.append(payload_str, None);
+                            count += 1;
+                        } else {
+                            warn!(
+                                self.logger,
+                                "Failed to convert payload to string for entry {}",
+                                entry.hash()
+                            );
                         }
                     }
                 }
@@ -2070,7 +2082,7 @@ impl BaseStore {
             // Verifica se já temos esta entrada no oplog
             let already_exists = self
                 .log_and_index
-                .with_oplog(|oplog| oplog.has(&hash.to_string()));
+                .with_oplog(|oplog| oplog.has(hash));
 
             if already_exists {
                 debug!(self.logger, "Sync: head already exists in oplog");
@@ -2100,7 +2112,7 @@ impl BaseStore {
             // Converte Vec<Entry> para Vec<Box<Entry>> conforme esperado pelo replicador
             let boxed_heads: Vec<Box<Entry>> = verified_heads
                 .into_iter()
-                .map(|entry| Box::new(entry))
+                .map(Box::new)
                 .collect();
 
             // Chama o método load() do replicador que processará as entradas na fila
@@ -2891,7 +2903,7 @@ impl BaseStore {
         }
 
         // Remove duplicatas baseadas no hash
-        heads.sort_by(|a, b| a.hash().cmp(&b.hash()));
+        heads.sort_by(|a, b| a.hash().cmp(b.hash()));
         heads.dedup_by(|a, b| a.hash() == b.hash());
 
         debug!(
@@ -3579,7 +3591,7 @@ impl BaseStore {
                     let entry_hash = entry.hash();
                     if let Err(e) = self.log_and_index.with_oplog_mut(|oplog| {
                         // Verifica se a entrada já existe usando has()
-                        if !oplog.has(&entry_hash.to_string()) {
+                        if !oplog.has(entry_hash) {
                             // Adiciona a entrada usando append()
                             // Entry.payload é &str, então usamos diretamente
                             oplog.append(&entry.payload, None);
