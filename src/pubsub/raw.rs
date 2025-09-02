@@ -14,9 +14,6 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-// Implementação IPFS PubSub usando ipfs_core_api (100% Rust)
-// Substitui a implementação baseada em libp2p gossipsub diretamente
-
 /// Tópico PubSub integrado com ipfs_core_api
 pub struct PsTopic {
     topic_name: String,
@@ -290,10 +287,21 @@ impl PubSubInterface for RawPubSub {
             cancellation_token: CancellationToken::new(),
         });
 
-        // Insere no mapa de tópicos
+        // Registra o tópico na subscrição do IPFS
+        self.ipfs_client
+            .pubsub_subscribe(topic_name)
+            .await
+            .map_err(|e| GuardianError::Ipfs(format!("Erro ao subscrever tópico IPFS: {}", e)))?;
+
+        // Adiciona ao nosso mapa local
         topics.insert(topic_name.to_string(), new_topic.clone());
 
-        info!("Tópico '{}' criado com sucesso", topic_name);
+        info!("Tópico '{}' criado e subscrito com sucesso", topic_name);
+
         Ok(new_topic as Arc<dyn PubSubTopic<Error = GuardianError>>)
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
