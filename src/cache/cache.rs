@@ -422,10 +422,10 @@ impl Datastore for SledDatastore {
                     count += 1;
 
                     // Aplica limite se especificado
-                    if let Some(limit) = query.limit {
-                        if count >= limit {
-                            break;
-                        }
+                    if let Some(limit) = query.limit
+                        && count >= limit
+                    {
+                        break;
                     }
                 }
                 Err(e) => {
