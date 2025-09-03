@@ -95,10 +95,10 @@ impl WrappedCache {
             items.push(ResultItem::new(Key::new(key_str), v.to_vec()));
             count += 1;
 
-            if let Some(n) = q.limit {
-                if count >= n {
-                    break;
-                }
+            if let Some(n) = q.limit
+                && count >= n
+            {
+                break;
             }
         }
 
