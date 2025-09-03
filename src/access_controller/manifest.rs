@@ -52,10 +52,10 @@ impl Serialize for CreateAccessControllerOptions {
         state.serialize_field("name", &self.name)?;
 
         // Serializa os dados de acesso diretamente do Mutex
-        if let Ok(access_guard) = self.access.lock() {
-            if !access_guard.is_empty() {
-                state.serialize_field("access", &*access_guard)?;
-            }
+        if let Ok(access_guard) = self.access.lock()
+            && !access_guard.is_empty()
+        {
+            state.serialize_field("access", &*access_guard)?;
         }
 
         state.end()
