@@ -525,10 +525,10 @@ impl GuardianDB {
     /// Adquire um lock de escrita para garantir que a função não seja modificada enquanto é lida e executada.
     pub fn close_key_store(&self) {
         let guard = self.close_keystore.write();
-        if let Some(close_fn) = guard.as_ref() {
-            if let Err(e) = close_fn() {
-                error!(self.logger, "não foi possível fechar o keystore"; "err" => e.to_string());
-            }
+        if let Some(close_fn) = guard.as_ref()
+            && let Err(e) = close_fn()
+        {
+            error!(self.logger, "não foi possível fechar o keystore"; "err" => e.to_string());
         }
     }
 
