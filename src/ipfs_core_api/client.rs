@@ -214,15 +214,16 @@ impl IpfsClient {
 
         use sha2::{Digest, Sha256};
 
+        // Cria um hash SHA2-256 dos dados
         let mut hasher = Sha256::new();
         hasher.update(data);
-        let hash = hasher.finalize();
+        let digest = hasher.finalize();
 
-        // Cria um CID baseado no hash
-        let cid_str = format!("bafyrei{}", hex::encode(&hash[..16]));
-        let cid: Cid = cid_str
-            .parse()
-            .map_err(|e| IpfsError::invalid_cid(format!("Failed to create CID: {}", e)))?;
+        // Cria multihash usando SHA2-256
+        let mh = multihash::Multihash::wrap(0x12, &digest).unwrap(); // 0x12 = SHA2-256
+
+        // Cria um CID versão 1 para dados DAG-JSON
+        let cid = Cid::new_v1(0x0129, mh); // 0x0129 = dag-json codec
 
         // Armazena os dados
         {
