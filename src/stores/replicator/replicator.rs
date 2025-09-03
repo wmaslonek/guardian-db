@@ -108,10 +108,10 @@ impl ReplicatorInterface for Replicator {
             }
 
             // 2. Verifica se o hash já foi buscado com sucesso nesta sessão de replicação.
-            if let Some(task_state) = state.tasks.get(&hash_owned) {
-                if matches!(task_state, QueuedState::Fetched) {
-                    return true;
-                }
+            if let Some(task_state) = state.tasks.get(&hash_owned)
+                && matches!(task_state, QueuedState::Fetched)
+            {
+                return true;
             }
 
             false
@@ -513,7 +513,7 @@ impl Replicator {
     /// Cria um clone leve do `Replicator` para uso em tarefas `spawned`.
     /// Agora retorna uma referência leve ao invés de clonar tudo.
     #[allow(dead_code)]
-    fn create_ref(&self) -> ReplicatorRef {
+    fn create_ref(&self) -> ReplicatorRef<'_> {
         ReplicatorRef {
             store: self.store.clone(),
             semaphore: self.semaphore.clone(),
