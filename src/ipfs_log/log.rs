@@ -360,16 +360,18 @@ impl Log {
             let hash = stack.remove(0);
             let a = self.get(&hash);
             let b = other.get(&hash);
-            if a.is_some() && b.is_none() && a.unwrap().id() == other.id {
-                let a = a.unwrap();
-                for n in a.next() {
+            if let Some(entry_a) = a
+                && b.is_none()
+                && entry_a.id() == other.id
+            {
+                for n in entry_a.next() {
                     if !traversed.contains(&n[..]) && other.get(n).is_none() {
                         stack.push(n.to_owned());
                         traversed.insert(n);
                     }
                 }
-                traversed.insert(a.hash());
-                diff.insert(a.hash().to_owned(), a.clone());
+                traversed.insert(entry_a.hash());
+                diff.insert(entry_a.hash().to_owned(), entry_a.clone());
             }
         }
         diff
@@ -559,21 +561,21 @@ impl Log {
             let hash = e.hash().to_owned();
             count += 1;
             for h in e.next() {
-                if let Some(e) = self.get(h) {
-                    if !traversed.contains(e.hash()) {
-                        stack.insert(0, e.clone());
-                        stack.sort_by(|a, b| (self.sort_fn)(a, b));
-                        stack.reverse();
-                        traversed.insert(e.hash());
-                    }
+                if let Some(e) = self.get(h)
+                    && !traversed.contains(e.hash())
+                {
+                    stack.insert(0, e.clone());
+                    stack.sort_by(|a, b| (self.sort_fn)(a, b));
+                    stack.reverse();
+                    traversed.insert(e.hash());
                 }
             }
             result.push(e);
 
-            if let Some(ref eh) = end_hash {
-                if eh == &hash {
-                    break;
-                }
+            if let Some(ref eh) = end_hash
+                && eh == &hash
+            {
+                break;
             }
         }
 
