@@ -117,7 +117,7 @@ mod tests {
             LogOptions::new()
                 .id("B")
                 .entries(&[e1, e2, e3.clone()])
-                .heads(&[e3.clone()]),
+                .heads(std::slice::from_ref(&e3)),
         );
         assert_eq!(log.heads().len(), 1);
         assert_eq!(log.heads()[0].hash(), e3.hash());
