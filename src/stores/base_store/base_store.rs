@@ -1599,11 +1599,10 @@ impl BaseStore {
                         }
 
                         // Atualiza estatísticas do índice se necessário
-                        if store.has_active_index() {
-                            if let Err(e) = store.update_index() {
+                        if store.has_active_index()
+                            && let Err(e) = store.update_index() {
                                 warn!(store.logger, "Failed to update index in background: {}", e);
                             }
-                        }
                     }
                 }
             }
@@ -2000,7 +1999,7 @@ impl BaseStore {
 
         // Converte a entrada para Arc<Entry> conforme esperado pelo LogOptions
         let arc_entry = Arc::new(entry.clone());
-        let entries_slice = &[arc_entry.clone()];
+        let entries_slice = std::slice::from_ref(&arc_entry);
 
         // Cria um ID único para o log temporário baseado no hash da entrada
         let temp_log_id = format!("temp_log_{}", entry.hash());
@@ -2602,10 +2601,9 @@ impl BaseStore {
                     .event_bus
                     .emitter::<crate::base_guardian::EventPeerDisconnected>()
                     .await
+                    && let Err(e) = emitter.emit(peer_disconnect_event)
                 {
-                    if let Err(e) = emitter.emit(peer_disconnect_event) {
-                        warn!(self.logger, "Failed to emit EventPeerDisconnected: {}", e);
-                    }
+                    warn!(self.logger, "Failed to emit EventPeerDisconnected: {}", e);
                 }
             }
         }
