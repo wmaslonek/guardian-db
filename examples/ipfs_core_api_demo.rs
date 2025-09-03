@@ -6,7 +6,6 @@ use guardian_db::error::Result;
 use guardian_db::ipfs_core_api::{ClientConfig, IpfsClient, compat::IpfsClientAdapter};
 use std::io::Cursor;
 use tracing::{Level, info};
-
 #[tokio::main]
 async fn main() -> Result<()> {
     // Configurar logging
@@ -55,7 +54,9 @@ async fn main() -> Result<()> {
 
     let custom_config = ClientConfig {
         enable_pubsub: true,
-        enable_swarm: false,
+        enable_swarm: true,
+        enable_mdns: false,
+        enable_kad: false,
         ..ClientConfig::development()
     };
 
