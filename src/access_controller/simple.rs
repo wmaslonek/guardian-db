@@ -559,25 +559,25 @@ impl AccessController for SimpleAccessController {
         }
 
         // Verifica também permissões de admin (admin pode escrever)
-        if let Some(admin_keys) = state.allowed_keys.get("admin") {
-            if admin_keys.contains(&"*".to_string()) || admin_keys.contains(&entry_id.to_string()) {
-                // Verifica a assinatura da identidade
-                if let Err(e) = identity_provider.verify_identity(entry_identity).await {
-                    slog::warn!(state.logger, "Invalid identity signature for admin key";
-                        "entry_id" => entry_id,
-                        "error" => %e
-                    );
-                    return Err(GuardianError::Store(format!(
-                        "Invalid identity signature for admin key {}: {}",
-                        entry_id, e
-                    )));
-                }
-
-                slog::debug!(state.logger, "Append permission granted (admin key)";
-                    "entry_id" => entry_id
+        if let Some(admin_keys) = state.allowed_keys.get("admin")
+            && (admin_keys.contains(&"*".to_string()) || admin_keys.contains(&entry_id.to_string()))
+        {
+            // Verifica a assinatura da identidade
+            if let Err(e) = identity_provider.verify_identity(entry_identity).await {
+                slog::warn!(state.logger, "Invalid identity signature for admin key";
+                    "entry_id" => entry_id,
+                    "error" => %e
                 );
-                return Ok(());
+                return Err(GuardianError::Store(format!(
+                    "Invalid identity signature for admin key {}: {}",
+                    entry_id, e
+                )));
             }
+
+            slog::debug!(state.logger, "Append permission granted (admin key)";
+                "entry_id" => entry_id
+            );
+            return Ok(());
         }
 
         slog::warn!(state.logger, "Access denied for append operation";
