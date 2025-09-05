@@ -7138,6 +7138,24 @@ impl crate::iface::DirectChannel for DirectChannel {
         Ok(())
     }
 
+    async fn close_shared(&self) -> std::result::Result<(), Self::Error> {
+        slog::info!(
+            self.logger,
+            "Fechando DirectChannel (referência compartilhada)..."
+        );
+
+        // Para o processamento usando &self
+        self.stop().await?;
+
+        // Fecha o emitter
+        if let Err(e) = self.emitter.close().await {
+            slog::warn!(self.logger, "Erro ao fechar emitter: {}", e);
+        }
+
+        slog::info!(self.logger, "DirectChannel fechado com sucesso");
+        Ok(())
+    }
+
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -7186,7 +7204,7 @@ impl HolderChannels {
 
 // equivalente a `InitDirectChannelFactory` em go
 pub fn init_direct_channel_factory(logger: Logger, own_peer_id: PeerId) -> DirectChannelFactory {
-    Box::new(
+    Arc::new(
         move |emitter: Arc<dyn DirectChannelEmitter<Error = GuardianError>>,
               opts: Option<DirectChannelOptions>| {
             let logger = logger.clone();
