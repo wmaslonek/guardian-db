@@ -140,6 +140,55 @@ impl StoreIndex for EventIndex {
         cache.clear();
         Ok(())
     }
+
+    // === IMPLEMENTAÇÃO DOS MÉTODOS OPCIONAIS DE OTIMIZAÇÃO ===
+
+    /// Implementa acesso otimizado a range de entradas para EventLogStore.
+    ///
+    /// EventIndex mantém Entry completas em cache, permitindo acesso
+    /// direto sem necessidade de deserialização.
+    fn get_entries_range(&self, start: usize, end: usize) -> Option<Vec<Entry>> {
+        let cache = self.entries_cache.read();
+
+        // Validação de bounds
+        if start > end || start >= cache.len() {
+            return None;
+        }
+
+        let actual_end = end.min(cache.len());
+        Some(cache[start..actual_end].to_vec())
+    }
+
+    /// Implementa acesso otimizado às últimas N entradas.
+    ///
+    /// Caso de uso muito comum para EventLogStore - buscar eventos recentes.
+    fn get_last_entries(&self, count: usize) -> Option<Vec<Entry>> {
+        let cache = self.entries_cache.read();
+
+        if cache.is_empty() || count == 0 {
+            return Some(Vec::new());
+        }
+
+        let start = cache.len().saturating_sub(count);
+        Some(cache[start..].to_vec())
+    }
+
+    /// Implementa busca otimizada por CID.
+    ///
+    /// Atualmente usa busca linear O(n), mas estrutura preparada
+    /// para futuro índice secundário O(1) por CID.
+    fn get_entry_by_cid(&self, cid: &cid::Cid) -> Option<Entry> {
+        let cache = self.entries_cache.read();
+        let cid_str = cid.to_string();
+
+        // Busca linear por enquanto - futuro: HashMap<CID, Entry>
+        cache.iter().find(|entry| entry.hash() == cid_str).cloned()
+    }
+
+    /// EventIndex suporta queries otimizadas com Entry completas.
+    fn supports_entry_queries(&self) -> bool {
+        true
+    }
 }
 
 /// Equivalente a função "NewEventIndex" em go.
