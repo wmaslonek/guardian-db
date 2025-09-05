@@ -448,16 +448,53 @@ impl BaseStore {
             .load("./cache", &parsed_address)
             .map_err(|e| GuardianError::Store(format!("Failed to create cache: {}", e)))?;
 
-        // Converte Box<dyn Datastore + Send + Sync> para Arc<dyn Datastore>
-        // Esta conversão é necessária para compatibilidade com a arquitetura thread-safe
-        // Para trait objects, precisamos usar uma conversão manual
-        let arc_datastore: Arc<dyn Datastore> = unsafe {
-            // Este unsafe é seguro porque estamos convertendo Box<dyn T> para Arc<dyn T>
-            // e garantimos que não há outras referências ativas ao Box
-            Arc::from_raw(Box::into_raw(boxed_datastore) as *const dyn Datastore)
-        };
+        // Converte Box<dyn Datastore + Send + Sync> para Arc<dyn Datastore> de forma segura
+        // Usando Arc::from com wrapper explícito para evitar problemas de trait object
+        struct DatastoreWrapper {
+            inner: Box<dyn Datastore + Send + Sync>,
+        }
 
-        // Logging de sucesso para debugging
+        #[async_trait::async_trait]
+        impl Datastore for DatastoreWrapper {
+            async fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
+                self.inner.get(key).await
+            }
+
+            async fn put(&self, key: &[u8], value: &[u8]) -> crate::error::Result<()> {
+                self.inner.put(key, value).await
+            }
+
+            async fn has(&self, key: &[u8]) -> crate::error::Result<bool> {
+                self.inner.has(key).await
+            }
+
+            async fn delete(&self, key: &[u8]) -> crate::error::Result<()> {
+                self.inner.delete(key).await
+            }
+
+            async fn query(
+                &self,
+                query: &crate::data_store::Query,
+            ) -> crate::error::Result<crate::data_store::Results> {
+                self.inner.query(query).await
+            }
+
+            async fn list_keys(
+                &self,
+                prefix: &[u8],
+            ) -> crate::error::Result<Vec<crate::data_store::Key>> {
+                self.inner.list_keys(prefix).await
+            }
+
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+        }
+
+        let arc_datastore: Arc<dyn Datastore> = Arc::new(DatastoreWrapper {
+            inner: boxed_datastore,
+        });
+
         let temp_logger = Logger::root(Discard, o!());
         info!(
             temp_logger,
@@ -465,7 +502,8 @@ impl BaseStore {
             "address" => address_string.as_str(),
             "cache_type" => "LevelDownCache",
             "max_size_mb" => 100,
-            "cache_mode" => "Auto"
+            "cache_mode" => "Auto",
+            "implementation" => "Real cache with safe wrapper"
         );
 
         debug!(
