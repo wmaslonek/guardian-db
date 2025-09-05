@@ -441,14 +441,20 @@ impl GuardianDB {
         )
         .await?;
 
-        let message_marshaler = options.message_marshaler.unwrap_or_else(|| {
-            // Criar um marshaler para JSON
-            Box::new(crate::message_marshaler::GuardianJSONMarshaler::new())
-        });
-        let message_marshaler_arc: Arc<dyn MessageMarshaler<Error = GuardianError> + Send + Sync> = unsafe {
-            Arc::from_raw(Box::into_raw(message_marshaler)
-                as *const (dyn MessageMarshaler<Error = GuardianError> + Send + Sync))
-        };
+        let message_marshaler_arc: Arc<dyn MessageMarshaler<Error = GuardianError> + Send + Sync> =
+            match options.message_marshaler {
+                Some(boxed_marshaler) => {
+                    // Usar unsafe apenas quando necessário, mas de forma controlada
+                    unsafe {
+                        Arc::from_raw(Box::into_raw(boxed_marshaler)
+                            as *const (dyn MessageMarshaler<Error = GuardianError> + Send + Sync))
+                    }
+                }
+                None => {
+                    // Criar diretamente como Arc para evitar conversão
+                    Arc::new(crate::message_marshaler::GuardianJSONMarshaler::new())
+                }
+            };
         let cache = options.cache.unwrap_or_else(|| {
             // Cria um cache com configuração adequada
             Arc::new(crate::cache::level_down::LevelDownCache::new(None))
@@ -1016,8 +1022,12 @@ impl GuardianDB {
         debug!(self.logger, "Cancelando tarefas em background");
         self.cancellation_token.cancel();
 
-        // Aguardar um pouco para garantir que as tarefas sejam canceladas
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        // Abortar explicitamente a task do monitor para evitar quedas na finalização
+        debug!(self.logger, "Abortando task do monitor do canal direto");
+        self._monitor_handle.abort();
+
+        // Pequeno atraso para permitir que o abort propague
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
         debug!(self.logger, "GuardianDB fechado com sucesso");
         Ok(())
@@ -3092,4 +3102,18 @@ fn create_mock_guardian_db(
     }
 
     Arc::new(MockGuardianDB::new(logger))
+}
+
+/// Implementação do Drop trait para garantir cleanup seguro do GuardianDB
+impl Drop for GuardianDB {
+    fn drop(&mut self) {
+        // Abort da task do monitor para evitar acesso a memória já liberada
+        self._monitor_handle.abort();
+
+        // Cancela o token para sinalizar a todas as tasks que devem parar
+        self.cancellation_token.cancel();
+
+        // Não podemos usar async no Drop, então apenas fazemos abort e cancel
+        // O resto do cleanup será feito pelos destructors automáticos dos Arcs
+    }
 }
