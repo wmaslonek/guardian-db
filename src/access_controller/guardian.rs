@@ -308,7 +308,7 @@ impl GuardianDBAccessController {
         let mut store_guard = self.kv_store.write().await;
         if let Some(store_arc) = store_guard.take() {
             // Fecha o store usando o método close() da trait Store
-            let mut store = store_arc.lock().await;
+            let store = store_arc.lock().await;
             match store.close().await {
                 Ok(_) => log::debug!("Store fechado com sucesso"),
                 Err(e) => log::warn!("Erro ao fechar o store: {}", e),
