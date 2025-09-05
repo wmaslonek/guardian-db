@@ -4,6 +4,7 @@ use crate::access_controller::{
 use crate::address::Address;
 use crate::error::{GuardianError, Result};
 use crate::ipfs_log::{access_controller::LogEntry, identity_provider::IdentityProvider};
+use async_trait::async_trait;
 use cid::Cid;
 use futures::TryStreamExt;
 use ipfs_api_backend_hyper::{IpfsApi, IpfsClient};
@@ -105,27 +106,53 @@ impl IpfsAccessController {
         drop(state); // Liberamos o lock de leitura antes das operações de escrita
 
         let cid = Cid::try_from(address)?;
+        let ipfs = self.ipfs.clone();
+        let cid_string = cid.to_string();
 
-        // 1. Lê o manifesto CBOR principal
-        let manifest_stream = self.ipfs.cat(&cid.to_string());
-        let manifest_bytes_vec = manifest_stream.try_collect::<Vec<_>>().await?;
-        let manifest_data: Vec<u8> = manifest_bytes_vec
-            .iter()
-            .flat_map(|bytes| bytes.iter())
-            .copied()
-            .collect();
+        // Spawn a blocking task to handle the non-Send IPFS operations
+        let manifest_data = tokio::task::spawn_blocking(move || {
+            // Use tokio runtime handle to run async code in blocking context
+            let rt = tokio::runtime::Handle::current();
+            rt.block_on(async move {
+                // 1. Lê o manifesto CBOR principal
+                let manifest_stream = ipfs.cat(&cid_string);
+                let manifest_bytes_vec = manifest_stream.try_collect::<Vec<_>>().await?;
+                let manifest_data: Vec<u8> = manifest_bytes_vec
+                    .iter()
+                    .flat_map(|bytes| bytes.iter())
+                    .copied()
+                    .collect();
+
+                Ok::<Vec<u8>, crate::error::GuardianError>(manifest_data)
+            })
+        })
+        .await
+        .map_err(|e| GuardianError::Store(format!("Task join error: {}", e)))??;
 
         let manifest: Manifest = serde_cbor::from_slice(&manifest_data)?;
 
         // 2. Lê o conteúdo real das permissões usando o endereço do manifesto
         let access_data_cid = manifest.params.address();
-        let access_stream = self.ipfs.cat(&access_data_cid.to_string());
-        let access_bytes_vec = access_stream.try_collect::<Vec<_>>().await?;
-        let access_data_bytes: Vec<u8> = access_bytes_vec
-            .iter()
-            .flat_map(|bytes| bytes.iter())
-            .copied()
-            .collect();
+        let ipfs_clone = self.ipfs.clone();
+        let access_data_cid_string = access_data_cid.to_string();
+
+        // Spawn another blocking task for the second IPFS operation
+        let access_data_bytes = tokio::task::spawn_blocking(move || {
+            let rt = tokio::runtime::Handle::current();
+            rt.block_on(async move {
+                let access_stream = ipfs_clone.cat(&access_data_cid_string);
+                let access_bytes_vec = access_stream.try_collect::<Vec<_>>().await?;
+                let access_data_bytes: Vec<u8> = access_bytes_vec
+                    .iter()
+                    .flat_map(|bytes| bytes.iter())
+                    .copied()
+                    .collect();
+
+                Ok::<Vec<u8>, crate::error::GuardianError>(access_data_bytes)
+            })
+        })
+        .await
+        .map_err(|e| GuardianError::Store(format!("Task join error: {}", e)))??;
 
         let write_access_data: CborWriteAccess = serde_cbor::from_slice(&access_data_bytes)?;
 
@@ -152,8 +179,19 @@ impl IpfsAccessController {
         // Serializa a estrutura CBOR em bytes
         let cbor_bytes = serde_cbor::to_vec(&cbor_data)?;
 
-        // Salva os bytes no IPFS
-        let response = self.ipfs.add(std::io::Cursor::new(cbor_bytes)).await?;
+        let ipfs = self.ipfs.clone();
+
+        // Spawn a blocking task to handle the non-Send IPFS operations
+        let response = tokio::task::spawn_blocking(move || {
+            // Use tokio runtime handle to run async code in blocking context
+            let rt = tokio::runtime::Handle::current();
+            rt.block_on(async move {
+                // Salva os bytes no IPFS
+                ipfs.add(std::io::Cursor::new(cbor_bytes)).await
+            })
+        })
+        .await
+        .map_err(|e| GuardianError::Store(format!("Task join error: {}", e)))??;
 
         let cid = Cid::try_from(response.hash.as_str())?;
 
@@ -205,5 +243,95 @@ impl IpfsAccessController {
     pub async fn logger(&self) -> Arc<Logger> {
         let state = self.state.read().await;
         state.logger.clone()
+    }
+}
+
+#[async_trait]
+impl crate::access_controller::traits::AccessController for IpfsAccessController {
+    fn r#type(&self) -> &str {
+        "ipfs"
+    }
+
+    async fn get_authorized_by_role(&self, role: &str) -> Result<Vec<String>> {
+        let state = self.state.read().await;
+
+        match role {
+            "write" => Ok(state.write_access.clone()),
+            "read" => Ok(state.write_access.clone()), // Por padrão, quem pode escrever pode ler
+            "admin" => Ok(state.write_access.clone()), // Por padrão, usa mesmas permissões
+            _ => Ok(Vec::new()),
+        }
+    }
+
+    async fn grant(&self, capability: &str, key_id: &str) -> Result<()> {
+        if capability != "write" {
+            return Err(GuardianError::Store(format!(
+                "IpfsAccessController only supports 'write' capability, got '{}'",
+                capability
+            )));
+        }
+
+        let mut state = self.state.write().await;
+        if !state.write_access.contains(&key_id.to_string()) {
+            state.write_access.push(key_id.to_string());
+        }
+        Ok(())
+    }
+
+    async fn revoke(&self, capability: &str, key_id: &str) -> Result<()> {
+        if capability != "write" {
+            return Err(GuardianError::Store(format!(
+                "IpfsAccessController only supports 'write' capability, got '{}'",
+                capability
+            )));
+        }
+
+        let mut state = self.state.write().await;
+        state.write_access.retain(|k| k != key_id);
+        Ok(())
+    }
+
+    async fn load(&self, address: &str) -> Result<()> {
+        self.load(address).await
+    }
+
+    async fn save(&self) -> Result<Box<dyn crate::access_controller::manifest::ManifestParams>> {
+        let options = self.save().await?;
+        Ok(Box::new(options))
+    }
+
+    async fn close(&self) -> Result<()> {
+        self.close().await
+    }
+
+    async fn set_logger(&self, logger: Arc<Logger>) {
+        self.set_logger(logger).await;
+    }
+
+    async fn logger(&self) -> Arc<Logger> {
+        self.logger().await
+    }
+
+    async fn can_append(
+        &self,
+        entry: &dyn crate::ipfs_log::access_controller::LogEntry,
+        _identity_provider: &dyn crate::ipfs_log::identity_provider::IdentityProvider,
+        _additional_context: &dyn crate::ipfs_log::access_controller::CanAppendAdditionalContext,
+    ) -> Result<()> {
+        let state = self.state.read().await;
+        let entry_identity = entry.get_identity();
+        let entry_id = entry_identity.id();
+
+        // Verifica se a identidade tem permissão de escrita
+        if state.write_access.contains(&"*".to_string())
+            || state.write_access.contains(&entry_id.to_string())
+        {
+            Ok(())
+        } else {
+            Err(GuardianError::Store(format!(
+                "Access denied: identity {} not authorized for write operations",
+                entry_id
+            )))
+        }
     }
 }
