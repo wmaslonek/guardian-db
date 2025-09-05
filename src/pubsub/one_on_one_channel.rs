@@ -125,6 +125,23 @@ impl DirectChannel for Channels {
         Ok(())
     }
 
+    /// Versão de close() que funciona com referência compartilhada (&self).
+    /// Permite fechar o canal quando usado dentro de Arc<>.
+    async fn close_shared(&self) -> std::result::Result<(), Self::Error> {
+        info!(logger = ?self.logger, "Encerrando todos os canais (referência compartilhada)...");
+
+        // Cancela o token principal para parar todas as tarefas de monitoramento
+        self.token.cancel();
+
+        // Limpa o mapa de subscrições
+        self.subs.write().await.clear();
+
+        // Fecha o emissor de eventos
+        self.emitter.close().await?;
+
+        Ok(())
+    }
+
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -342,5 +359,5 @@ pub async fn new_channel_factory(ipfs_client: Arc<IpfsClient>) -> Result<DirectC
             >
     };
 
-    Ok(Box::new(factory))
+    Ok(Arc::new(factory))
 }
