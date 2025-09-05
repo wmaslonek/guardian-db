@@ -14,3 +14,6 @@ pub mod keystore;
 pub mod message_marshaler;
 pub mod pubsub;
 pub mod stores;
+
+#[cfg(test)]
+pub mod tests;
