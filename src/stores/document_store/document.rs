@@ -40,10 +40,9 @@ impl Store for GuardianDBDocumentStore {
         self.base_store.events()
     }
 
-    async fn close(&mut self) -> std::result::Result<(), Self::Error> {
-        // Agora que a BaseStore foi refatorada, podemos delegar adequadamente
-        // A BaseStore não tem método close público, então implementamos a lógica básica
-        Ok(())
+    async fn close(&self) -> std::result::Result<(), Self::Error> {
+        // Agora podemos chamar o close da BaseStore que tem implementação completa
+        self.base_store.close().await
     }
 
     fn address(&self) -> &dyn Address {
@@ -151,9 +150,18 @@ impl Store for GuardianDBDocumentStore {
         // Para manter compatibilidade, retornamos uma nova instância
         Arc::new(EventBus::new())
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 impl GuardianDBDocumentStore {
+    /// Acessa o BaseStore interno para operações de sync
+    pub fn basestore(&self) -> &BaseStore {
+        &self.base_store
+    }
+
     // equivalente a NewGuardianDBDocumentStore em go
     pub async fn new(
         ipfs: Arc<IpfsClient>,
