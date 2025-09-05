@@ -3686,13 +3686,9 @@ impl Store for BaseStore {
         self.emitter_interface.as_ref()
     }
 
-    async fn close(&mut self) -> std::result::Result<(), Self::Error> {
-        // Implementação simples que só ativa o token de cancelamento
-        // A limpeza completa é feita pelo Drop trait
-        if !self.is_closed() {
-            self.cancellation_token.cancel();
-        }
-        Ok(())
+    async fn close(&self) -> std::result::Result<(), Self::Error> {
+        // Chama o método público close(&self) que já está implementado corretamente
+        self.close().await
     }
 
     fn address(&self) -> &dyn Address {
@@ -3874,6 +3870,10 @@ impl Store for BaseStore {
 
     fn event_bus(&self) -> Arc<EventBus> {
         self.event_bus.clone()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 
