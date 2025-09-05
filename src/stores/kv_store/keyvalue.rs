@@ -154,7 +154,7 @@ impl Store for GuardianDBKeyValue {
         self.base_store.events()
     }
 
-    async fn close(&mut self) -> Result<()> {
+    async fn close(&self) -> Result<()> {
         // Fechamento adequado da KeyValue store
         //
         // Esta implementação resolve o problema comentado anteriormente onde
@@ -170,24 +170,11 @@ impl Store for GuardianDBKeyValue {
             "Starting KeyValue store close operation"
         );
 
-        // Limpa o índice local para liberar memória imediatamente
-        let entries_count = {
-            let mut index_guard = self.index.index.write();
-            let count = index_guard.len();
-            index_guard.clear();
-            count
-        };
+        // Chama o close da BaseStore que faz a limpeza completa
+        self.base_store.close().await?;
 
-        if entries_count > 0 {
-            slog::debug!(
-                self.base_store.logger(),
-                "Cleared KeyValue index: {} entries removed",
-                entries_count
-            );
-        }
-
-        // A BaseStore será fechada quando sair de escopo ou quando drop() for chamado
-        // Isso é consistente com a implementação da trait Store na BaseStore
+        // Nota: O índice HashMap será limpo automaticamente pelo Drop trait
+        // Isso é consistente com o padrão RAII do Rust
         slog::debug!(self.base_store.logger(), "KeyValue store close completed");
 
         Ok(())
@@ -364,6 +351,17 @@ impl Store for GuardianDBKeyValue {
     fn event_bus(&self) -> Arc<EventBus> {
         // Delega para BaseStore que agora retorna Arc<EventBus>
         self.base_store.event_bus()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+impl GuardianDBKeyValue {
+    /// Acessa o BaseStore interno para operações de sync
+    pub fn basestore(&self) -> &BaseStore {
+        &self.base_store
     }
 }
 
