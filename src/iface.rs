@@ -174,7 +174,8 @@ pub struct CreateDBOptions {
 // Em Go: func(coreiface.CoreAPI, *identityprovider.Identity, address.Address, *NewStoreOptions) (Store, error)
 // Em Rust, isso se torna um tipo que pode ser um `Fn` ou `FnMut`.
 // Usamos `Pin<Box<dyn Future>>` para um retorno assíncrono.
-pub type StoreConstructor = Box<
+// REFATORAÇÃO: Usando Arc<dyn Fn> em vez de Box<dyn Fn> para permitir clonagem
+pub type StoreConstructor = Arc<
     dyn Fn(
             Arc<IpfsClient>,
             Arc<Identity>,
@@ -442,7 +443,8 @@ pub trait Store: Send + Sync {
     fn events(&self) -> &dyn EmitterInterface;
 
     /// Fecha a store e libera seus recursos.
-    async fn close(&mut self) -> Result<(), Self::Error>;
+    /// Modificado para aceitar &self em vez de &mut self para compatibilidade com Arc<T>
+    async fn close(&self) -> Result<(), Self::Error>;
 
     /// Retorna o endereço da store.
     fn address(&self) -> &dyn Address;
@@ -514,6 +516,9 @@ pub trait Store: Send + Sync {
     /// Retorna o barramento de eventos.
     /// Modificado para retornar Arc para refletir arquitetura real
     fn event_bus(&self) -> Arc<EventBus>;
+
+    /// Método auxiliar para downcast
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 /// equivalente a interface `EventLogStore` em go
@@ -709,6 +714,77 @@ pub trait StoreIndex: Send + Sync {
     /// Limpa todos os dados do índice.
     /// Útil para reset ou reconstrução completa.
     fn clear(&mut self) -> std::result::Result<(), Self::Error>;
+
+    // === MÉTODOS OPCIONAIS PARA OTIMIZAÇÃO ===
+
+    /// Retorna um range de entradas completas (se suportado pelo índice).
+    ///
+    /// Este método opcional permite que índices que mantêm Entry completas
+    /// exponham acesso direto otimizado para queries de range.
+    ///
+    /// # Argumentos
+    ///
+    /// * `start` - Índice inicial (inclusivo)
+    /// * `end` - Índice final (exclusivo)
+    ///
+    /// # Retorna
+    ///
+    /// `Some(Vec<Entry>)` se o índice suporta acesso direto a Entry
+    /// `None` se o índice não suporta ou range inválido
+    ///
+    /// # Performance
+    ///
+    /// - O(1) para validação de range
+    /// - O(end - start) para coleção dos resultados
+    /// - Evita deserialização de bytes para Entry
+    fn get_entries_range(&self, _start: usize, _end: usize) -> Option<Vec<Entry>> {
+        // Implementação padrão retorna None - índices que suportam podem override
+        None
+    }
+
+    /// Retorna as últimas N entradas (se suportado pelo índice).
+    ///
+    /// Otimização comum para EventLogStore onde frequentemente
+    /// queremos as entradas mais recentes.
+    ///
+    /// # Argumentos
+    ///
+    /// * `count` - Número de entradas a retornar
+    ///
+    /// # Retorna
+    ///
+    /// `Some(Vec<Entry>)` se o índice suporta acesso direto
+    /// `None` se não suportado
+    fn get_last_entries(&self, _count: usize) -> Option<Vec<Entry>> {
+        // Implementação padrão retorna None
+        None
+    }
+
+    /// Retorna uma Entry específica por CID (se suportado pelo índice).
+    ///
+    /// Permite busca O(1) ou O(log n) por CID ao invés de busca linear.
+    ///
+    /// # Argumentos
+    ///
+    /// * `cid` - Content Identifier da entrada desejada
+    ///
+    /// # Retorna
+    ///
+    /// `Some(Entry)` se encontrada e suportada
+    /// `None` se não encontrada ou não suportada
+    fn get_entry_by_cid(&self, _cid: &Cid) -> Option<Entry> {
+        // Implementação padrão retorna None
+        None
+    }
+
+    /// Verifica se o índice suporta queries otimizadas com Entry completas.
+    ///
+    /// Permite que o código cliente determine se pode usar os métodos
+    /// opcionais de otimização.
+    fn supports_entry_queries(&self) -> bool {
+        // Implementação padrão retorna false
+        false
+    }
 }
 
 /// equivalente a struct `NewStoreOptions` em go
@@ -849,6 +925,10 @@ pub trait DirectChannel: Send + Sync + std::any::Any {
     /// Fecha a conexão.
     async fn close(&mut self) -> Result<(), Self::Error>;
 
+    /// Fecha a conexão usando referência compartilhada (&self).
+    /// Este método permite fechar o canal quando usado dentro de Arc<>.
+    async fn close_shared(&self) -> Result<(), Self::Error>;
+
     /// Método auxiliar para downcast
     fn as_any(&self) -> &dyn std::any::Any;
 }
@@ -881,7 +961,8 @@ pub trait DirectChannelEmitter: Send + Sync {
 ///
 /// Em Rust, um tipo `func` de Go é traduzido para um alias de tipo para uma `Closure`.
 /// Esta é uma fábrica para criar instâncias de `DirectChannel`.
-pub type DirectChannelFactory = Box<
+/// REFATORAÇÃO: Usando Arc<dyn Fn> em vez de Box<dyn Fn> para permitir clonagem
+pub type DirectChannelFactory = Arc<
     dyn Fn(
             Arc<dyn DirectChannelEmitter<Error = GuardianError>>,
             Option<DirectChannelOptions>,
@@ -934,7 +1015,8 @@ pub struct EventPubSubMessage {
 /// Funções variádicas em Go (`...accesscontroller.Option`) são
 /// geralmente traduzidas como um `Vec<T>` ou slice `&[T]` em Rust.
 /// Usando o tipo concreto CreateAccessControllerOptions em vez da trait para dyn-compatibility.
-pub type AccessControllerConstructor = Box<
+/// REFATORAÇÃO: Usando Arc<dyn Fn> em vez de Box<dyn Fn> para permitir clonagem
+pub type AccessControllerConstructor = Arc<
     dyn Fn(
             Arc<dyn BaseGuardianDB<Error = GuardianError>>,
             &crate::access_controller::manifest::CreateAccessControllerOptions,
