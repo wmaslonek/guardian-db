@@ -122,10 +122,9 @@ impl Store for EventLogStoreWrapper {
         self.store.events()
     }
 
-    async fn close(&mut self) -> std::result::Result<(), Self::Error> {
-        // Note: Store trait não permite mut, então não podemos chamar close
-        // Isso é uma limitação arquitetural que precisa ser revista
-        Ok(())
+    async fn close(&self) -> std::result::Result<(), Self::Error> {
+        // Agora podemos chamar close() pois a trait aceita &self
+        self.store.close().await
     }
 
     fn address(&self) -> &dyn crate::address::Address {
@@ -216,6 +215,10 @@ impl Store for EventLogStoreWrapper {
     fn event_bus(&self) -> Arc<crate::pubsub::event::EventBus> {
         self.store.event_bus()
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 #[async_trait::async_trait]
@@ -277,8 +280,8 @@ impl Store for KeyValueStoreWrapper {
         self.store.events()
     }
 
-    async fn close(&mut self) -> std::result::Result<(), Self::Error> {
-        Ok(())
+    async fn close(&self) -> std::result::Result<(), Self::Error> {
+        self.store.close().await
     }
 
     fn address(&self) -> &dyn crate::address::Address {
@@ -367,6 +370,10 @@ impl Store for KeyValueStoreWrapper {
 
     fn event_bus(&self) -> Arc<crate::pubsub::event::EventBus> {
         self.store.event_bus()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 
@@ -426,8 +433,8 @@ impl Store for DocumentStoreWrapper {
         self.store.events()
     }
 
-    async fn close(&mut self) -> std::result::Result<(), Self::Error> {
-        Ok(())
+    async fn close(&self) -> std::result::Result<(), Self::Error> {
+        self.store.close().await
     }
 
     fn address(&self) -> &dyn crate::address::Address {
@@ -516,6 +523,10 @@ impl Store for DocumentStoreWrapper {
 
     fn event_bus(&self) -> Arc<crate::pubsub::event::EventBus> {
         self.store.event_bus()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 
