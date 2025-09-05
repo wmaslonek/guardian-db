@@ -54,6 +54,7 @@ impl ClientState {
 }
 
 /// Cliente principal da API IPFS Core
+#[derive(Clone)]
 pub struct IpfsClient {
     /// Armazenamento interno para dados
     storage: Arc<RwLock<HashMap<String, Vec<u8>>>>,
