@@ -2,7 +2,7 @@
 
 This guide explains how to set up code coverage reporting for Guardian-DB.
 
-## 🔧 Local Development
+## Local Development
 
 ### Prerequisites
 
@@ -30,7 +30,7 @@ sudo apt-get install pkg-config libssl-dev
 cargo tarpaulin --all-features --workspace --out Html --out Xml
 ```
 
-## 🤖 CI/CD Integration
+## CI/CD Integration
 
 ### GitHub Actions
 
@@ -62,7 +62,7 @@ To enable Codecov integration:
 | **HTML** | `tarpaulin-report.html` | Human-readable reports |
 | **JSON** | `tarpaulin-report.json` | Custom tooling |
 
-## 📊 Coverage Configuration
+## Coverage Configuration
 
 ### Thresholds
 
@@ -85,7 +85,7 @@ The following are excluded from coverage:
 - **`codecov.yml`** - Codecov behavior
 - **`.github/workflows/rust.yml`** - CI coverage job
 
-## 🎯 Coverage Reports
+## Coverage Reports
 
 ### Local HTML Report
 
@@ -108,7 +108,7 @@ View detailed coverage analysis at:
 https://app.codecov.io/gh/wmaslonek/guardian-db
 ```
 
-## 🛠️ Troubleshooting
+## Troubleshooting
 
 ### Common Issues
 
@@ -135,7 +135,7 @@ sudo dnf install pkg-config openssl-devel
 - Set `--test-threads=1` for deterministic results
 - Use `--timeout 300s` for long-running tests
 
-## 📈 Coverage Goals
+## Coverage Goals
 
 | Component | Target Coverage |
 |-----------|----------------|
@@ -145,7 +145,7 @@ sudo dnf install pkg-config openssl-devel
 | Network layer | ≥ 75% |
 | Integration tests | N/A (excluded) |
 
-## 🔗 Useful Links
+## Useful Links
 
 - [Tarpaulin Documentation](https://github.com/xd009642/tarpaulin)
 - [Codecov Documentation](https://docs.codecov.io/)
