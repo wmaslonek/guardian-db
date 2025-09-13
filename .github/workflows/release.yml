@@ -7,6 +7,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
+  CARGO_PROFILE_DEV_BUILD_OVERRIDE_DEBUG: true
 
 jobs:
   create-release:
@@ -15,16 +17,19 @@ jobs:
     outputs:
       upload_url: ${{ steps.create_release.outputs.upload_url }}
     steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
     - name: Create Release
       id: create_release
-      uses: actions/create-release@v1
+      uses: softprops/action-gh-release@v1
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        tag_name: ${{ github.ref }}
-        release_name: Guardian-DB ${{ github.ref }}
+        tag_name: ${{ github.ref_name }}
+        name: Guardian-DB ${{ github.ref_name }}
         body: |
-          Guardian-DB Release ${{ github.ref }}
+          Guardian-DB Release ${{ github.ref_name }}
           
           ## Changes
           - See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details
@@ -34,8 +39,12 @@ jobs:
           [dependencies]
           guardian-db = "${{ github.ref_name }}"
           ```
+          
+          ## Documentation
+          - [API Documentation](https://docs.rs/guardian-db/${{ github.ref_name }})
+          - [Repository](https://github.com/${{ github.repository }})
         draft: false
-        prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') || contains(github.ref, 'rc') }}
+        prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
 
   build-and-test:
     name: Build and Test
@@ -53,6 +62,16 @@ jobs:
       uses: dtolnay/rust-toolchain@master
       with:
         toolchain: ${{ matrix.rust }}
+
+    - name: Install Protocol Buffers compiler
+      run: |
+        if [ "$RUNNER_OS" == "Linux" ]; then
+          sudo apt-get update && sudo apt-get install -y protobuf-compiler
+        elif [ "$RUNNER_OS" == "macOS" ]; then
+          brew install protobuf
+        elif [ "$RUNNER_OS" == "Windows" ]; then
+          choco install protoc
+        fi
 
     - name: Cache cargo
       uses: actions/cache@v3
@@ -84,6 +103,11 @@ jobs:
 
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@stable
+
+    - name: Install Protocol Buffers compiler
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y protobuf-compiler
 
     - name: Publish to crates.io
       run: cargo publish
