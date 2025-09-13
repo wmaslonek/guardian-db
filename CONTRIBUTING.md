@@ -360,15 +360,44 @@ async fn test_full_replication_flow() {
 ### Test Coverage
 
 ```bash
-# Install tarpaulin
+# Install coverage tools
 cargo install cargo-tarpaulin
+cargo install cargo-llvm-cov
 
-# Run with coverage
-cargo tarpaulin --out Html
+# Quick coverage check (LCOV format)
+cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
 
-# View report
-open tarpaulin-report.html
+# Detailed coverage with HTML report (uses tarpaulin.toml config)
+cargo tarpaulin
+
+# Generate XML coverage for CI/CD tools
+cargo tarpaulin --out Xml --output-dir ./coverage/
+
+# Generate multiple formats
+cargo tarpaulin --out Html --out Xml --out Lcov --output-dir ./coverage/
+
+# View HTML report
+open ./coverage/tarpaulin-report.html
+
+# Check coverage threshold (fails if below 70%)
+cargo tarpaulin --fail-under 70
+
+# Coverage for specific package only
+cargo tarpaulin --package guardian-db --out Html
 ```
+
+#### Coverage Reports Location
+
+- **LCOV**: `lcov.info` (for Codecov)
+- **XML**: `./coverage/cobertura.xml` (for SonarQube, etc.)
+- **HTML**: `./coverage/tarpaulin-report.html` (for viewing)
+
+#### CI Coverage
+
+The CI automatically generates coverage reports in multiple formats:
+- **Codecov**: Automatic upload for pull request analysis
+- **Artifacts**: HTML and XML reports available for download
+- **Threshold**: Currently set to 70% minimum coverage
 
 ## 📚 Documentation
 
