@@ -3,6 +3,7 @@ name = "guardian-db"
 version = "0.9.4"
 authors = ["William Maslonek <wmaslonek@icloud.com>"]
 edition = "2024"
+rust-version = "1.89.0"
 
 [dependencies]
 async-trait = "0.1.89"
