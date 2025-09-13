@@ -7,7 +7,7 @@ use crate::iface::{
     DirectChannelFactory, DirectChannelOptions, EventPubSubPayload, MessageExchangeHeads,
     MessageMarshaler, PubSubInterface, Store, StoreConstructor,
 };
-use crate::ipfs_core_api::{client::IpfsClient, config::ClientConfig}; // Our IpfsClient alias
+use crate::ipfs_core_api::{client::IpfsClient, config::ClientConfig};
 use crate::ipfs_log::identity::{Identity, Signatures};
 pub use crate::ipfs_log::identity_provider::Keystore;
 use crate::keystore::SledKeystore;
