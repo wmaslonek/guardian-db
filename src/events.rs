@@ -473,30 +473,3 @@ mod tests {
         );
     }
 }
-
-/// Implementação dummy de EmitterInterface para placeholders
-#[derive(Default)]
-pub struct DummyEmitterInterface;
-
-#[async_trait]
-impl EmitterInterface for DummyEmitterInterface {
-    async fn emit(&self, _evt: Event) {
-        // Dummy implementation - does nothing
-    }
-
-    async fn subscribe(&self) -> (mpsc::Receiver<Event>, CancellationToken) {
-        let (tx, rx) = mpsc::channel(1);
-        drop(tx); // Immediately close the channel
-        (rx, CancellationToken::new())
-    }
-
-    async fn unsubscribe_all(&self) {
-        // Dummy implementation - does nothing
-    }
-
-    async fn global_channel(&self) -> broadcast::Receiver<Event> {
-        let (tx, rx) = broadcast::channel(1);
-        drop(tx); // Immediately close the channel
-        rx
-    }
-}
