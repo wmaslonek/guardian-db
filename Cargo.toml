@@ -1,6 +1,6 @@
 [package]
 name = "guardian-db"
-version = "0.9.4"
+version = "0.9.13"
 authors = ["William Maslonek <wmaslonek@icloud.com>"]
 edition = "2024"
 rust-version = "1.89.0"
