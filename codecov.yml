@@ -1,0 +1,71 @@
+# Codecov configuration for Guardian-DB
+# Documentation: https://docs.codecov.io/docs/codecov-yaml
+
+coverage:
+  # Coverage precision (2 decimal places)
+  precision: 2
+  
+  # Rounding
+  round: down
+  
+  # Coverage range (red to green)
+  range: "70...95"
+  
+  # Status checks
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 2%
+        base: auto
+    patch:
+      default:
+        target: 80%
+        threshold: 5%
+
+# Comment configuration for pull requests
+comment:
+  layout: "reach,diff,flags,tree,reach"
+  behavior: default
+  require_changes: true
+  require_base: false
+  require_head: true
+
+# Ignore certain files/folders
+ignore:
+  - "tests/**/*"
+  - "examples/**/*"
+  - "benches/**/*"
+  - "**/tests/**/*"
+  - "**/examples/**/*"
+  - "**/benches/**/*"
+  - "**/*.pb.rs"
+  - "**/build.rs"
+  - "target/**/*"
+  - ".github/**/*"
+  - "scripts/**/*"
+  - "docs/**/*"
+
+# File flags for different parts of the codebase
+flags:
+  unittests:
+    paths:
+      - "src/"
+    carryforward: true
+  
+  integration:
+    paths:
+      - "guardian-db/"
+    carryforward: true
+
+# GitHub configuration
+github_checks:
+  annotations: true
+
+# Notifications
+slack:
+  default:
+    only_pulls: true
+    notify:
+      - "success"
+      - "failure"
