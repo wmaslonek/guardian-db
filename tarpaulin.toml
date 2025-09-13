@@ -1,0 +1,49 @@
+[tool.tarpaulin]
+# Tarpaulin configuration for Guardian-DB
+# See: https://github.com/xd009642/tarpaulin
+
+# Output formats - can be overridden via CLI
+out = ["Html", "Xml"]
+
+# Include all packages in workspace
+all-features = true
+workspace = true
+
+# Exclude files from coverage
+exclude-files = [
+    "tests/*",
+    "examples/*",
+    "benches/*",
+    "*/tests/*",
+    "*/examples/*",
+    "*/benches/*",
+    # Exclude generated code
+    "*/build.rs",
+    "*/proto/*",
+    "*/target/*",
+]
+
+# Run options
+run-types = ["Tests"]
+timeout = "300s"
+
+# Coverage thresholds (optional - for local development)
+fail-under = 70.0  # Fail if coverage is below 70%
+
+# Engine configuration
+engine = "llvm"
+follow-exec = false
+post-args = ["--", "--test-threads=1"]
+
+# Ignore panics in certain modules (if needed)
+ignore-panics = true
+
+# Generate detailed reports
+verbose = true
+debug = false
+
+# Output directory for reports
+output-dir = "./coverage/"
+
+# Additional features to enable during testing
+features = ["default"]
