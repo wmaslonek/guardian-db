@@ -571,12 +571,19 @@ impl GuardianDB {
     ///
     /// # Exemplo
     ///
-    /// ```rust
+    /// ```rust,ignore
+    /// # use guardian_db::base_guardian::GuardianDB;
+    /// # use ipfs_api_backend_hyper::HyperClient;
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let ipfs = HyperClient::default();
+    /// # let guardian_db = GuardianDB::new(ipfs, None).await?;
     /// if let Some(close_fn) = guardian_db.close_keystore() {
     ///     if let Err(e) = close_fn() {
     ///         eprintln!("Erro ao fechar keystore: {}", e);
     ///     }
     /// }
+    /// # Ok(())
+    /// # }
     /// ```
     ///
     /// # Alternativa
