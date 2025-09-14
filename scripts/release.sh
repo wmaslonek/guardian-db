@@ -47,6 +47,17 @@ if ! grep -q "version = \"$VERSION\"" Cargo.toml; then
     exit 1
 fi
 
+# Update version badge in README.md
+echo "Updating version badge in README.md..."
+sed -i.bak "s/!\[Version\](https:\/\/img\.shields\.io\/badge\/version-.*-brightgreen\.svg)/![Version](https:\/\/img.shields.io\/badge\/version-$VERSION-brightgreen.svg)/" README.md
+
+# Update Rust version badge if needed (optional - checks Cargo.toml rust-version)
+RUST_VERSION=$(grep 'rust-version = "' Cargo.toml | sed 's/.*rust-version = "\([^"]*\)".*/\1/')
+if [ ! -z "$RUST_VERSION" ]; then
+    echo "Updating Rust version badge to $RUST_VERSION..."
+    sed -i.bak "s/!\[Rust\](https:\/\/img\.shields\.io\/badge\/rust-.*-orange\.svg)/![Rust](https:\/\/img.shields.io\/badge\/rust-$RUST_VERSION+-orange.svg)/" README.md
+fi
+
 # Update CHANGELOG.md
 echo "Updating CHANGELOG.md..."
 DATE=$(date +%Y-%m-%d)
@@ -58,7 +69,7 @@ cargo check --all-features
 
 # Commit changes
 echo "Committing changes..."
-git add Cargo.toml CHANGELOG.md
+git add Cargo.toml CHANGELOG.md README.md
 git commit -m "chore: release v$VERSION"
 
 # Create and push tag
