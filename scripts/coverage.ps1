@@ -1,5 +1,6 @@
 # Guardian-DB Coverage Script for Windows
 # Generate code coverage reports in multiple formats
+# Usage: powershell -ExecutionPolicy Bypass -File .\scripts\coverage.ps1
 
 param(
     [switch]$SkipThreshold,
