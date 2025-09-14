@@ -44,7 +44,7 @@ impl Key {
     /// # Exemplos
     /// ```
     /// use guardian_db::data_store::Key;
-    /// 
+    ///
     /// let key = Key::new("/users/alice/profile");
     /// let key = Key::new("config/database/host");
     /// ```
