@@ -43,6 +43,25 @@ if (-not $updatedVersion) {
     exit 1
 }
 
+# Update version badge in README.md
+Write-Host "Updating version badge in README.md..." -ForegroundColor Cyan
+$readmeContent = Get-Content README.md
+$readmeContent = $readmeContent -replace '\!\[Version\]\(https://img\.shields\.io/badge/version-.*?-brightgreen\.svg\)', "![Version](https://img.shields.io/badge/version-$Version-brightgreen.svg)"
+$readmeContent | Set-Content README.md
+
+# Update Rust version badge if needed (optional - checks Cargo.toml rust-version)
+$rustVersion = (Select-String -Path Cargo.toml -Pattern 'rust-version = "(.*)"').Matches.Groups[1].Value
+if ($rustVersion) {
+    Write-Host "Updating Rust version badge to $rustVersion..." -ForegroundColor Cyan
+    $readmeContent = Get-Content README.md
+    $readmeContent = $readmeContent -replace '\!\[Rust\]\(https://img\.shields\.io/badge/rust-.*?-orange\.svg\)', "![Rust](https://img.shields.io/badge/rust-$rustVersion+-orange.svg)"
+    $readmeContent | Set-Content README.md
+}
+
+# Update other badges using the update-badges script
+Write-Host "Updating other badges..." -ForegroundColor Cyan
+powershell -ExecutionPolicy Bypass -File ".\scripts\update-badges.ps1" -ErrorAction SilentlyContinue
+
 # Update CHANGELOG.md
 Write-Host "Updating CHANGELOG.md..." -ForegroundColor Cyan
 $date = Get-Date -Format "yyyy-MM-dd"
@@ -60,7 +79,7 @@ if ($LASTEXITCODE -ne 0) {
 
 # Commit changes
 Write-Host "Committing changes..." -ForegroundColor Cyan
-git add Cargo.toml CHANGELOG.md
+git add Cargo.toml CHANGELOG.md README.md
 git commit -m "chore: release v$Version"
 
 # Create and push tag
