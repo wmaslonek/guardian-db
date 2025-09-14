@@ -46,8 +46,8 @@ sled = "0.34.7"
 
 # Conditional dependencies for future native implementations
 async-stream = "0.3.6"
-iroh = "0.91.2"
-ipfs-embed = "0.26.1"
+#iroh = "0.91.2"
+#ipfs-embed = "0.26.1"
 
 [dev-dependencies]
 tokio-test = "0.4"
