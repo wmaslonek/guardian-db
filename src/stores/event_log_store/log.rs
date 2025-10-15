@@ -10,20 +10,21 @@ use crate::{address::Address, stores::event_log_store::index::new_event_index};
 use cid::Cid;
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use tracing::{Span, instrument};
 
-/// A implementação do trait `EventLogStore` para a nossa struct.
+/// Implementação do trait `EventLogStore` para `GuardianDBEventLogStore`.
 #[async_trait::async_trait]
-impl EventLogStore for OrbitDBEventLogStore {
+impl EventLogStore for GuardianDBEventLogStore {
     /// Adiciona um novo dado ao log.
     async fn add(&mut self, data: Vec<u8>) -> std::result::Result<Operation, Self::Error> {
-        // Chama o método interno da struct OrbitDBEventLogStore
-        OrbitDBEventLogStore::add(self, data).await
+        // Chama o método interno da struct GuardianDBEventLogStore
+        GuardianDBEventLogStore::add(self, data).await
     }
 
     /// Obtém uma entrada específica do log pelo seu CID.
     async fn get(&self, cid: Cid) -> std::result::Result<Operation, Self::Error> {
-        // Chama o método interno da struct OrbitDBEventLogStore
-        OrbitDBEventLogStore::get(self, cid).await
+        // Chama o método interno da struct GuardianDBEventLogStore
+        GuardianDBEventLogStore::get(self, cid).await
     }
 
     /// Retorna uma lista de operações que ocorreram na store, com opções de filtro.
@@ -31,18 +32,19 @@ impl EventLogStore for OrbitDBEventLogStore {
         &self,
         options: Option<StreamOptions>,
     ) -> std::result::Result<Vec<Operation>, Self::Error> {
-        // Chama o método interno da struct OrbitDBEventLogStore
-        OrbitDBEventLogStore::list(self, options).await
+        // Chama o método interno da struct GuardianDBEventLogStore
+        GuardianDBEventLogStore::list(self, options).await
     }
 }
 
-pub struct OrbitDBEventLogStore {
+pub struct GuardianDBEventLogStore {
     basestore: Arc<BaseStore>,
+    span: Span,
 }
 
 // Implementação da trait Store (que é herdada por EventLogStore)
 #[async_trait::async_trait]
-impl Store for OrbitDBEventLogStore {
+impl Store for GuardianDBEventLogStore {
     type Error = GuardianError;
 
     #[allow(deprecated)]
@@ -79,8 +81,8 @@ impl Store for OrbitDBEventLogStore {
     }
 
     async fn drop(&mut self) -> std::result::Result<(), Self::Error> {
-        // BaseStore não tem método async drop público, então implementamos uma limpeza básica
-        // A cleanup real é feita automaticamente quando o BaseStore é dropped
+        // ***BaseStore não tem método async drop público, então implementamos uma limpeza básica
+        // A limpeza real é feita automaticamente quando o BaseStore é dropped
         Ok(())
     }
 
@@ -131,8 +133,8 @@ impl Store for OrbitDBEventLogStore {
         self.basestore.add_operation(op, on_progress_callback).await
     }
 
-    fn logger(&self) -> Arc<slog::Logger> {
-        self.basestore.logger()
+    fn span(&self) -> Arc<tracing::Span> {
+        Arc::new(self.span.clone())
     }
 
     fn tracer(&self) -> Arc<crate::iface::TracerWrapper> {
@@ -148,14 +150,18 @@ impl Store for OrbitDBEventLogStore {
     }
 }
 
-impl OrbitDBEventLogStore {
+impl GuardianDBEventLogStore {
     /// Getter para acessar o BaseStore interno
     pub fn basestore(&self) -> &BaseStore {
         &self.basestore
     }
 
-    /// Equivalente a função "NewOrbitDBEventLogStore" em go.
-    /// Instancia uma nova EventLogStore, adaptada para usar um cliente HTTP para o Kubo.
+    /// Retorna uma referência ao span de tracing para instrumentação
+    pub fn span(&self) -> &Span {
+        &self.span
+    }
+
+    /// Instancia uma nova EventLogStore, adaptada para usar cliente nativo Iroh.
     ///
     /// # Argumentos
     ///
@@ -166,13 +172,14 @@ impl OrbitDBEventLogStore {
     ///
     /// # Retorna
     ///
-    /// Uma nova instância de `OrbitDBEventLogStore` configurada e pronta para uso
+    /// Uma nova instância de `GuardianDBEventLogStore` configurada e pronta para uso
     ///
     /// # Erros
     ///
     /// Retorna `GuardianError::Store` se:
     /// - A inicialização do BaseStore falhar
     /// - As opções de configuração forem inválidas
+    #[instrument(level = "debug", skip(ipfs_client, identity, addr, options))]
     pub async fn new(
         ipfs_client: Arc<IpfsClient>,
         identity: Arc<Identity>,
@@ -186,13 +193,9 @@ impl OrbitDBEventLogStore {
             ));
         }
 
-        // Em Go, o ponteiro para a função de criação do índice é definido dentro do
-        // construtor. Em Rust, fazemos o mesmo, modificando as opções.
         options.index = Some(Box::new(new_event_index));
-
-        // A lógica de `InitBaseStore` seria encapsulada no construtor de `BaseStore`,
-        // que agora recebe e armazena o cliente HTTP.
-        let basestore = BaseStore::new(ipfs_client, identity, addr, Some(options))
+        // Inicializa o BaseStore com as opções fornecidas
+        let basestore = BaseStore::new(ipfs_client, identity, addr.clone(), Some(options))
             .await
             .map_err(|e| {
                 GuardianError::Store(format!(
@@ -201,12 +204,16 @@ impl OrbitDBEventLogStore {
                 ))
             })?;
 
-        Ok(OrbitDBEventLogStore { basestore })
+        // Cria span para esta instância da EventLogStore
+        let span = tracing::info_span!("event_log_store", address = %addr.to_string());
+
+        Ok(GuardianDBEventLogStore { basestore, span })
     }
 
-    /// Equivalente a função "List" em go.
     /// Coleta todas as operações de uma stream em um vetor.
+    #[instrument(level = "debug", skip(self, options))]
     pub async fn list(&self, options: Option<StreamOptions>) -> Result<Vec<Operation>> {
+        let _entered = self.span.enter();
         let (tx, mut rx) = mpsc::channel(1);
 
         // Para simplificar, vamos executar diretamente em vez de spawn
@@ -220,7 +227,6 @@ impl OrbitDBEventLogStore {
         Ok(operations)
     }
 
-    /// Equivalente a função "Add" em go.
     /// Cria e adiciona uma nova operação "ADD" ao log.
     ///
     /// # Argumentos
@@ -236,6 +242,7 @@ impl OrbitDBEventLogStore {
     /// - Se os dados estiverem vazios (opcional, dependendo da política)
     /// - Se a adição ao BaseStore falhar
     /// - Se a conversão Entry -> Operation falhar
+    #[instrument(level = "debug", skip(self, value))]
     pub async fn add(&mut self, value: Vec<u8>) -> Result<Operation> {
         // Validação opcional: verificar se há dados
         if value.is_empty() {
@@ -260,7 +267,6 @@ impl OrbitDBEventLogStore {
         Ok(op_result)
     }
 
-    /// Equivalente a função "Get" em go.
     /// Recupera uma única operação do log pelo seu CID.
     ///
     /// # Argumentos
@@ -275,7 +281,9 @@ impl OrbitDBEventLogStore {
     ///
     /// - Se o CID não for encontrado no log
     /// - Se a stream não retornar resultados
+    #[instrument(level = "debug", skip(self))]
     pub async fn get(&self, cid: Cid) -> Result<Operation> {
+        let _entered = self.span.enter();
         let (tx, mut rx) = mpsc::channel(1);
 
         let stream_options = StreamOptions {
@@ -298,8 +306,8 @@ impl OrbitDBEventLogStore {
         }
     }
 
-    /// Equivalente a função "Stream" em go.
     /// Busca entradas, as converte em operações e as envia através de um canal.
+    #[instrument(level = "debug", skip(self, result_chan, options))]
     pub async fn stream(
         &self,
         result_chan: mpsc::Sender<Operation>,
@@ -328,7 +336,6 @@ impl OrbitDBEventLogStore {
         Ok(())
     }
 
-    /// Equivalente a função "query" em go.
     /// Executa a lógica de busca no índice do log com base nas opções de filtro.
     ///
     /// # Performance
@@ -336,6 +343,7 @@ impl OrbitDBEventLogStore {
     /// - Usa o índice quando disponível para queries otimizadas
     /// - Fallback para acesso direto ao oplog quando necessário
     /// - Suporta filtros por CID (gt, gte, lt, lte) e limitação de quantidade
+    #[instrument(level = "debug", skip(self, options))]
     fn query(&self, options: Option<StreamOptions>) -> Result<Vec<Entry>> {
         let options = options.unwrap_or_default();
 
@@ -387,7 +395,6 @@ impl OrbitDBEventLogStore {
         Ok(result)
     }
 
-    /// Equivalente a função "read" em go.
     /// Função auxiliar para ler uma fatia de entradas a partir de um hash.
     ///
     /// # Argumentos
@@ -431,10 +438,9 @@ impl OrbitDBEventLogStore {
         ops.iter().skip(start_index).take(amount).cloned().collect()
     }
 
-    /// Implementa busca otimizada no índice baseada nas StreamOptions.
+    /// Busca otimizada no índice baseada nas StreamOptions.
     ///
-    /// Esta função agora utiliza os novos métodos opcionais do trait StoreIndex
-    /// para implementar otimizações reais quando o índice suporta Entry completas.
+    /// Utiliza os novos métodos opcionais do trait StoreIndex
     ///
     /// # Argumentos
     ///
