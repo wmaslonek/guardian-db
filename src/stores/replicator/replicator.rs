@@ -1,26 +1,24 @@
 use crate::error::Result;
 use crate::iface::TracerWrapper;
 use crate::ipfs_log::{entry::Entry, log::Log};
-use crate::pubsub::event::{Emitter, EventBus}; // Usando nosso EventBus
+use crate::pubsub::event::{Emitter, EventBus};
 use crate::stores::events::{EventLoad, EventLoadProgress, EventReplicated};
 use crate::stores::replicator::events::{EventLoadAdded, EventLoadEnd};
 use crate::stores::replicator::queue::{
     ProcessItem as ProcessItemTrait, ProcessQueue, ProcessQueueItem,
-}; // Import trait
+};
 use crate::stores::replicator::traits::StoreInterface;
 use cid::Cid;
-use ipfs_api_backend_hyper::IpfsApi;
 use opentelemetry::trace::{TraceContextExt, TracerProvider, noop::NoopTracerProvider};
-use slog::Logger;
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock, Semaphore};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
-use tracing::{Level, info, span, warn};
+use tracing::{Level, Span, info, instrument, span, warn};
 
-/// Concrete implementation of ProcessItem for the replicator
+/// Implementation of ProcessItem for the replicator
 /// Note: This is now primarily used for creating ProcessQueueItems
 #[derive(Clone, Debug)]
 pub struct ProcessItem {
@@ -40,7 +38,7 @@ impl ProcessItem {
     }
 }
 
-// O trait Replicator define a interface pública, assim como a interface em Go.
+// O trait Replicator define a interface pública.
 pub trait ReplicatorInterface {
     fn event_bus(&self) -> EventBus;
     fn get_queue(&self) -> impl Future<Output = Vec<Cid>> + Send;
@@ -49,7 +47,6 @@ pub trait ReplicatorInterface {
     fn should_exclude(&self, hash: &Cid) -> impl Future<Output = bool> + Send;
 }
 
-// equivalente ao enum queuedState em go
 #[allow(dead_code)]
 enum QueuedState {
     Added,
@@ -57,9 +54,7 @@ enum QueuedState {
     Fetched,
 }
 
-// equivalente ao struct Options em go
 pub struct ReplicatorOptions {
-    pub logger: Option<Logger>,
     pub tracer: Option<Arc<TracerWrapper>>,
     pub event_bus: Option<EventBus>,
 }
@@ -68,15 +63,14 @@ impl Default for ReplicatorOptions {
     fn default() -> Self {
         let tracer = NoopTracerProvider::new().tracer("");
         Self {
-            logger: None,
             tracer: Some(Arc::new(TracerWrapper::Noop(tracer))),
             event_bus: None, // O event_bus deve ser criado se for `None`.
         }
     }
 }
 
-// A implementação do trait para a nossa struct Replicator.
-// Isso garante que nossa struct está em conformidade com a interface pública.
+// Implementação do trait para a struct Replicator.
+// Isso garante que a struct está em conformidade com a interface pública.
 impl ReplicatorInterface for Replicator {
     fn event_bus(&self) -> EventBus {
         // Cria uma nova instância do EventBus já que não implementa Clone
@@ -119,7 +113,7 @@ impl ReplicatorInterface for Replicator {
     }
 }
 
-/// Implementação do Replicator para GuardianDB
+/// Replicator para GuardianDB
 ///
 /// O Replicator é responsável por sincronizar dados entre diferentes instâncias
 /// de uma store GuardianDB. Ele gerencia a busca de logs, a replicação de entradas
@@ -130,8 +124,6 @@ impl ReplicatorInterface for Replicator {
 /// - Gestão de fila de processamento com controle de concorrência
 /// - Emissão de eventos de progresso de replicação
 /// - Exclusão de entradas duplicadas
-///
-/// equivalente ao struct replicator em go
 pub struct Replicator {
     // Token para gerenciar o cancelamento de tarefas em andamento.
     root_cancellation_token: CancellationToken,
@@ -155,11 +147,10 @@ pub struct Replicator {
     // Buffer para logs que são concluídos.
     buffer: Mutex<Vec<Log>>,
 
-    // Logger e tracer para observabilidade.
-    #[allow(dead_code)]
-    logger: Logger,
+    // Tracer para observabilidade e span para tracing.
     #[allow(dead_code)]
     tracer: Arc<TracerWrapper>,
+    span: Span,
 }
 
 /// Emitters específicos para eventos de replicação
@@ -237,7 +228,12 @@ struct ReplicatorRef<'a> {
 }
 
 impl Replicator {
-    // equivalente a NewReplicator em go
+    /// Retorna uma referência ao span de tracing para instrumentação
+    pub fn span(&self) -> &Span {
+        &self.span
+    }
+
+    #[instrument(level = "debug", skip(store, opts))]
     pub async fn new(
         store: Arc<dyn StoreInterface>,
         concurrency: Option<usize>,
@@ -250,9 +246,6 @@ impl Replicator {
         // Inicializa os emissores de eventos
         let emitters = ReplicatorEmitters::new(&event_bus).await?;
 
-        let logger = options
-            .logger
-            .unwrap_or_else(|| slog::Logger::root(slog::Discard, slog::o!()));
         let tracer = options
             .tracer
             .expect("tracer should be provided by default options");
@@ -262,6 +255,9 @@ impl Replicator {
 
         // O CancellationToken principal para controlar o ciclo de vida do replicator.
         let root_cancellation_token = CancellationToken::new();
+
+        // Cria span para esta instância do Replicator
+        let span = tracing::info_span!("replicator", concurrency = %concurrency);
 
         Ok(Self {
             root_cancellation_token,
@@ -275,17 +271,18 @@ impl Replicator {
                 tasks_in_progress: 0,
             }),
             buffer: Mutex::new(Vec::new()),
-            logger,
             tracer,
+            span,
         })
     }
 
-    // equivalente a Stop em go
+    #[instrument(level = "debug", skip(self))]
     pub async fn stop(&self) {
+        let _entered = self.span.enter();
         // Cancela todas as tarefas em andamento que estão escutando este token.
         self.root_cancellation_token.cancel();
 
-        // Em Rust, o fechamento dos emissores (`emitters`) geralmente é tratado
+        // ***O fechamento dos emissores (`emitters`) geralmente é tratado
         // quando o `Replicator` é descartado (dropped). Se um fechamento explícito
         // for necessário, seria implementado aqui.
         info!("Replicator stopped");
@@ -297,9 +294,6 @@ impl Replicator {
         // ... para outros emissores
     }
 
-    // equivalente a GetQueue em go
-    // NOTA: A função original em Go itera sobre o mapa `tasks`, não sobre a `queue`.
-    // O nome foi mantido para consistência, mas o comportamento reflete o código original.
     pub async fn get_queue(&self) -> Vec<Cid> {
         let state = self.state.read().await;
 
@@ -307,11 +301,12 @@ impl Replicator {
         state.tasks.keys().cloned().collect()
     }
 
-    // equivalente a Load em go
+    #[instrument(level = "debug", skip(self, entries))]
     pub async fn load(&self, entries: Vec<Box<Entry>>) {
+        let _entered = self.span.enter();
         let cids_str: Vec<String> = entries.iter().map(|e| e.hash().to_string()).collect();
 
-        // Cria um span para tracing, similar ao OpenTelemetry em Go.
+        // Cria um span para tracing.
         let span = span!(Level::INFO, "replicator-load", cids = cids_str.join(","));
         let _enter = span.enter();
         let ctx = opentelemetry::Context::current();
@@ -320,8 +315,6 @@ impl Replicator {
         // Converte Vec<Box<Entry>> para Vec<Entry>
         let entries: Vec<Entry> = entries.into_iter().map(|boxed| *boxed).collect();
 
-        // O padrão `rootContextWithCancel` do Go é substituído pelo `tokio::select!`
-        // para cancelar a operação se o replicator for parado.
         tokio::select! {
             // Se o token de cancelamento principal for acionado, a função termina.
             _ = self.root_cancellation_token.cancelled() => {
@@ -337,6 +330,7 @@ impl Replicator {
     }
 
     /// Função auxiliar que contém a lógica principal de `Load`.
+    #[instrument(level = "debug", skip(self, entries))]
     async fn perform_load(&self, entries: Vec<Entry>) -> Result<()> {
         // Envolve o JoinSet em Arc<Mutex<>> para compartilhamento seguro entre tarefas.
         let join_set: Arc<Mutex<JoinSet<Result<()>>>> = Arc::new(Mutex::new(JoinSet::new()));
@@ -377,7 +371,6 @@ impl Replicator {
         Ok(())
     }
 
-    // equivalente a processOne em go
     /// Processa um único item da fila, adquirindo um slot do semáforo.
     #[allow(dead_code)]
     async fn process_one(&self, _join_set: Arc<Mutex<JoinSet<Result<()>>>>) -> Result<()> {
@@ -424,7 +417,7 @@ impl Replicator {
         Ok(())
     }
 
-    // equivalente a AddEntryToQueue em go (não thread-safe, requer lock externo)
+    // ***(não thread-safe, requer lock externo)
     fn add_entry_to_queue(
         &self,
         state: &mut tokio::sync::RwLockWriteGuard<'_, ReplicatorState>,
@@ -446,7 +439,6 @@ impl Replicator {
         false // "exist" é false, foi adicionado agora.
     }
 
-    // equivalente a waitForProcessSlot em go
     /// Pega o próximo item da fila e atualiza seu estado para `Fetching`.
     async fn wait_for_process_slot(&self) -> Option<ProcessQueueItem> {
         let mut state = self.state.write().await;
@@ -460,7 +452,6 @@ impl Replicator {
         Some(item)
     }
 
-    // equivalente a processEntryDone em go
     /// Finaliza o processamento de uma entrada.
     async fn process_entry_done(&self, hash: Cid) {
         let mut state = self.state.write().await;
@@ -475,7 +466,7 @@ impl Replicator {
     }
 
     // As funções `is_idle` e `idle` são necessárias por `process_entry_done`.
-    // Equivalentes a isIdle e idle em go (não thread-safe)
+    // ***(não thread-safe)
     fn is_idle(&self, state: &tokio::sync::RwLockWriteGuard<'_, ReplicatorState>) -> bool {
         if state.tasks_in_progress > 0 || !state.queue.is_empty() {
             return false;
@@ -511,7 +502,7 @@ impl Replicator {
     }
 
     /// Cria um clone leve do `Replicator` para uso em tarefas `spawned`.
-    /// Agora retorna uma referência leve ao invés de clonar tudo.
+    /// Retorna uma referência leve ao invés de clonar tudo.
     #[allow(dead_code)]
     fn create_ref(&self) -> ReplicatorRef<'_> {
         ReplicatorRef {
@@ -671,7 +662,6 @@ impl<'a> ReplicatorRef<'a> {
         Ok(())
     }
 
-    /// Versão de `process_hash` para ReplicatorRef - implementação real
     #[allow(dead_code)]
     async fn process_hash(&self, item: ProcessQueueItem) -> Result<Vec<Cid>> {
         let hash = item.get_hash();
@@ -679,24 +669,26 @@ impl<'a> ReplicatorRef<'a> {
         // Usa o cliente IPFS da store para buscar o log
         let ipfs_client = self.store.ipfs();
 
-        // Busca a entrada do IPFS usando o método cat do trait IpfsApi
-        let stream = ipfs_client.cat(&hash.to_string());
+        // Busca a entrada do IPFS usando o método cat do cliente nativo
+        let mut reader = match ipfs_client.cat(&hash.to_string()).await {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("Failed to get reader from IPFS: {}", e);
+                return Ok(vec![]);
+            }
+        };
 
         let entry_data = {
-            // Converte o stream para Vec<u8> corretamente
-            use futures::StreamExt;
+            // Lê todos os dados do AsyncRead
+            use tokio::io::AsyncReadExt;
             let mut data = Vec::new();
-            let mut stream = stream;
-            while let Some(chunk) = stream.next().await {
-                match chunk {
-                    Ok(bytes) => data.extend_from_slice(&bytes),
-                    Err(e) => {
-                        warn!("Failed to read chunk from IPFS stream: {}", e);
-                        return Ok(vec![]);
-                    }
+            match reader.read_to_end(&mut data).await {
+                Ok(_) => data,
+                Err(e) => {
+                    warn!("Failed to read data from IPFS reader: {}", e);
+                    return Ok(vec![]);
                 }
             }
-            data
         };
 
         // Tenta deserializar a entrada
@@ -761,7 +753,7 @@ impl<'a> ReplicatorRef<'a> {
 }
 
 impl Replicator {
-    // equivalente a AddHashToQueue em go (não thread-safe)
+    // ***(não thread-safe)
     fn add_hash_to_queue(
         &self,
         state: &mut tokio::sync::RwLockWriteGuard<'_, ReplicatorState>,
@@ -780,7 +772,6 @@ impl Replicator {
         false // Foi adicionado agora.
     }
 
-    // equivalente a processHash em go
     /// Busca o log associado a um `ProcessItem` do IPFS.
     async fn process_hash(&self, item: ProcessQueueItem) -> Result<Vec<Cid>> {
         let hash = item.get_hash();
@@ -788,24 +779,26 @@ impl Replicator {
         // Usa o cliente IPFS da store para buscar o log
         let ipfs_client = self.store.ipfs();
 
-        // Busca a entrada do IPFS usando o método cat do trait IpfsApi
-        let stream = ipfs_client.cat(&hash.to_string());
+        // Busca a entrada do IPFS usando o método cat do cliente nativo
+        let mut reader = match ipfs_client.cat(&hash.to_string()).await {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("Failed to get reader from IPFS: {}", e);
+                return Ok(vec![]);
+            }
+        };
 
         let entry_data = {
-            // Converte o stream para Vec<u8> corretamente
-            use futures::StreamExt;
+            // Lê todos os dados do AsyncRead
+            use tokio::io::AsyncReadExt;
             let mut data = Vec::new();
-            let mut stream = stream;
-            while let Some(chunk) = stream.next().await {
-                match chunk {
-                    Ok(bytes) => data.extend_from_slice(&bytes),
-                    Err(e) => {
-                        warn!("Failed to read chunk from IPFS stream: {}", e);
-                        return Ok(vec![]);
-                    }
+            match reader.read_to_end(&mut data).await {
+                Ok(_) => data,
+                Err(e) => {
+                    warn!("Failed to read data from IPFS reader: {}", e);
+                    return Ok(vec![]);
                 }
             }
-            data
         };
 
         // Tenta deserializar a entrada
