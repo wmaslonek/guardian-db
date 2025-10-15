@@ -4,26 +4,27 @@ use crate::address::Address;
 use crate::error::{GuardianError, Result};
 use crate::ipfs_log::{access_controller::LogEntry, identity_provider::IdentityProvider};
 use async_trait::async_trait;
-use slog::{self, Logger};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tracing::{Span, debug, info, instrument, warn};
 
 /// Estado interno do SimpleAccessController
 struct SimpleAccessControllerState {
     allowed_keys: HashMap<String, Vec<String>>,
-    logger: slog::Logger,
 }
 
 /// Estrutura principal do controlador de acesso simples.
 /// Mantém uma lista de chaves autorizadas em memória.
 pub struct SimpleAccessController {
     state: Arc<RwLock<SimpleAccessControllerState>>,
+    span: Span,
 }
 
 impl SimpleAccessController {
     /// Cria um novo SimpleAccessController com configuração inicial opcional
-    pub fn new(logger: slog::Logger, initial_keys: Option<HashMap<String, Vec<String>>>) -> Self {
+    #[instrument(skip(initial_keys))]
+    pub fn new(initial_keys: Option<HashMap<String, Vec<String>>>) -> Self {
         let mut allowed_keys = initial_keys.unwrap_or_default();
 
         // Garante que pelo menos as categorias básicas existam
@@ -31,23 +32,27 @@ impl SimpleAccessController {
         allowed_keys.entry("write".to_string()).or_default();
         allowed_keys.entry("admin".to_string()).or_default();
 
-        slog::info!(logger, "Created SimpleAccessController";
-            "categories" => ?allowed_keys.keys().collect::<Vec<_>>(),
-            "total_permissions" => allowed_keys.values().map(|v| v.len()).sum::<usize>()
+        info!(target: "simple_access_controller",
+            categories = ?allowed_keys.keys().collect::<Vec<_>>(),
+            total_permissions = allowed_keys.values().map(|v| v.len()).sum::<usize>(),
+            "Created SimpleAccessController"
         );
 
         Self {
-            state: Arc::new(RwLock::new(SimpleAccessControllerState {
-                allowed_keys,
-                logger,
-            })),
+            state: Arc::new(RwLock::new(SimpleAccessControllerState { allowed_keys })),
+            span: tracing::info_span!("simple_access_controller"),
         }
     }
 
-    /// Cria um novo SimpleAccessController com apenas logger (compatibilidade com código existente)
+    /// Cria um novo SimpleAccessController simples
     #[allow(dead_code)]
-    pub fn new_simple(logger: slog::Logger) -> Self {
-        Self::new(logger, None)
+    pub fn new_simple() -> Self {
+        Self::new(None)
+    }
+
+    /// Retorna uma referência ao span de tracing para instrumentação
+    pub fn span(&self) -> &Span {
+        &self.span
     }
 
     /// Lista todas as chaves de uma capacidade
@@ -93,13 +98,15 @@ impl SimpleAccessController {
             let count = keys.len();
             keys.clear();
 
-            slog::info!(state.logger, "Capability cleared";
-                "capability" => capability,
-                "removed_keys" => count
+            info!(target: "simple_access_controller",
+                capability = %capability,
+                removed_keys = count,
+                "Capability cleared"
             );
         } else {
-            slog::warn!(state.logger, "Capability not found for clearing";
-                "capability" => capability
+            warn!(target: "simple_access_controller",
+                capability = %capability,
+                "Capability not found for clearing"
             );
         }
 
@@ -145,9 +152,9 @@ impl SimpleAccessController {
     ) -> Result<()> {
         let mut state = self.state.write().await;
 
-        slog::info!(state.logger, "Importing permissions";
-            "capabilities_count" => permissions.len(),
-            "total_permissions" => permissions.values().map(|v| v.len()).sum::<usize>()
+        info!(target: "simple_access_controller", "Importing permissions: capabilities_count={}, total_permissions={}",
+            permissions.len(),
+            permissions.values().map(|v| v.len()).sum::<usize>()
         );
 
         state.allowed_keys = permissions;
@@ -156,6 +163,8 @@ impl SimpleAccessController {
 
     /// Adiciona múltiplas chaves a uma capacidade de uma vez
     pub async fn grant_multiple(&self, capability: &str, key_ids: Vec<&str>) -> Result<()> {
+        let _entered = self.span.enter();
+
         if capability.is_empty() {
             return Err(GuardianError::Store(
                 "Capability cannot be empty".to_string(),
@@ -179,10 +188,8 @@ impl SimpleAccessController {
         let total_keys = keys.len();
         let capability_name = capability.to_string();
 
-        slog::info!(state.logger, "Multiple permissions granted";
-            "capability" => capability_name,
-            "added_keys" => added_count,
-            "total_keys" => total_keys
+        info!(target: "simple_access_controller", "Multiple permissions granted: capability={}, added_keys={}, total_keys={}",
+            capability_name, added_count, total_keys
         );
 
         Ok(())
@@ -190,6 +197,8 @@ impl SimpleAccessController {
 
     /// Remove múltiplas chaves de uma capacidade de uma vez
     pub async fn revoke_multiple(&self, capability: &str, key_ids: Vec<&str>) -> Result<()> {
+        let _entered = self.span.enter();
+
         if capability.is_empty() {
             return Err(GuardianError::Store(
                 "Capability cannot be empty".to_string(),
@@ -210,17 +219,15 @@ impl SimpleAccessController {
             let capability_name = capability.to_string();
             let should_remove_capability = keys.is_empty();
 
-            slog::info!(state.logger, "Multiple permissions revoked";
-                "capability" => capability_name,
-                "removed_keys" => removed_count,
-                "remaining_keys" => remaining_keys
+            info!(target: "simple_access_controller", "Multiple permissions revoked: capability={}, removed_keys={}, remaining_keys={}",
+                capability_name, removed_count, remaining_keys
             );
 
             // Remove a capacidade completamente se não há mais chaves
             if should_remove_capability {
                 state.allowed_keys.remove(capability);
-                slog::debug!(state.logger, "Capability removed completely";
-                    "capability" => capability
+                debug!(target: "simple_access_controller", "Capability removed completely: capability={}",
+                    capability
                 );
             }
         }
@@ -250,10 +257,8 @@ impl SimpleAccessController {
                 .allowed_keys
                 .insert(target_capability.to_string(), cloned_keys);
 
-            slog::info!(state.logger, "Capability cloned";
-                "source_capability" => source_capability,
-                "target_capability" => target_capability,
-                "cloned_keys" => keys_count
+            info!(target: "simple_access_controller", "Capability cloned: source_capability={}, target_capability={}, cloned_keys={}",
+                source_capability, target_capability, keys_count
             );
         } else {
             return Err(GuardianError::Store(format!(
@@ -265,37 +270,32 @@ impl SimpleAccessController {
         Ok(())
     }
 
-    /// equivalente a Address em go
     /// Este controlador não tem um endereço, pois não é persistido.
     pub fn address(&self) -> Option<Box<dyn Address>> {
         None
     }
 
-    /// Equivalente a NewSimpleAccessController em go (método factory alternativo)
+    /// Método factory alternativo
+    #[instrument(skip(params))]
     pub fn from_options(params: CreateAccessControllerOptions) -> Result<Self> {
         // As permissões são extraídas diretamente dos parâmetros de criação.
         let allowed_keys = params.get_all_access();
-        let logger = slog::Logger::root(slog::Discard, slog::o!()); // Logger padrão slog
-
-        // Em Go, as `options` são aplicadas aqui. Um padrão similar (ex: Builder)
-        // pode ser usado em Rust se necessário.
-
         Ok(Self {
-            state: Arc::new(RwLock::new(SimpleAccessControllerState {
-                allowed_keys,
-                logger,
-            })),
+            state: Arc::new(RwLock::new(SimpleAccessControllerState { allowed_keys })),
+            span: tracing::info_span!("simple_access_controller", controller_type = "simple"),
         })
     }
 }
 
 #[async_trait]
 impl AccessController for SimpleAccessController {
-    fn r#type(&self) -> &str {
+    fn get_type(&self) -> &str {
         "simple"
     }
 
     async fn get_authorized_by_role(&self, role: &str) -> Result<Vec<String>> {
+        let _entered = self.span.enter();
+
         // Validação de parâmetros
         if role.is_empty() {
             return Err(GuardianError::Store("Role cannot be empty".to_string()));
@@ -304,21 +304,22 @@ impl AccessController for SimpleAccessController {
         let state = self.state.read().await;
 
         // Log da consulta
-        slog::debug!(state.logger, "Getting authorized keys by role";
-            "role" => role
+        debug!(target: "simple_access_controller", "Getting authorized keys by role: role={}",
+            role
         );
 
         let keys = state.allowed_keys.get(role).cloned().unwrap_or_default();
 
-        slog::debug!(state.logger, "Retrieved authorized keys";
-            "role" => role,
-            "key_count" => keys.len()
+        debug!(target: "simple_access_controller", "Retrieved authorized keys: role={}, key_count={}",
+            role, keys.len()
         );
 
         Ok(keys)
     }
 
     async fn grant(&self, capability: &str, key_id: &str) -> Result<()> {
+        let _entered = self.span.enter();
+
         // Validação de parâmetros
         if capability.is_empty() {
             return Err(GuardianError::Store(
@@ -332,9 +333,8 @@ impl AccessController for SimpleAccessController {
         let mut state = self.state.write().await;
 
         // Log da operação
-        slog::info!(state.logger, "Granting permission";
-            "capability" => capability,
-            "key_id" => key_id
+        info!(target: "simple_access_controller", "Granting permission: capability={}, key_id={}",
+            capability, key_id
         );
 
         // Adiciona a chave à lista de permissões para a capacidade especificada
@@ -350,15 +350,12 @@ impl AccessController for SimpleAccessController {
             let capability_name = capability.to_string();
             let key_id_name = key_id.to_string();
 
-            slog::debug!(state.logger, "Permission granted successfully";
-                "capability" => capability_name,
-                "key_id" => key_id_name,
-                "total_keys" => total_keys
+            debug!(target: "simple_access_controller", "Permission granted successfully: capability={}, key_id={}, total_keys={}",
+                capability_name, key_id_name, total_keys
             );
         } else {
-            slog::debug!(state.logger, "Permission already exists";
-                "capability" => capability,
-                "key_id" => key_id
+            debug!(target: "simple_access_controller", "Permission already exists: capability={}, key_id={}",
+                capability, key_id
             );
         }
 
@@ -366,6 +363,8 @@ impl AccessController for SimpleAccessController {
     }
 
     async fn revoke(&self, capability: &str, key_id: &str) -> Result<()> {
+        let _entered = self.span.enter();
+
         // Validação de parâmetros
         if capability.is_empty() {
             return Err(GuardianError::Store(
@@ -379,9 +378,8 @@ impl AccessController for SimpleAccessController {
         let mut state = self.state.write().await;
 
         // Log da operação
-        slog::info!(state.logger, "Revoking permission";
-            "capability" => capability,
-            "key_id" => key_id
+        info!(target: "simple_access_controller", "Revoking permission: capability={}, key_id={}",
+            capability, key_id
         );
 
         // Remove a chave da lista de permissões para a capacidade especificada
@@ -395,28 +393,25 @@ impl AccessController for SimpleAccessController {
                 let key_id_name = key_id.to_string();
                 let should_remove_capability = keys.is_empty();
 
-                slog::debug!(state.logger, "Permission revoked successfully";
-                    "capability" => capability_name,
-                    "key_id" => key_id_name,
-                    "remaining_keys" => remaining_keys
+                debug!(target: "simple_access_controller", "Permission revoked successfully: capability={}, key_id={}, remaining_keys={}",
+                    capability_name, key_id_name, remaining_keys
                 );
 
                 // Remove a entrada completamente se não há mais chaves
                 if should_remove_capability {
                     state.allowed_keys.remove(capability);
-                    slog::debug!(state.logger, "Capability removed completely";
-                        "capability" => capability
+                    debug!(target: "simple_access_controller", "Capability removed completely: capability={}",
+                        capability
                     );
                 }
             } else {
-                slog::debug!(state.logger, "Permission not found for revocation";
-                    "capability" => capability,
-                    "key_id" => key_id
+                debug!(target: "simple_access_controller", "Permission not found for revocation: capability={}, key_id={}",
+                    capability, key_id
                 );
             }
         } else {
-            slog::debug!(state.logger, "Capability not found for revocation";
-                "capability" => capability
+            debug!(target: "simple_access_controller", "Capability not found for revocation: capability={}",
+                capability
             );
         }
 
@@ -429,17 +424,15 @@ impl AccessController for SimpleAccessController {
             return Err(GuardianError::Store("Address cannot be empty".to_string()));
         }
 
-        let state = self.state.read().await;
-
         // Log da operação
-        slog::info!(state.logger, "Loading access controller configuration";
-            "address" => address
+        info!(target: "simple_access_controller", "Loading access controller configuration: address={}",
+            address
         );
 
         // Para SimpleAccessController, load é uma operação no-op já que é baseado em memória
         // Em uma implementação mais avançada, isso poderia carregar de um arquivo ou rede
-        slog::debug!(state.logger, "Load operation completed (no-op for simple controller)";
-            "address" => address
+        debug!(target: "simple_access_controller", "Load operation completed (no-op for simple controller): address={}",
+            address
         );
 
         Ok(())
@@ -449,7 +442,7 @@ impl AccessController for SimpleAccessController {
         let state = self.state.read().await;
 
         // Log da operação
-        slog::info!(state.logger, "Saving access controller configuration");
+        info!(target: "simple_access_controller", "Saving access controller configuration");
 
         // Cria opções com as permissões atuais
         let mut options = CreateAccessControllerOptions::new_empty();
@@ -460,8 +453,8 @@ impl AccessController for SimpleAccessController {
             options.set_access(capability.clone(), keys.clone());
         }
 
-        slog::debug!(state.logger, "Save operation completed";
-            "capabilities_count" => state.allowed_keys.len()
+        debug!(target: "simple_access_controller", "Save operation completed: capabilities_count={}",
+            state.allowed_keys.len()
         );
 
         Ok(Box::new(options))
@@ -471,25 +464,15 @@ impl AccessController for SimpleAccessController {
         let state = self.state.read().await;
 
         // Log da operação de fechamento
-        slog::info!(state.logger, "Closing simple access controller");
+        info!(target: "simple_access_controller", "Closing simple access controller");
 
         // Para SimpleAccessController, close é uma operação no-op já que é baseado em memória
         // Em uma implementação mais avançada, isso poderia fechar conexões ou salvar estado
-        slog::debug!(state.logger, "Close operation completed";
-            "capabilities_count" => state.allowed_keys.len()
+        debug!(target: "simple_access_controller", "Close operation completed: capabilities_count={}",
+            state.allowed_keys.len()
         );
 
         Ok(())
-    }
-
-    async fn set_logger(&self, logger: Arc<Logger>) {
-        let mut state = self.state.write().await;
-        state.logger = (*logger).clone();
-    }
-
-    async fn logger(&self) -> Arc<Logger> {
-        let state = self.state.read().await;
-        Arc::new(state.logger.clone())
     }
 
     async fn can_append(
@@ -498,22 +481,23 @@ impl AccessController for SimpleAccessController {
         identity_provider: &dyn IdentityProvider,
         _additional_context: &dyn crate::ipfs_log::access_controller::CanAppendAdditionalContext,
     ) -> Result<()> {
+        let _entered = self.span.enter();
         let state = self.state.read().await;
 
         // Obtém o ID da identidade da entrada
         let entry_identity = entry.get_identity();
         let entry_id = entry_identity.id();
 
-        slog::debug!(state.logger, "Checking append permission";
-            "entry_id" => entry_id
+        debug!(target: "simple_access_controller", "Checking append permission: entry_id={}",
+            entry_id
         );
 
         // Verifica primeiro as chaves com permissão de escrita
         if let Some(write_keys) = state.allowed_keys.get("write") {
             // Verifica se há um wildcard que permite qualquer identidade
             if write_keys.contains(&"*".to_string()) {
-                slog::debug!(state.logger, "Wildcard permission found, verifying identity";
-                    "entry_id" => entry_id
+                debug!(target: "simple_access_controller", "Wildcard permission found, verifying identity: entry_id={}",
+                    entry_id
                 );
 
                 // Ainda assim, verifica a identidade para garantir que é válida
@@ -521,9 +505,8 @@ impl AccessController for SimpleAccessController {
                     .verify_identity(entry.get_identity())
                     .await
                 {
-                    slog::warn!(state.logger, "Invalid identity signature for wildcard access";
-                        "entry_id" => entry_id,
-                        "error" => %e
+                    warn!(target: "simple_access_controller", "Invalid identity signature for wildcard access: entry_id={}, error={}",
+                        entry_id, e
                     );
                     return Err(GuardianError::Store(format!(
                         "Invalid identity signature: {}",
@@ -531,8 +514,8 @@ impl AccessController for SimpleAccessController {
                     )));
                 }
 
-                slog::debug!(state.logger, "Append permission granted (wildcard)";
-                    "entry_id" => entry_id
+                debug!(target: "simple_access_controller", "Append permission granted (wildcard): entry_id={}",
+                    entry_id
                 );
                 return Ok(());
             }
@@ -541,9 +524,8 @@ impl AccessController for SimpleAccessController {
             if write_keys.contains(&entry_id.to_string()) {
                 // Verifica a assinatura da identidade
                 if let Err(e) = identity_provider.verify_identity(entry_identity).await {
-                    slog::warn!(state.logger, "Invalid identity signature for authorized key";
-                        "entry_id" => entry_id,
-                        "error" => %e
+                    warn!(target: "simple_access_controller", "Invalid identity signature for authorized key: entry_id={}, error={}",
+                        entry_id, e
                     );
                     return Err(GuardianError::Store(format!(
                         "Invalid identity signature for authorized key {}: {}",
@@ -551,8 +533,8 @@ impl AccessController for SimpleAccessController {
                     )));
                 }
 
-                slog::debug!(state.logger, "Append permission granted (write key)";
-                    "entry_id" => entry_id
+                debug!(target: "simple_access_controller", "Append permission granted (write key): entry_id={}",
+                    entry_id
                 );
                 return Ok(());
             }
@@ -564,9 +546,8 @@ impl AccessController for SimpleAccessController {
         {
             // Verifica a assinatura da identidade
             if let Err(e) = identity_provider.verify_identity(entry_identity).await {
-                slog::warn!(state.logger, "Invalid identity signature for admin key";
-                    "entry_id" => entry_id,
-                    "error" => %e
+                warn!(target: "simple_access_controller", "Invalid identity signature for admin key: entry_id={}, error={}",
+                    entry_id, e
                 );
                 return Err(GuardianError::Store(format!(
                     "Invalid identity signature for admin key {}: {}",
@@ -574,16 +555,14 @@ impl AccessController for SimpleAccessController {
                 )));
             }
 
-            slog::debug!(state.logger, "Append permission granted (admin key)";
-                "entry_id" => entry_id
+            debug!(target: "simple_access_controller", "Append permission granted (admin key): entry_id={}",
+                entry_id
             );
             return Ok(());
         }
 
-        slog::warn!(state.logger, "Access denied for append operation";
-            "entry_id" => entry_id,
-            "available_write_keys" => ?state.allowed_keys.get("write"),
-            "available_admin_keys" => ?state.allowed_keys.get("admin")
+        warn!(target: "simple_access_controller", "Access denied for append operation: entry_id={}, available_write_keys={:?}, available_admin_keys={:?}",
+            entry_id, state.allowed_keys.get("write"), state.allowed_keys.get("admin")
         );
 
         Err(GuardianError::Store(format!(
