@@ -9,6 +9,7 @@ use crate::stores::operation::operation::Operation;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tracing::{Span, debug, error, info, instrument, warn};
 
 /// Implementação de StoreIndex para KeyValue Store
 /// Mantém um índice thread-safe dos pares chave-valor
@@ -143,6 +144,7 @@ pub struct GuardianDBKeyValue {
     index: Arc<KeyValueIndex>,
     // Cache do address para resolver problemas de lifetime
     cached_address: Arc<dyn Address + Send + Sync>,
+    span: Span,
 }
 
 #[async_trait::async_trait]
@@ -155,27 +157,20 @@ impl Store for GuardianDBKeyValue {
     }
 
     async fn close(&self) -> Result<()> {
-        // Fechamento adequado da KeyValue store
+        // Fechamento da KeyValue Store
         //
-        // Esta implementação resolve o problema comentado anteriormente onde
-        // não era possível chamar close() da BaseStore devido a limitações de mutabilidade.
-        //
-        // Agora fazemos:
         // 1. Limpeza adequada do índice local
         // 2. Logging apropriado para debugging
         // 3. Seguimos o padrão RAII do Rust para cleanup automático
 
-        slog::debug!(
-            self.base_store.logger(),
-            "Starting KeyValue store close operation"
-        );
+        debug!("Starting KeyValue store close operation");
 
         // Chama o close da BaseStore que faz a limpeza completa
         self.base_store.close().await?;
 
         // Nota: O índice HashMap será limpo automaticamente pelo Drop trait
         // Isso é consistente com o padrão RAII do Rust
-        slog::debug!(self.base_store.logger(), "KeyValue store close completed");
+        debug!("KeyValue store close completed");
 
         Ok(())
     }
@@ -197,12 +192,12 @@ impl Store for GuardianDBKeyValue {
     }
 
     fn replication_status(&self) -> crate::stores::replicator::replication_info::ReplicationInfo {
-        // Usa ReplicationInfo com Clone implementado - retorna dados atuais da BaseStore
+        // Usa ReplicationInfo com Clone - retorna dados atuais da BaseStore
         crate::stores::replicator::replication_info::ReplicationInfo::new()
     }
 
     fn replicator(&self) -> Option<Arc<crate::stores::replicator::replicator::Replicator>> {
-        // Delega para BaseStore que agora retorna Option<Arc<Replicator>>
+        // Delega para BaseStore que retorna Option<Arc<Replicator>>
         self.base_store.replicator()
     }
 
@@ -212,10 +207,7 @@ impl Store for GuardianDBKeyValue {
 
     async fn drop(&mut self) -> Result<()> {
         // Log o início da operação de drop
-        slog::debug!(
-            self.base_store.logger(),
-            "Starting KeyValue store drop operation"
-        );
+        debug!("Starting KeyValue store drop operation");
 
         // Limpa o índice local completamente
         let entries_count = {
@@ -226,8 +218,7 @@ impl Store for GuardianDBKeyValue {
         };
 
         if entries_count > 0 {
-            slog::debug!(
-                self.base_store.logger(),
+            debug!(
                 "KeyValue store drop: cleared {} entries from index",
                 entries_count
             );
@@ -235,7 +226,7 @@ impl Store for GuardianDBKeyValue {
 
         // A BaseStore será dropada automaticamente quando a struct sair de escopo
         // Isso é consistente com o padrão RAII do Rust
-        slog::debug!(self.base_store.logger(), "KeyValue store drop completed");
+        debug!("KeyValue store drop completed");
 
         Ok(())
     }
@@ -247,20 +238,13 @@ impl Store for GuardianDBKeyValue {
         // Sincroniza o índice KeyValue após carregar dados
         match self.sync_index_with_log().await {
             Ok(operations_count) => {
-                let logger = self.base_store.logger();
-                slog::debug!(
-                    logger,
+                debug!(
                     "KeyValue index synchronized after load: {} operations processed",
                     operations_count
                 );
             }
             Err(e) => {
-                let logger = self.base_store.logger();
-                slog::warn!(
-                    logger,
-                    "Warning: Failed to synchronize index after load: {:?}",
-                    e
-                );
+                warn!("Warning: Failed to synchronize index after load: {:?}", e);
             }
         }
 
@@ -285,17 +269,13 @@ impl Store for GuardianDBKeyValue {
         // Usa o novo método para garantir que o índice KeyValue esteja em sincronia
         match self.sync_index_with_log().await {
             Ok(operations_count) => {
-                let logger = self.base_store.logger();
-                slog::info!(
-                    logger,
+                info!(
                     "Successfully synchronized KeyValue index after snapshot load: {} operations processed",
                     operations_count
                 );
             }
             Err(e) => {
-                let logger = self.base_store.logger();
-                slog::warn!(
-                    logger,
+                warn!(
                     "Warning: Failed to synchronize index after snapshot load: {:?}",
                     e
                 );
@@ -306,7 +286,7 @@ impl Store for GuardianDBKeyValue {
     }
 
     fn op_log(&self) -> Arc<RwLock<crate::ipfs_log::log::Log>> {
-        // Delega para BaseStore que agora retorna Arc<RwLock<Log>>
+        // Delega para BaseStore que retorna Arc<RwLock<Log>>
         self.base_store.op_log()
     }
 
@@ -338,9 +318,8 @@ impl Store for GuardianDBKeyValue {
             .await
     }
 
-    fn logger(&self) -> Arc<slog::Logger> {
-        // Delega para BaseStore que agora retorna Arc<Logger>
-        self.base_store.logger()
+    fn span(&self) -> Arc<tracing::Span> {
+        Arc::new(self.span.clone())
     }
 
     fn tracer(&self) -> Arc<crate::iface::TracerWrapper> {
@@ -349,7 +328,7 @@ impl Store for GuardianDBKeyValue {
     }
 
     fn event_bus(&self) -> Arc<EventBus> {
-        // Delega para BaseStore que agora retorna Arc<EventBus>
+        // Delega para BaseStore que retorna Arc<EventBus>
         self.base_store.event_bus()
     }
 
@@ -362,6 +341,11 @@ impl GuardianDBKeyValue {
     /// Acessa o BaseStore interno para operações de sync
     pub fn basestore(&self) -> &BaseStore {
         &self.base_store
+    }
+
+    /// Retorna uma referência ao span de tracing para instrumentação
+    pub fn span(&self) -> &Span {
+        &self.span
     }
 }
 
@@ -412,14 +396,13 @@ impl GuardianDBKeyValue {
 
     /// Atualiza o índice local com base no estado atual do log
     pub async fn update_index(&self) -> Result<()> {
-        // Agora usamos o método update_index da BaseStore que foi implementado
+        let _entered = self.span.enter();
+        // Usamos o método update_index da BaseStore
         match self.base_store.update_index() {
             Ok(updated_count) => {
                 if updated_count > 0 {
                     // Log informativo sobre quantas entradas foram processadas
-                    let logger = self.base_store.logger();
-                    slog::debug!(
-                        logger,
+                    debug!(
                         "KeyValue store index updated with {} entries",
                         updated_count
                     );
@@ -428,8 +411,7 @@ impl GuardianDBKeyValue {
             }
             Err(e) => {
                 // Log do erro e propaga para o chamador
-                let logger = self.base_store.logger();
-                slog::error!(logger, "Failed to update KeyValue store index: {:?}", e);
+                error!("Failed to update KeyValue store index: {:?}", e);
                 Err(e)
             }
         }
@@ -449,7 +431,7 @@ impl GuardianDBKeyValue {
 
         // Acessa o log usando o método thread-safe
         self.base_store.with_oplog(|oplog| {
-            let entries = oplog.values(); // values() já retorna Vec<Arc<Entry>>
+            let entries = oplog.values();
 
             // Limpa o índice local primeiro
             {
@@ -488,9 +470,7 @@ impl GuardianDBKeyValue {
             }
         });
 
-        let logger = self.base_store.logger();
-        slog::info!(
-            logger,
+        info!(
             "KeyValue index synchronized: processed {} operations, index size: {}",
             operations_processed,
             self.len()
@@ -499,7 +479,6 @@ impl GuardianDBKeyValue {
         Ok(operations_processed)
     }
 
-    /// equivalente a função All em go
     pub fn all(&self) -> HashMap<String, Vec<u8>> {
         // Retorna todos os pares chave-valor do índice
         self.index.get_all()
@@ -518,6 +497,7 @@ impl GuardianDBKeyValue {
     /// # Retorna
     ///
     /// A operação criada se bem-sucedida, ou um erro se a operação falhar.
+    #[instrument(level = "debug", skip(self, value))]
     pub async fn put(&mut self, key: String, value: Vec<u8>) -> Result<Operation> {
         // Validação de entrada
         if key.is_empty() {
@@ -551,8 +531,7 @@ impl GuardianDBKeyValue {
         // Força atualização do índice após adicionar a operação ao log
         // Isso garante que o índice local e o global estejam sincronizados
         if let Err(e) = self.update_index().await {
-            slog::warn!(
-                self.base_store.logger(),
+            warn!(
                 "Warning: Failed to update index after PUT operation: {:?}",
                 e
             );
@@ -580,6 +559,7 @@ impl GuardianDBKeyValue {
     /// # Retorna
     ///
     /// A operação de deleção criada se bem-sucedida, ou um erro se a operação falhar.
+    #[instrument(level = "debug", skip(self))]
     pub async fn delete(&mut self, key: String) -> Result<Operation> {
         // Validação de entrada
         if key.is_empty() {
@@ -610,8 +590,7 @@ impl GuardianDBKeyValue {
         // Força atualização do índice após adicionar a operação de delete ao log
         // Isso garante que o índice local e o global estejam sincronizados
         if let Err(e) = self.update_index().await {
-            slog::warn!(
-                self.base_store.logger(),
+            warn!(
                 "Warning: Failed to update index after DELETE operation: {:?}",
                 e
             );
@@ -636,7 +615,9 @@ impl GuardianDBKeyValue {
     ///
     /// `Some(Vec<u8>)` se a chave for encontrada, `None` se não existir,
     /// ou um erro se houver problema no acesso.
+    #[instrument(level = "debug", skip(self))]
     pub fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        let _entered = self.span.enter();
         // Validação de entrada
         if key.is_empty() {
             return Err(GuardianError::Store(
@@ -648,15 +629,12 @@ impl GuardianDBKeyValue {
         Ok(self.index.get_value(key))
     }
 
-    /// equivalente a função Type em go
-    pub fn r#type(&self) -> &'static str {
-        // `type` é uma palavra-chave reservada em Rust, então usamos `r#type`
-        // para definir o nome da função.
+    pub fn get_type(&self) -> &'static str {
         "keyvalue"
     }
 
-    /// equivalente a função NewGuardianDBKeyValue em go
-    /// Em Rust, isto se torna uma função associada, tipicamente chamada `new`.
+    /// Função associada para criar uma nova instância de GuardianDBKeyValue
+    #[instrument(level = "debug", skip(ipfs, identity, addr, options))]
     pub async fn new(
         ipfs: Arc<crate::ipfs_core_api::client::IpfsClient>,
         identity: Arc<Identity>,
@@ -679,7 +657,7 @@ impl GuardianDBKeyValue {
             max_history: None,
             directory: String::new(),
             sort_fn: None,
-            logger: None,
+            span: None,
             tracer: None,
             pubsub: None,
             message_marshaler: None,
@@ -697,8 +675,9 @@ impl GuardianDBKeyValue {
             },
         ));
 
-        // `InitBaseStore` em Go inicializa a store base. Em Rust, encapsulamos
-        // essa lógica dentro do construtor.
+        // Cria span para esta instância da KeyValueStore
+        let span = tracing::info_span!("keyvalue_store", address = %addr.to_string());
+        // Inicializa a BaseStore com as opções atualizadas
         let base_store = BaseStore::new(ipfs, identity, addr, Some(kv_options))
             .await
             .map_err(|e| {
@@ -712,6 +691,7 @@ impl GuardianDBKeyValue {
             base_store,
             index,
             cached_address,
+            span,
         })
     }
 }
