@@ -253,6 +253,30 @@ pub struct BandwidthStats {
     pub rate_in: f64,
 }
 
+/// Informações de versão do nó IPFS
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct VersionInfo {
+    /// Versão do software
+    pub version: String,
+    /// Commit hash do build
+    pub commit: String,
+    /// Versão do repositório
+    pub repo: String,
+    /// Sistema operacional
+    pub system: String,
+}
+
+impl Default for VersionInfo {
+    fn default() -> Self {
+        Self {
+            version: "guardian-db-0.1.0".to_string(),
+            commit: "unknown".to_string(),
+            repo: "12".to_string(),
+            system: std::env::consts::OS.to_string(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
