@@ -3,53 +3,43 @@ use crate::access_controller::{
 };
 use crate::address::Address;
 use crate::error::{GuardianError, Result};
+use crate::ipfs_core_api::client::IpfsClient;
 use crate::ipfs_log::{access_controller::LogEntry, identity_provider::IdentityProvider};
 use async_trait::async_trait;
 use cid::Cid;
-use futures::TryStreamExt;
-use ipfs_api_backend_hyper::{IpfsApi, IpfsClient};
-use log::debug;
 use serde::{Deserialize, Serialize};
-use slog::Logger;
 use std::convert::TryFrom;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tracing::{Span, debug, instrument, warn};
 
-/// Equivalente à struct cborWriteAccess em go.
-/// Usamos atributos da crate serde para mapear o nome do campo para "write" em minúsculas
-/// durante a serialização/desserialização, garantindo compatibilidade com a versão Go/JS.
 #[derive(Debug, Serialize, Deserialize)]
 struct CborWriteAccess {
     #[serde(rename = "write")]
     write: String,
 }
-
-/// Agrupa o estado mutável do controlador para ser protegido por um único RwLock,
-/// espelhando o comportamento do `sync.RWMutex` no código Go.
 struct ControllerState {
     write_access: Vec<String>,
-    logger: Arc<Logger>,
 }
 
 /// Estrutura principal do controlador de acesso IPFS.
 pub struct IpfsAccessController {
     ipfs: Arc<IpfsClient>,
     state: RwLock<ControllerState>,
+    span: Span,
 }
 
 impl IpfsAccessController {
-    /// equivalente a Type em go
-    pub fn r#type(&self) -> &'static str {
+    pub fn get_type(&self) -> &'static str {
         "ipfs"
     }
 
-    /// equivalente a Address em go
     /// Este controlador não tem um endereço próprio, então retorna None.
     pub fn address(&self) -> Option<Box<dyn Address>> {
         None
     }
 
-    /// equivalente a CanAppend em go
+    #[instrument(skip(self, entry, identity_provider, _additional_context))]
     pub async fn can_append(
         &self,
         entry: &dyn LogEntry,
@@ -73,11 +63,9 @@ impl IpfsAccessController {
         ))
     }
 
-    /// equivalente a GetAuthorizedByRole em go
     pub async fn get_authorized_by_role(&self, role: &str) -> Result<Vec<String>> {
         let state = self.state.read().await;
-
-        // Emulando a lógica Go: 'admin' e 'write' são a mesma coisa para este controlador.
+        // 'admin' e 'write' são a mesma coisa para este controlador.
         if role == "admin" || role == "write" {
             Ok(state.write_access.clone())
         } else {
@@ -85,24 +73,68 @@ impl IpfsAccessController {
         }
     }
 
-    /// equivalente a Grant em go
-    pub async fn grant(&self, _capability: &str, _key_id: &str) -> Result<()> {
-        Err(GuardianError::Store(
-            "Não implementado - não existe na versão JS".to_string(),
-        ))
+    #[instrument(skip(self))]
+    pub async fn grant(&self, capability: &str, key_id: &str) -> Result<()> {
+        if capability != "write" {
+            return Err(GuardianError::Store(format!(
+                "IpfsAccessController only supports 'write' capability, got '{}'",
+                capability
+            )));
+        }
+
+        let mut state = self.state.write().await;
+        if !state.write_access.contains(&key_id.to_string()) {
+            state.write_access.push(key_id.to_string());
+            debug!(target: "ipfs_access_controller",
+                capability = %capability,
+                key_id = %key_id,
+                total_keys = state.write_access.len(),
+                "Permission granted successfully"
+            );
+        } else {
+            debug!(target: "ipfs_access_controller",
+                capability = %capability,
+                key_id = %key_id,
+                "Permission already exists"
+            );
+        }
+        Ok(())
     }
 
-    /// equivalente a Revoke em go
-    pub async fn revoke(&self, _capability: &str, _key_id: &str) -> Result<()> {
-        Err(GuardianError::Store(
-            "Não implementado - não existe na versão JS".to_string(),
-        ))
+    #[instrument(skip(self))]
+    pub async fn revoke(&self, capability: &str, key_id: &str) -> Result<()> {
+        if capability != "write" {
+            return Err(GuardianError::Store(format!(
+                "IpfsAccessController only supports 'write' capability, got '{}'",
+                capability
+            )));
+        }
+
+        let mut state = self.state.write().await;
+        let initial_len = state.write_access.len();
+        state.write_access.retain(|k| k != key_id);
+
+        if state.write_access.len() < initial_len {
+            debug!(target: "ipfs_access_controller",
+                capability = %capability,
+                key_id = %key_id,
+                remaining_keys = state.write_access.len(),
+                "Permission revoked successfully"
+            );
+        } else {
+            debug!(target: "ipfs_access_controller",
+                capability = %capability,
+                key_id = %key_id,
+                "Permission not found for revocation"
+            );
+        }
+        Ok(())
     }
 
-    /// equivalente a Load em go
+    #[instrument(skip(self), fields(address = %address))]
     pub async fn load(&self, address: &str) -> Result<()> {
         let state = self.state.read().await;
-        debug!(target: "GuardianDB::ac::ipfs", "Lendo permissões do controlador de acesso IPFS no hash {}", address);
+        debug!(target: "ipfs_access_controller", address = %address, "Lendo permissões do controlador de acesso IPFS");
         drop(state); // Liberamos o lock de leitura antes das operações de escrita
 
         let cid = Cid::try_from(address)?;
@@ -115,13 +147,11 @@ impl IpfsAccessController {
             let rt = tokio::runtime::Handle::current();
             rt.block_on(async move {
                 // 1. Lê o manifesto CBOR principal
-                let manifest_stream = ipfs.cat(&cid_string);
-                let manifest_bytes_vec = manifest_stream.try_collect::<Vec<_>>().await?;
-                let manifest_data: Vec<u8> = manifest_bytes_vec
-                    .iter()
-                    .flat_map(|bytes| bytes.iter())
-                    .copied()
-                    .collect();
+                let mut manifest_reader = ipfs.cat(&cid_string).await?;
+                let mut manifest_data = Vec::new();
+                tokio::io::AsyncReadExt::read_to_end(&mut manifest_reader, &mut manifest_data)
+                    .await
+                    .map_err(|e| crate::error::GuardianError::Io(e.to_string()))?;
 
                 Ok::<Vec<u8>, crate::error::GuardianError>(manifest_data)
             })
@@ -131,7 +161,7 @@ impl IpfsAccessController {
 
         let manifest: Manifest = serde_cbor::from_slice(&manifest_data)?;
 
-        // 2. Lê o conteúdo real das permissões usando o endereço do manifesto
+        // 2. Lê o conteúdo das permissões usando o endereço do manifesto
         let access_data_cid = manifest.params.address();
         let ipfs_clone = self.ipfs.clone();
         let access_data_cid_string = access_data_cid.to_string();
@@ -140,13 +170,11 @@ impl IpfsAccessController {
         let access_data_bytes = tokio::task::spawn_blocking(move || {
             let rt = tokio::runtime::Handle::current();
             rt.block_on(async move {
-                let access_stream = ipfs_clone.cat(&access_data_cid_string);
-                let access_bytes_vec = access_stream.try_collect::<Vec<_>>().await?;
-                let access_data_bytes: Vec<u8> = access_bytes_vec
-                    .iter()
-                    .flat_map(|bytes| bytes.iter())
-                    .copied()
-                    .collect();
+                let mut access_reader = ipfs_clone.cat(&access_data_cid_string).await?;
+                let mut access_data_bytes = Vec::new();
+                tokio::io::AsyncReadExt::read_to_end(&mut access_reader, &mut access_data_bytes)
+                    .await
+                    .map_err(|e| crate::error::GuardianError::Io(e.to_string()))?;
 
                 Ok::<Vec<u8>, crate::error::GuardianError>(access_data_bytes)
             })
@@ -166,37 +194,30 @@ impl IpfsAccessController {
         Ok(())
     }
 
-    /// equivalente a Save em go
+    #[instrument(skip(self))]
     pub async fn save(&self) -> Result<CreateAccessControllerOptions> {
         let state = self.state.read().await;
-
         let write_access_json = serde_json::to_string(&state.write_access)?;
-
         let cbor_data = CborWriteAccess {
             write: write_access_json,
         };
-
         // Serializa a estrutura CBOR em bytes
         let cbor_bytes = serde_cbor::to_vec(&cbor_data)?;
 
         let ipfs = self.ipfs.clone();
-
         // Spawn a blocking task to handle the non-Send IPFS operations
         let response = tokio::task::spawn_blocking(move || {
             // Use tokio runtime handle to run async code in blocking context
             let rt = tokio::runtime::Handle::current();
             rt.block_on(async move {
-                // Salva os bytes no IPFS
-                ipfs.add(std::io::Cursor::new(cbor_bytes)).await
+                // Salva os bytes no IPFS usando helper method
+                ipfs.add_bytes(cbor_bytes).await
             })
         })
         .await
         .map_err(|e| GuardianError::Store(format!("Task join error: {}", e)))??;
-
         let cid = Cid::try_from(response.hash.as_str())?;
-
-        debug!(target: "GuardianDB::ac::ipfs", "Controlador de acesso IPFS salvo no hash {}", cid);
-
+        debug!(target: "ipfs_access_controller", cid = %cid, "Controlador de acesso IPFS salvo");
         // Cria e retorna os parâmetros do novo manifesto
         Ok(CreateAccessControllerOptions::new(
             cid,
@@ -205,14 +226,22 @@ impl IpfsAccessController {
         ))
     }
 
-    /// equivalente a Close em go
+    #[instrument(skip(self))]
     pub async fn close(&self) -> Result<()> {
-        Err(GuardianError::Store(
-            "Não implementado - não existe na versão JS".to_string(),
-        ))
+        // Para IpfsAccessController, close é uma operação no-op já que é baseado em IPFS
+        // O estado é mantido no IPFS e não há recursos locais para fechar
+        debug!(target: "ipfs_access_controller", "Closing IPFS access controller");
+
+        let state = self.state.read().await;
+        debug!(target: "ipfs_access_controller",
+            write_access_count = state.write_access.len(),
+            "IPFS access controller closed successfully"
+        );
+
+        Ok(())
     }
 
-    /// equivalente a NewIPFSAccessController em go
+    #[instrument(skip(ipfs_client, params), fields(identity_id = %identity_id))]
     pub fn new(
         ipfs_client: Arc<IpfsClient>,
         identity_id: String,
@@ -224,31 +253,24 @@ impl IpfsAccessController {
 
         let initial_state = ControllerState {
             write_access: params.get_access("write").unwrap_or_default(),
-            logger: Arc::new(slog::Logger::root(slog::Discard, slog::o!())), // Logger padrão slog
         };
 
         Ok(Self {
             ipfs: ipfs_client,
             state: RwLock::new(initial_state),
+            span: tracing::info_span!("ipfs_access_controller", controller_type = "ipfs"),
         })
     }
 
-    /// equivalente a SetLogger em go
-    pub async fn set_logger(&self, logger: Arc<Logger>) {
-        let mut state = self.state.write().await;
-        state.logger = logger;
-    }
-
-    /// equivalente a Logger em go
-    pub async fn logger(&self) -> Arc<Logger> {
-        let state = self.state.read().await;
-        state.logger.clone()
+    /// Retorna uma referência ao span para contexto de tracing
+    pub fn span(&self) -> &Span {
+        &self.span
     }
 }
 
 #[async_trait]
 impl crate::access_controller::traits::AccessController for IpfsAccessController {
-    fn r#type(&self) -> &str {
+    fn get_type(&self) -> &str {
         "ipfs"
     }
 
@@ -301,15 +323,7 @@ impl crate::access_controller::traits::AccessController for IpfsAccessController
     }
 
     async fn close(&self) -> Result<()> {
-        self.close().await
-    }
-
-    async fn set_logger(&self, logger: Arc<Logger>) {
-        self.set_logger(logger).await;
-    }
-
-    async fn logger(&self) -> Arc<Logger> {
-        self.logger().await
+        IpfsAccessController::close(self).await
     }
 
     async fn can_append(
