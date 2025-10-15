@@ -1,8 +1,8 @@
+use crate::ipfs_core_api::client::IpfsClient;
 use crate::ipfs_log::entry::Entry;
 use crate::ipfs_log::entry::EntryOrHash;
 use crate::ipfs_log::identity::Identity;
 use crate::ipfs_log::lamport_clock::LamportClock;
-use ipfs_api_backend_hyper::IpfsClient;
 use serde_json::json;
 use std::cmp::Ordering;
 use std::cmp::max;
