@@ -1,19 +1,19 @@
 #![allow(dead_code)]
 
+pub mod access_controller;
 pub mod entry;
 pub mod identity;
-pub mod lamport_clock;
-pub mod log;
-
-pub mod access_controller;
 pub mod identity_provider;
 pub mod iface;
+pub mod lamport_clock;
+pub mod log;
 
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
-    use ipfs_api_backend_hyper::IpfsClient;
+    use crate::ipfs_core_api::client::IpfsClient;
+    use crate::ipfs_core_api::config::ClientConfig;
     use serde_json::json;
 
     use super::entry::Entry;
@@ -26,8 +26,23 @@ mod tests {
     use super::log::Log;
     use super::log::LogOptions;
 
-    fn ipfs() -> Arc<IpfsClient> {
-        Arc::new(IpfsClient::default())
+    async fn ipfs() -> Arc<IpfsClient> {
+        let unique_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let config = ClientConfig {
+            data_store_path: Some(std::path::PathBuf::from(format!(
+                "./tmp/ipfs_log_test_{}",
+                unique_id
+            ))),
+            ..ClientConfig::development()
+        };
+        Arc::new(
+            IpfsClient::new(config)
+                .await
+                .expect("Failed to create IPFS client"),
+        )
     }
 
     fn identity1() -> Identity {
@@ -54,23 +69,23 @@ mod tests {
         )
     }
 
-    #[test]
-    fn set_id() {
-        let log = Log::new(ipfs(), identity1(), LogOptions::new().id("ABC"));
+    #[tokio::test]
+    async fn set_id() {
+        let log = Log::new(ipfs().await, identity1(), LogOptions::new().id("ABC"));
         assert_eq!(log.id(), "ABC");
     }
 
-    #[test]
-    fn set_clock_id() {
+    #[tokio::test]
+    async fn set_clock_id() {
         let id = identity1();
-        let log = Log::new(ipfs(), id.clone(), LogOptions::new().id("ABC"));
+        let log = Log::new(ipfs().await, id.clone(), LogOptions::new().id("ABC"));
         assert_eq!(log.clock().id(), id.pub_key());
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore] // Requires running IPFS daemon
-    fn set_items() {
-        let ipfs = ipfs();
+    async fn set_items() {
+        let ipfs = ipfs().await;
         let id = identity1();
         let e1 = Entry::create(
             &ipfs,
@@ -103,10 +118,10 @@ mod tests {
         assert_eq!(log.values()[2].payload(), "entryC");
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore] // Requires running IPFS daemon
-    fn set_heads() {
-        let ipfs = ipfs();
+    async fn set_heads() {
+        let ipfs = ipfs().await;
         let id = identity1();
         let e1 = Entry::create(&ipfs, id.clone(), "A", "entryA", &[], None);
         let e2 = Entry::create(&ipfs, id.clone(), "A", "entryB", &[], None);
@@ -123,10 +138,10 @@ mod tests {
         assert_eq!(log.heads()[0].hash(), e3.hash());
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore] // Requires running IPFS daemon
-    fn find_heads() {
-        let ipfs = ipfs();
+    async fn find_heads() {
+        let ipfs = ipfs().await;
         let id = identity1();
         let e1 = Entry::create(&ipfs, id.clone(), "A", "entryA", &[], None);
         let e2 = Entry::create(&ipfs, id.clone(), "A", "entryB", &[], None);
@@ -144,11 +159,11 @@ mod tests {
         assert_eq!(log.heads()[0].hash(), e3.hash());
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore] // Requires running IPFS daemon
-    fn to_string() {
+    async fn to_string() {
         let expected = "five\n└─four\n  └─three\n    └─two\n      └─one\n";
-        let mut log = Log::new(ipfs(), identity1(), LogOptions::new().id("A"));
+        let mut log = Log::new(ipfs().await, identity1(), LogOptions::new().id("A"));
         log.append("one", None);
         log.append("two", None);
         log.append("three", None);
@@ -158,10 +173,10 @@ mod tests {
     }
 
     //fix comparison after implementing genuine hashing
-    #[test]
+    #[tokio::test]
     #[ignore] // Requires running IPFS daemon
-    fn get() {
-        let mut log = Log::new(ipfs(), identity1(), LogOptions::new().id("AAA"));
+    async fn get() {
+        let mut log = Log::new(ipfs().await, identity1(), LogOptions::new().id("AAA"));
         log.append("one", None);
         assert_eq!(
             log.get(log.values()[0].hash()).unwrap().hash(),
@@ -170,11 +185,11 @@ mod tests {
         assert_eq!(log.get("zero"), None);
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore] // Requires running IPFS daemon
-    fn set_identity() {
+    async fn set_identity() {
         let id1 = identity1();
-        let mut log = Log::new(ipfs(), id1.clone(), LogOptions::new().id("AAA"));
+        let mut log = Log::new(ipfs().await, id1.clone(), LogOptions::new().id("AAA"));
         log.append("one", None);
         assert_eq!(log.values()[0].clock().id(), id1.pub_key());
         assert_eq!(log.values()[0].clock().time(), 1);
@@ -194,15 +209,15 @@ mod tests {
     fn has() {}
 
     //fix comparisons after implementing genuine hashing
-    #[test]
+    #[tokio::test]
     #[ignore] // Requires running IPFS daemon
-    fn serialize() {
+    async fn serialize() {
         let expected = json!({
             "id": "AAA",
             "heads": ["QmREuiyqTuJrcWr5BLrT9d9p8dcvdWvwc4JJMHpKcei4Em"],
         })
         .to_string();
-        let ipfs = ipfs();
+        let ipfs = ipfs().await;
         let mut log = Log::new(ipfs.clone(), identity1(), LogOptions::new().id("AAA"));
         log.append("one", None);
         log.append("two", None);
@@ -227,10 +242,10 @@ mod tests {
         assert_ne!(log.snapshot(), log3.snapshot());
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore] // Requires running IPFS daemon
-    fn values() {
-        let mut log = Log::new(ipfs(), identity1(), LogOptions::new());
+    async fn values() {
+        let mut log = Log::new(ipfs().await, identity1(), LogOptions::new());
         assert_eq!(log.len(), 0);
         log.append("hello1", None);
         log.append("hello2", None);
@@ -262,12 +277,17 @@ mod tests {
         assert!(x > w);
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore]
-    fn log_join() {
+    async fn log_join() {
         let id = Identity::new("0", "1", Signatures::new("2", "3"));
         let log_id = "xyz";
-        let mut x = Log::new(ipfs(), id.clone(), LogOptions::new().id(log_id));
+        let ipfs_client = ipfs().await;
+        let mut x = Log::new(
+            ipfs_client.clone(),
+            id.clone(),
+            LogOptions::new().id(log_id),
+        );
         x.append("to", None);
         x.append("set", None);
         x.append("your", None);
@@ -283,11 +303,19 @@ mod tests {
             None,
         );
         let es = &[Arc::new(e1), Arc::new(e2), Arc::new(e3)];
-        let mut y = Log::new(ipfs(), id.clone(), LogOptions::new().id(log_id).entries(es));
+        let mut y = Log::new(
+            ipfs_client.clone(),
+            id.clone(),
+            LogOptions::new().id(log_id).entries(es),
+        );
         y.append("fifth", None);
         y.append("seventh", None);
 
-        let mut z = Log::new(ipfs(), id.clone(), LogOptions::new().id(log_id).entries(es));
+        let mut z = Log::new(
+            ipfs_client.clone(),
+            id.clone(),
+            LogOptions::new().id(log_id).entries(es),
+        );
         z.append("fourth", None);
         z.append("sixth", None);
         z.append("eighth", None);
@@ -336,31 +364,6 @@ mod tests {
         println!("\n<<join y+x = x>\n{}>\n", x);
         println!("----\t\tx\t\t----\n{}", x.entries());
     }
-
-    /*
-    #[test]
-    fn ipfs () {
-        let client = IpfsClient::default();
-
-        /*
-        let data = Cursor::new("tinamämmi");
-        let request = client.add(data).map(|r| println!("put {}",r.hash)).map_err(|e| eprintln!("{}",e));
-        run(request);
-
-        let mut idpr = DefaultIdentificator::new();
-        let id = idpr.create("local_id");
-        let mut log = Log::new(id.clone(),LogOptions::new().id("log_id"));
-        log.append("first",None);
-        log.append("second",None);
-        log.append("third",None);
-        run(client.add(Cursor::new(log.snapshot())).map(|r| println!("put {}",r.hash)).map_err(|e| eprintln!("{}",e)));
-        run(client.object_get("QmQJxSCHs1e3NRSXZeHg86yhHWCTHd26Lx1HFsmqQHkF4R").map(|r| println!("get {}:\n{}","QmQJxSCHs1e3NRSXZeHg86yhHWCTHd26Lx1HFsmqQHkF4R",r.data)).map_err(|e| eprintln!("{}",e)));
-        run(client.object_get("QmekwsuyWM853FXJ5SzUW6eQG2LXjp6L8a7xSJf9ZWZW4U").map(|r| println!("get {}:\n{}","QmekwsuyWM853FXJ5SzUW6eQG2LXjp6L8a7xSJf9ZWZW4U",r.data)).map_err(|e| eprintln!("{}",e)));*/
-
-        /*
-        let request = client.object_new(Some(ObjectTemplate::UnixFsDir)).map(|r| println!("object: {}",r.hash)).map_err(|e| eprintln!("error: {}",e));
-        run(request);*/
-    }*/
 
     #[test]
     fn identities() {
