@@ -3,25 +3,25 @@ use crate::cache::{cache::Cache, cache::Options};
 use crate::data_store::{Datastore, Key, Order, Query, ResultItem, Results};
 use crate::error::{GuardianError, Result};
 use sled::{Config, Db, IVec};
-use slog::{Discard, Logger, debug, o};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, Weak},
 };
+use tracing::{Span, debug, instrument};
 
 pub const IN_MEMORY_DIRECTORY: &str = ":memory:";
-
 pub struct WrappedCache {
     id: String,
     db: Db,
     manager_map: Weak<Mutex<HashMap<String, Arc<WrappedCache>>>>,
     #[allow(dead_code)]
-    logger: Logger,
+    span: Span,
     closed: Mutex<bool>,
 }
 
 impl WrappedCache {
+    #[instrument(level = "debug", skip(self, _ctx))]
     pub fn get(
         &self,
         _ctx: &mut dyn core::any::Any,
@@ -109,6 +109,7 @@ impl WrappedCache {
         Ok(items)
     }
 
+    #[instrument(level = "debug", skip(self, _ctx, value))]
     pub fn put(
         &self,
         _ctx: &mut dyn core::any::Any,
@@ -143,6 +144,7 @@ impl WrappedCache {
         Ok(())
     }
 
+    #[instrument(level = "debug", skip(self))]
     pub fn close(&self) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut closed = self.closed.lock().unwrap();
         if *closed {
@@ -175,6 +177,7 @@ impl DatastoreWrapper {
 
 #[async_trait::async_trait]
 impl Datastore for DatastoreWrapper {
+    #[instrument(level = "debug", skip(self, key))]
     async fn has(&self, key: &[u8]) -> Result<bool> {
         let key_obj = Key::new(String::from_utf8_lossy(key));
         let mut any_ctx = ();
@@ -183,6 +186,7 @@ impl Datastore for DatastoreWrapper {
             .map_err(|e| GuardianError::Other(format!("Cache has error: {}", e)))
     }
 
+    #[instrument(level = "debug", skip(self, key, value))]
     async fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
         let key_obj = Key::new(String::from_utf8_lossy(key));
         let mut any_ctx = ();
@@ -191,6 +195,7 @@ impl Datastore for DatastoreWrapper {
             .map_err(|e| GuardianError::Other(format!("Cache put error: {}", e)))
     }
 
+    #[instrument(level = "debug", skip(self, key))]
     async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         let key_obj = Key::new(String::from_utf8_lossy(key));
         let mut any_ctx = ();
@@ -200,6 +205,7 @@ impl Datastore for DatastoreWrapper {
         }
     }
 
+    #[instrument(level = "debug", skip(self, key))]
     async fn delete(&self, key: &[u8]) -> Result<()> {
         let key_obj = Key::new(String::from_utf8_lossy(key));
         let mut any_ctx = ();
@@ -208,6 +214,7 @@ impl Datastore for DatastoreWrapper {
             .map_err(|e| GuardianError::Other(format!("Cache delete error: {}", e)))
     }
 
+    #[instrument(level = "debug", skip(self, query))]
     async fn query(&self, query: &Query) -> Result<Results> {
         let mut any_ctx = ();
         self.cache
@@ -215,6 +222,7 @@ impl Datastore for DatastoreWrapper {
             .map_err(|e| GuardianError::Other(format!("Cache query error: {}", e)))
     }
 
+    #[instrument(level = "debug", skip(self, prefix))]
     async fn list_keys(&self, prefix: &[u8]) -> Result<Vec<Key>> {
         // Converte o prefixo em bytes para uma Query com prefixo
         let prefix_str = String::from_utf8_lossy(prefix);
@@ -243,28 +251,31 @@ impl Datastore for DatastoreWrapper {
 }
 
 pub struct LevelDownCache {
-    logger: Logger,
+    span: Span,
     caches: Arc<Mutex<HashMap<String, Arc<WrappedCache>>>>,
 }
 
 impl LevelDownCache {
-    // Equivalente ao New(opts *cache.Options)
-    pub fn new(opts: Option<&Options>) -> Self {
-        let logger = opts
-            .and_then(|o| o.logger.clone())
-            .unwrap_or_else(|| Logger::root(Discard, o!()));
+    #[instrument(level = "debug")]
+    pub fn new(_opts: Option<&Options>) -> Self {
         Self {
-            logger,
+            span: tracing::Span::current(),
             caches: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    // Equivalente a Load(directory, address)
+    /// Retorna uma referência ao span de tracing para instrumentação
+    pub fn span(&self) -> &Span {
+        &self.span
+    }
+
+    #[instrument(level = "debug", skip(self, db_address))]
     pub fn load_internal(
         &self,
         directory: &str,
         db_address: &dyn Address,
     ) -> std::result::Result<Arc<WrappedCache>, Box<dyn std::error::Error + Send + Sync>> {
+        let _entered = self.span.enter();
         let key_path = datastore_key(directory, db_address);
 
         // cache hit
@@ -272,7 +283,7 @@ impl LevelDownCache {
             return Ok(ds);
         }
 
-        debug!(self.logger, "opening cache db"; "path" => key_path.as_str());
+        debug!("opening cache db: path={}", key_path.as_str());
 
         let db = if directory == IN_MEMORY_DIRECTORY {
             Config::new()
@@ -293,7 +304,7 @@ impl LevelDownCache {
             id: key_path.clone(),
             db,
             manager_map: Arc::downgrade(&self.caches),
-            logger: self.logger.clone(),
+            span: tracing::Span::current(),
             closed: Mutex::new(false),
         });
 
@@ -304,10 +315,11 @@ impl LevelDownCache {
         Ok(wrapped)
     }
 
-    // Equivalente a Close()
+    #[instrument(level = "debug", skip(self))]
     pub fn close_internal(
         &self,
     ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let _entered = self.span.enter();
         let caches = {
             let m = self.caches.lock().unwrap();
             m.values().cloned().collect::<Vec<_>>()
@@ -318,12 +330,13 @@ impl LevelDownCache {
         Ok(())
     }
 
-    // Equivalente a Destroy(directory, address)
+    #[instrument(level = "debug", skip(self, db_address))]
     pub fn destroy_internal(
         &self,
         directory: &str,
         db_address: &dyn Address,
     ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let _entered = self.span.enter();
         let key_path = datastore_key(directory, db_address);
 
         // fecha e remove do mapa
@@ -341,11 +354,13 @@ impl LevelDownCache {
 
 // Implementação do trait Cache para LevelDownCache
 impl Cache for LevelDownCache {
+    #[instrument(level = "info", skip(self, db_address))]
     fn load(
         &self,
         directory: &str,
         db_address: &dyn Address,
     ) -> Result<Box<dyn Datastore + Send + Sync>> {
+        let _entered = self.span.enter();
         let wrapped_cache = self
             .load_internal(directory, db_address)
             .map_err(|e| GuardianError::Other(format!("Failed to load cache: {}", e)))?;
@@ -354,7 +369,9 @@ impl Cache for LevelDownCache {
         }))
     }
 
+    #[instrument(level = "info", skip(self))]
     fn close(&mut self) -> Result<()> {
+        let _entered = self.span.enter();
         let caches = {
             let m = self.caches.lock().unwrap();
             m.values().cloned().collect::<Vec<_>>()
@@ -365,7 +382,9 @@ impl Cache for LevelDownCache {
         Ok(())
     }
 
+    #[instrument(level = "info", skip(self, db_address))]
     fn destroy(&self, directory: &str, db_address: &dyn Address) -> Result<()> {
+        let _entered = self.span.enter();
         self.destroy_internal(directory, db_address)
             .map_err(|e| GuardianError::Other(format!("Failed to destroy cache: {}", e)))?;
         Ok(())
@@ -373,7 +392,6 @@ impl Cache for LevelDownCache {
 }
 
 fn datastore_key(directory: &str, db_address: &dyn Address) -> String {
-    // path.Join(dbAddress.GetRoot().String(), dbAddress.GetPath()) depois Join(directory, dbPath)
     let db_path = PathBuf::from(db_address.get_root().to_string()).join(db_address.get_path());
     PathBuf::from(directory)
         .join(db_path)
