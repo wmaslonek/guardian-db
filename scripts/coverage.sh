@@ -1,5 +1,4 @@
 #!/bin/bash
-
 # Guardian-DB Coverage Script
 # Generate code coverage reports in multiple formats
 
