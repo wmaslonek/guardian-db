@@ -87,7 +87,7 @@ impl Identity {
     }
 
     /// Retorna o tipo da identidade (compatibilidade com IdentityProvider)
-    pub fn r#type(&self) -> &str {
+    pub fn get_type(&self) -> &str {
         "GuardianDB" // Tipo padrão
     }
 
