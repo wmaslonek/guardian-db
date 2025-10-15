@@ -7,7 +7,6 @@ use crate::pubsub::event::new_event_payload;
 use async_trait::async_trait;
 use futures::stream::StreamExt;
 use libp2p::PeerId;
-use slog::Logger;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -15,29 +14,27 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{Span, debug, error, info, instrument, warn};
 
 // Constantes do protocolo
 const PROTOCOL: &str = "ipfs-pubsub-direct-channel/v1";
 
-// Em Rust, a verificação de interface é feita no bloco `impl`.
-// Aqui implementamos a trait `DirectChannel` para a nossa struct `Channels`.
+// Implemetação da trait `DirectChannel` para a struct `Channels`.
 #[async_trait]
 impl DirectChannel for Channels {
     type Error = GuardianError;
 
-    /// equivalente a Connect em go
-    ///
     /// Inicia a conexão e o monitoramento de um peer específico. Se uma conexão
     /// com o peer já não existir, cria um novo tópico no pubsub, inscreve-se nele,
     /// e inicia uma tarefa em segundo plano (`monitor_topic`) para escutar por mensagens.
+    #[instrument(level = "debug", skip(self))]
     async fn connect(&mut self, target: PeerId) -> std::result::Result<(), Self::Error> {
         let id = self.get_channel_id(&target);
         let mut subs = self.subs.write().await;
 
         // Só executa a lógica se não estivermos já inscritos no canal com este peer.
         if let std::collections::hash_map::Entry::Vacant(e) = subs.entry(target) {
-            info!(logger = ?self.logger, peer = %target, topic = %id, "Iniciando conexão e inscrição no canal.");
+            info!(peer = %target, topic = %id, "Iniciando conexão e inscrição no canal.");
 
             // Cria um "token filho" para esta conexão específica.
             // Quando o token principal em `self.token` for cancelado (no `close`),
@@ -62,7 +59,7 @@ impl DirectChannel for Channels {
                 // remove o peer do mapa de subscrições ativas para limpeza.
                 let mut subs = self_clone.subs.write().await;
                 subs.remove(&target);
-                debug!(logger = ?&self_clone.logger, "Monitor para {} encerrado e removido.", target);
+                debug!("Monitor para {} encerrado e removido.", target);
             });
         }
 
@@ -72,17 +69,16 @@ impl DirectChannel for Channels {
         // Tenta se conectar diretamente ao peer na camada de swarm do IPFS.
         // A falha aqui é apenas um aviso, pois o pubsub pode funcionar mesmo sem uma conexão direta.
         if let Err(e) = self.ipfs_client.swarm_connect(&target).await {
-            warn!(logger = ?self.logger, peer = %target, "Não foi possível conectar diretamente ao peer (aviso): {}", e);
+            warn!(peer = %target, "Não foi possível conectar diretamente ao peer (aviso): {}", e);
         }
 
         // Aguarda até que o peer seja visível no tópico do pubsub.
         self.wait_for_peers(target, &id).await
     }
 
-    /// equivalente a Send em go
-    ///
     /// Publica uma mensagem (slice de bytes) no canal de comunicação
     /// estabelecido com o peer `p`.
+    #[instrument(level = "debug", skip(self, head))]
     async fn send(&mut self, p: PeerId, head: Vec<u8>) -> std::result::Result<(), Self::Error> {
         // Determina o ID do canal. Se já tivermos uma subscrição ativa,
         // reutiliza o ID do canal armazenado. Caso contrário, calcula-o.
@@ -103,12 +99,11 @@ impl DirectChannel for Channels {
         Ok(())
     }
 
-    /// equivalente a Close em go
-    ///
     /// Encerra todas as conexões e tarefas de monitoramento ativas,
     /// limpando todos os recursos associados ao `Channels`.
+    #[instrument(level = "debug", skip(self))]
     async fn close(&mut self) -> std::result::Result<(), Self::Error> {
-        info!(logger = ?self.logger, "Encerrando todos os canais e tarefas de monitoramento...");
+        info!("Encerrando todos os canais e tarefas de monitoramento...");
 
         // Com um único chamado, cancelamos o token principal.
         // Esta ação se propaga e cancela TODOS os tokens filhos que foram
@@ -127,8 +122,9 @@ impl DirectChannel for Channels {
 
     /// Versão de close() que funciona com referência compartilhada (&self).
     /// Permite fechar o canal quando usado dentro de Arc<>.
+    #[instrument(level = "debug", skip(self))]
     async fn close_shared(&self) -> std::result::Result<(), Self::Error> {
-        info!(logger = ?self.logger, "Encerrando todos os canais (referência compartilhada)...");
+        info!("Encerrando todos os canais (referência compartilhada)...");
 
         // Cancela o token principal para parar todas as tarefas de monitoramento
         self.token.cancel();
@@ -154,22 +150,27 @@ pub struct Channels {
     self_id: PeerId,
     emitter: Arc<dyn DirectChannelEmitter<Error = GuardianError> + Send + Sync>,
     ipfs_client: Arc<IpfsClient>,
-    logger: Arc<Logger>,
+    span: Span,
     // O token principal que controla o tempo de vida de toda a instância de Channels
     token: CancellationToken,
 }
 
-// equivalente a Connect em go
 impl Channels {
+    /// Retorna uma referência ao span de tracing para instrumentação
+    pub fn span(&self) -> &Span {
+        &self.span
+    }
+
+    #[instrument(level = "debug", skip(self))]
     pub async fn connect(&self, target: PeerId) -> Result<()> {
+        let _entered = self.span.enter();
         let id = self.get_channel_id(&target);
         let mut subs = self.subs.write().await;
 
         if let std::collections::hash_map::Entry::Vacant(e) = subs.entry(target) {
-            debug!(logger = ?self.logger, topic = %id, "inscrevendo-se no tópico");
+            debug!(topic = %id, "inscrevendo-se no tópico");
 
-            // Substitui c.ipfs.PubSub().Subscribe(ctx, id, options.PubSub.Discover(true))
-            // A chamada é realizada via nossa API IPFS 100% Rust.
+            // A chamada é realizada via API IPFS.
             // A sua gestão será feita dentro de `monitor_topic`.
             let stream = self.ipfs_client.pubsub_subscribe(&id).await?;
 
@@ -177,7 +178,7 @@ impl Channels {
 
             e.insert(cancel_token.clone());
 
-            // Spawna a task para monitorar o tópico, equivalente à goroutine
+            // Spawna a task para monitorar o tópico
             let self_clone = self.clone();
             tokio::spawn(async move {
                 self_clone.monitor_topic(stream, target, cancel_token).await;
@@ -190,22 +191,21 @@ impl Channels {
         // Libera o lock de escrita antes das chamadas de rede
         drop(subs);
 
-        // Substitui c.ipfs.Swarm().Connect(ctx, peer.AddrInfo{ID: target})
         if let Err(e) = self.ipfs_client.swarm_connect(&target).await {
-            warn!(logger = ?self.logger, peer = %target, "não foi possível conectar ao peer remoto: {}", e);
+            warn!(peer = %target, "não foi possível conectar ao peer remoto: {}", e);
         }
 
         self.wait_for_peers(target, &id).await
     }
 
-    // equivalente a Send em go
+    #[instrument(level = "debug", skip(self, head))]
     pub async fn send(&self, p: PeerId, head: &[u8]) -> Result<()> {
+        let _entered = self.span.enter();
         let id = {
             let _subs = self.subs.read().await;
             self.get_channel_id(&p)
         };
 
-        // Substitui c.ipfs.PubSub().Publish(ctx, id, head)
         self.ipfs_client
             .pubsub_publish(&id, head)
             .await
@@ -219,7 +219,7 @@ impl Channels {
         Ok(())
     }
 
-    // equivalente a waitForPeers em go
+    #[instrument(level = "debug", skip(self))]
     async fn wait_for_peers(&self, other_peer: PeerId, channel_id: &str) -> Result<()> {
         let mut interval = tokio::time::interval(Duration::from_secs(1));
         // Adiciona um timeout para não ficar em loop infinito
@@ -229,20 +229,19 @@ impl Channels {
         loop {
             tokio::select! {
                 _ = &mut timeout => {
-                     return                     Err(GuardianError::Network(format!("timeout esperando pelo peer {} no canal {}", other_peer, channel_id)));
+                     return Err(GuardianError::Network(format!("timeout esperando pelo peer {} no canal {}", other_peer, channel_id)));
                 }
                 _ = interval.tick() => {
-                    // Substitui c.ipfs.PubSub().Peers(ctx, options.PubSub.Topic(channelID))
                     match self.ipfs_client.pubsub_peers(channel_id).await {
                         Ok(peers) => {
                             if peers.iter().any(|p| p == &other_peer) {
-                                debug!(logger = ?self.logger, "peer {} encontrado no pubsub", other_peer);
+                                debug!("peer {} encontrado no pubsub", other_peer);
                                 return Ok(());
                             }
-                            debug!(logger = ?self.logger, "Peer não encontrado, tentando novamente...");
+                            debug!("Peer não encontrado, tentando novamente...");
                         }
                         Err(e) => {
-                            error!(logger = ?self.logger, "falha ao obter peers do pubsub: {}", e);
+                            error!("falha ao obter peers do pubsub: {}", e);
                             // Retorna o erro em caso de falha na chamada da nossa API IPFS
                             return Err(e);
                         }
@@ -255,14 +254,14 @@ impl Channels {
     // Função auxiliar para geração de identificadores únicos de canal.
     // Implementa lógica pura e determinística para criar IDs de canais one-on-one.
     // Garante que o mesmo ID seja gerado independente da ordem dos peers.
-    // equivalente a getChannelID em go
+    #[instrument(level = "debug", skip(self))]
     fn get_channel_id(&self, p: &PeerId) -> String {
         let mut channel_id_peers = [self.self_id.to_string(), p.to_string()];
         channel_id_peers.sort();
         format!("/{}/{}", PROTOCOL, channel_id_peers.join("/"))
     }
 
-    // equivalente a monitorTopic em go
+    #[instrument(level = "debug", skip(self, stream, token))]
     async fn monitor_topic(
         &self,
         mut stream: PubsubStream,
@@ -275,7 +274,7 @@ impl Channels {
                 // `biased;` pode ser usado para sempre checar o cancelamento primeiro.
                 biased;
                 _ = token.cancelled() => {
-                    debug!(logger = ?self.logger, remote = %p, "fechando monitor do tópico por cancelamento");
+                    debug!(remote = %p, "fechando monitor do tópico por cancelamento");
                     break;
                 },
 
@@ -291,16 +290,16 @@ impl Channels {
                             // Emite o payload do evento - mantém dados como Vec<u8>
                             let event = new_event_payload(msg.data, p);
                             if let Err(e) = self.emitter.emit(event).await {
-                                warn!(logger = ?self.logger, "não foi possível emitir payload do evento: {}", e);
+                                warn!("não foi possível emitir payload do evento: {}", e);
                             }
                         },
                         Some(Err(e)) => {
-                            error!(logger = ?self.logger, "erro no stream do pubsub: {}", e);
+                            error!("erro no stream do pubsub: {}", e);
                             break;
                         },
                         // Stream finalizado
                         None => {
-                             debug!(logger = ?self.logger, remote = %p, "stream do pubsub finalizado");
+                             debug!(remote = %p, "stream do pubsub finalizado");
                              break;
                         }
                     }
@@ -310,9 +309,8 @@ impl Channels {
     }
 }
 
-// equivalente a NewChannelFactory em go
+#[instrument(level = "debug", skip(ipfs_client))]
 pub async fn new_channel_factory(ipfs_client: Arc<IpfsClient>) -> Result<DirectChannelFactory> {
-    // Substitui ipfs.Key().Self(ctx)
     let self_id = ipfs_client
         .id()
         .await
@@ -322,26 +320,20 @@ pub async fn new_channel_factory(ipfs_client: Arc<IpfsClient>) -> Result<DirectC
     info!("ID do nó local: {}", self_id);
 
     let factory = move |emitter: Arc<dyn DirectChannelEmitter<Error = GuardianError>>,
-                        opts: Option<DirectChannelOptions>| {
+                        _opts: Option<DirectChannelOptions>| {
         let ipfs_client = ipfs_client.clone();
         let self_id = self_id;
 
         Box::pin(async move {
-            let opts = opts.unwrap_or_default();
-
-            // Criar um logger simples - usando logger básico em vez de slog complexo
-            let logger = opts.logger.unwrap_or_else(|| {
-                use slog::o;
-                let drain = slog::Discard;
-                slog::Logger::root(drain, o!())
-            });
+            // Criar um span para o canal direto
+            let span = tracing::info_span!("direct_channel", self_id = %self_id);
 
             let ch = Arc::new(Channels {
                 emitter,
                 subs: Arc::new(RwLock::new(HashMap::new())),
                 self_id,
                 ipfs_client,
-                logger: Arc::new(logger),
+                span,
                 token: CancellationToken::new(),
             });
 
