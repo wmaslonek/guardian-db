@@ -8,11 +8,11 @@ use std::sync::Arc;
 pub struct CreateIdentityOptions {
     pub identity_keys_path: String,
     pub id_type: String,
-    pub keystore: Arc<dyn Keystore>, // equivalente ao keystore.Interface
+    pub keystore: Arc<dyn Keystore>,
     pub id: String,
 }
 
-/// Trait para o Keystore (equivalente ao go-ipfs-log/keystore.Interface)
+/// Trait para o Keystore
 #[async_trait]
 pub trait Keystore: Send + Sync {
     async fn put(&self, key: &str, value: &[u8]) -> Result<()>;
@@ -21,7 +21,7 @@ pub trait Keystore: Send + Sync {
     async fn delete(&self, key: &str) -> Result<()>;
 }
 
-/// Trait principal do IdentityProvider (equivalente ao Go Interface)
+/// Trait principal do IdentityProvider
 #[async_trait]
 pub trait IdentityProvider: Send + Sync {
     /// Retorna o ID da identidade.
@@ -109,7 +109,7 @@ impl IdentityProvider for GuardianDBIdentityProvider {
         })?;
 
         // Reconstrói os dados que foram assinados
-        let signed_data = format!("{}{}", identity.id(), identity.r#type());
+        let signed_data = format!("{}{}", identity.id(), identity.get_type());
 
         // Verifica a assinatura
         let is_valid = public_key.verify(signed_data.as_bytes(), signature);
