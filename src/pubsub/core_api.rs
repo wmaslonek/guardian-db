@@ -6,7 +6,6 @@ use crate::pubsub::event;
 use futures::Stream;
 use libp2p::PeerId;
 use opentelemetry::trace::noop::NoopTracer;
-use slog::{Logger, o};
 use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -14,12 +13,12 @@ use std::time::Duration;
 use tokio::sync::{Mutex, RwLock, mpsc};
 use tokio_stream::{StreamExt, wrappers::ReceiverStream};
 use tokio_util::sync::CancellationToken;
+use tracing::{Span, error, instrument, warn};
 
-// equivalente a coreAPIPubSub em go
 /// A struct `CoreApiPubSub` gerencia a lógica de pubsub para o nó do GuardianDB.
 pub struct CoreApiPubSub {
     pub api: IpfsClient,
-    pub logger: Logger,
+    pub span: Span,
     pub id: PeerId,
     pub poll_interval: Duration,
     pub tracer: Arc<TracerWrapper>,
@@ -32,6 +31,7 @@ pub struct CoreApiPubSub {
 impl PubSubInterface for CoreApiPubSub {
     type Error = GuardianError;
 
+    #[instrument(level = "debug", skip(self))]
     async fn topic_subscribe(
         &mut self,
         topic: &str,
@@ -70,8 +70,8 @@ pub struct PsTopic {
 }
 
 impl PsTopic {
-    // equivalente a Publish em go
     // Adiciona validação e melhor tratamento de erros
+    #[instrument(level = "debug", skip(self, message))]
     pub async fn publish(&self, message: &[u8]) -> crate::error::Result<()> {
         // Verifica se o tópico não foi cancelado
         if self.cancellation_token.is_cancelled() {
@@ -91,7 +91,7 @@ impl PsTopic {
         Ok(())
     }
 
-    // equivalente a Peers em go
+    #[instrument(level = "debug", skip(self))]
     pub async fn peers(&self) -> crate::error::Result<Vec<PeerId>> {
         // O bloqueio de leitura é assíncrono com tokio::sync::RwLock
         let members_guard = self.members.read().await;
@@ -101,10 +101,10 @@ impl PsTopic {
         Ok(members_guard.clone())
     }
 
-    // equivalente a peersDiff em go
     // Otimiza operações de lock e melhor gestão de conjuntos
+    #[instrument(level = "debug", skip(self))]
     pub async fn peers_diff(&self) -> crate::error::Result<(Vec<PeerId>, Vec<PeerId>)> {
-        // Usa a nova API do kubo_core_api para obter peers atuais
+        // Usa a nova API do ipfs_core_api para obter peers atuais
         let all_current_peers_vec = self.ps.api.pubsub_peers(&self.topic).await?;
         let current_peers_set: HashSet<PeerId> = all_current_peers_vec.iter().cloned().collect();
 
@@ -132,11 +132,10 @@ impl PsTopic {
         Ok((joining, leaving))
     }
 
-    // equivalente a WatchPeers em go
-    //
     // Retorna um receptor de canal (`Receiver`) que emitirá eventos de peers
     // entrando ou saindo do tópico.
     // Adiciona cancelamento adequado e melhor gestão de recursos
+    #[instrument(level = "debug", skip(self))]
     pub async fn watch_peers_channel(
         self: &Arc<Self>,
     ) -> crate::error::Result<mpsc::Receiver<Arc<dyn std::any::Any + Send + Sync>>> {
@@ -162,7 +161,7 @@ impl PsTopic {
                         // Loga o erro e encerra a task.
                         // Quando `tx` sai de escopo (é dropado), o lado do receptor
                         // saberá que o canal foi fechado.
-                        log::error!("Erro ao verificar a diferença de peers: {:?}", e);
+                        error!("Erro ao verificar a diferença de peers: {:?}", e);
                         return;
                     }
                 };
@@ -199,15 +198,12 @@ impl PsTopic {
         Ok(rx)
     }
 
-    // equivalente a WatchMessages em go
-    // Adiciona cancelamento adequado e melhor tratamento de erros
+    #[instrument(level = "debug", skip(self))]
     pub async fn watch_messages(&self) -> crate::error::Result<mpsc::Receiver<EventPubSubMessage>> {
-        // A chamada para a API do Kubo para se inscrever no tópico.
-        // Espera-se que retorne um Stream de mensagens.
         let mut subscription = self.ps.api.pubsub_subscribe(&self.topic).await?;
 
         let (tx, rx) = mpsc::channel(128);
-        let self_peer_id = self.ps.id; // Usa o ID diretamente já que PeerId implementa Copy
+        let self_peer_id = self.ps.id;
         let cancellation_token = self.cancellation_token.clone();
         let topic_name = self.topic.clone();
 
@@ -236,7 +232,7 @@ impl PsTopic {
                             }
                             Some(Err(e)) => {
                                 // Erro no stream, loga e continua tentando
-                                log::warn!("Error in pubsub stream for topic {}: {:?}", topic_name, e);
+                                warn!("Error in pubsub stream for topic {}: {:?}", topic_name, e);
                                 continue;
                             }
                             None => {
@@ -256,24 +252,27 @@ impl PsTopic {
         Ok(rx)
     }
 
-    // equivalente a Topic em go
     // Retorna uma referência ao nome do tópico, o que é mais eficiente
     // do que clonar a String.
+    #[instrument(level = "debug", skip(self))]
     pub fn topic(&self) -> &str {
         &self.topic
     }
 
     /// Cancela todas as operações ativas do tópico
+    #[instrument(level = "debug", skip(self))]
     pub fn cancel(&self) {
         self.cancellation_token.cancel();
     }
 
     /// Verifica se o tópico foi cancelado
+    #[instrument(level = "debug", skip(self))]
     pub fn is_cancelled(&self) -> bool {
         self.cancellation_token.is_cancelled()
     }
 
     /// Limpa a lista de membros do tópico
+    #[instrument(level = "debug", skip(self))]
     pub async fn clear_members(&self) {
         let mut members_guard = self.members.write().await;
         members_guard.clear();
@@ -284,14 +283,17 @@ impl PsTopic {
 impl PubSubTopic for PsTopic {
     type Error = GuardianError;
 
+    #[instrument(level = "debug", skip(self, message))]
     async fn publish(&self, message: Vec<u8>) -> crate::error::Result<()> {
         PsTopic::publish(self, &message).await
     }
 
+    #[instrument(level = "debug", skip(self))]
     async fn peers(&self) -> crate::error::Result<Vec<PeerId>> {
         self.peers().await
     }
 
+    #[instrument(level = "debug", skip(self))]
     async fn watch_peers(
         &self,
     ) -> crate::error::Result<Pin<Box<dyn Stream<Item = events::Event> + Send>>> {
@@ -320,7 +322,7 @@ impl PubSubTopic for PsTopic {
                     Ok((j, l)) => (j, l),
                     Err(e) => {
                         // Loga o erro e encerra a task.
-                        log::error!("Erro ao verificar a diferença de peers: {:?}", e);
+                        error!("Erro ao verificar a diferença de peers: {:?}", e);
                         return;
                     }
                 };
@@ -358,6 +360,7 @@ impl PubSubTopic for PsTopic {
         Ok(Box::pin(stream))
     }
 
+    #[instrument(level = "debug", skip(self))]
     async fn watch_messages(
         &self,
     ) -> crate::error::Result<Pin<Box<dyn Stream<Item = EventPubSubMessage> + Send>>> {
@@ -366,6 +369,7 @@ impl PubSubTopic for PsTopic {
         Ok(Box::pin(stream))
     }
 
+    #[instrument(level = "debug", skip(self))]
     fn topic(&self) -> &str {
         &self.topic
     }
@@ -373,6 +377,7 @@ impl PubSubTopic for PsTopic {
 
 impl CoreApiPubSub {
     /// Método auxiliar para criar tópicos sem problemas de ownership
+    #[instrument(level = "debug", skip(self))]
     async fn create_topic(&self, topic: &str) -> Arc<PsTopic> {
         Arc::new(PsTopic {
             topic: topic.to_string(),
@@ -385,9 +390,9 @@ impl CoreApiPubSub {
         })
     }
 
-    // equivalente a TopicSubscribe em go
     /// Assina um tópico de pubsub, retornando uma instância de `PubSubTopic`.
     /// Se o tópico já existe, retorna a instância existente.
+    #[instrument(level = "debug", skip(self))]
     pub async fn topic_subscribe_internal(
         self: &Arc<Self>,
         topic: &str,
@@ -413,18 +418,16 @@ impl CoreApiPubSub {
         Ok(new_topic)
     }
 
-    // equivalente a NewPubSub em go
     /// Cria uma nova instância de `CoreApiPubSub`.
-    /// Os parâmetros `logger` e `tracer` podem ser opcionais.
+    /// Os parâmetros `span` e `tracer` podem ser opcionais.
+    #[instrument(level = "debug", skip(api, span, tracer))]
     pub fn new(
         api: IpfsClient,
         id: PeerId,
         poll_interval: Duration,
-        logger: Option<Logger>,
+        span: Option<Span>,
         tracer: Option<Arc<TracerWrapper>>,
     ) -> Arc<Self> {
-        let default_logger = slog::Logger::root(slog::Discard, o!());
-
         // Criar tracer padrão caso não seja fornecido
         let default_tracer = Arc::new(TracerWrapper::Noop(NoopTracer::new()));
 
@@ -433,7 +436,7 @@ impl CoreApiPubSub {
             api,
             id,
             poll_interval,
-            logger: logger.unwrap_or(default_logger),
+            span: span.unwrap_or_else(tracing::Span::current),
             tracer: tracer.unwrap_or(default_tracer),
             cancellation_token: CancellationToken::new(),
         })
@@ -450,12 +453,14 @@ impl CoreApiPubSub {
     }
 
     /// Remove um tópico específico do cache
+    #[instrument(level = "debug", skip(self))]
     pub async fn remove_topic(&self, topic_name: &str) -> bool {
         let mut topics_guard = self.topics.lock().await;
         topics_guard.remove(topic_name).is_some()
     }
 
     /// Remove todos os tópicos cancelados do cache
+    #[instrument(level = "debug", skip(self))]
     pub async fn cleanup_cancelled_topics(&self) -> usize {
         let mut topics_guard = self.topics.lock().await;
         let mut cancelled_topics = Vec::new();
@@ -476,6 +481,7 @@ impl CoreApiPubSub {
     }
 
     /// Retorna estatísticas dos tópicos ativos
+    #[instrument(level = "debug", skip(self))]
     pub async fn topic_stats(&self) -> (usize, usize) {
         let topics_guard = self.topics.lock().await;
         let total_topics = topics_guard.len();
