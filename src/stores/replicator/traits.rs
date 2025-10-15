@@ -11,19 +11,12 @@
 //! 1. **`StoreInterface`**: Define como o replicador acessa dados da store
 //! 2. **`Replicator`**: Interface pública para operações de replicação
 //! 3. **`ReplicationInfo`**: Rastreamento do progresso de replicação
-//!
-//! ## Equivalências Go
-//!
-//! Este módulo é equivalente aos interfaces Go:
-//! - `storeInterface` → `StoreInterface`
-//! - `Replicator` → `Replicator`
-//! - `ReplicationInfo` → `ReplicationInfo`
 
 use crate::access_controller::traits::AccessController;
+use crate::ipfs_core_api::client::IpfsClient;
 use crate::ipfs_log::{entry::Entry, identity::Identity, log::Log};
-use crate::pubsub::event::EventBus; // Usando nosso EventBus
+use crate::pubsub::event::EventBus;
 use cid::Cid;
-use ipfs_api_backend_hyper::IpfsClient;
 use std::future::Future;
 use std::sync::Arc;
 
@@ -46,7 +39,6 @@ pub type ReplicationResult<T> = Result<T, Box<dyn std::error::Error + Send + Syn
 /// Hash de entrada usado para identificação única
 pub type EntryHash = String;
 
-// equivalente a storeInterface em go
 /// Um trait usado para evitar ciclos de importação, definindo a interface
 /// que o Replicator espera que uma `Store` implemente.
 ///
@@ -75,7 +67,6 @@ pub trait StoreInterface: Send + Sync {
     fn sort_fn(&self) -> SortFn;
 }
 
-// equivalente a Replicator em go
 /// O trait `Replicator` define a API pública para replicar informações
 /// de uma store entre pares.
 pub trait Replicator {
@@ -96,7 +87,6 @@ pub trait Replicator {
     fn should_exclude(&self, hash: &Cid) -> impl Future<Output = bool> + Send;
 }
 
-// equivalente a ReplicationInfo em go
 /// Mantém informações sobre o estado atual da replicação.
 ///
 /// Este trait fornece uma interface thread-safe para rastrear
