@@ -1,6 +1,6 @@
 use crate::error::GuardianError;
 use crate::iface::{MessageExchangeHeads, MessageMarshaler};
-use serde_json; // Equivalente à biblioteca `encoding/json` de Go.
+use serde_json;
 
 /// Wrapper que adapta serde_json::Error para GuardianError
 pub struct GuardianJSONMarshaler {
@@ -37,8 +37,6 @@ impl MessageMarshaler for GuardianJSONMarshaler {
     }
 }
 
-/// equivalente a struct `JSONMarshaler` em go
-///
 /// Uma struct vazia que implementa o trait `MessageMarshaler`
 /// para codificar e decodificar mensagens no formato JSON.
 #[derive(Default, Debug, Clone, Copy)]
@@ -55,16 +53,12 @@ impl MessageMarshaler for JSONMarshaler {
     // O tipo de erro retornado pelas funções é o erro padrão de `serde_json`.
     type Error = serde_json::Error;
 
-    /// equivalente a função `Marshal` em go
-    ///
     /// Serializa uma struct `MessageExchangeHeads` para um vetor de bytes (`Vec<u8>`)
     /// usando `serde_json::to_vec`.
     fn marshal(&self, m: &MessageExchangeHeads) -> std::result::Result<Vec<u8>, Self::Error> {
         serde_json::to_vec(m)
     }
 
-    /// equivalente a função `Unmarshal` em go
-    ///
     /// Desserializa um slice de bytes (`&[u8]`) para uma struct `MessageExchangeHeads`
     /// usando `serde_json::from_slice`.
     fn unmarshal(&self, data: &[u8]) -> std::result::Result<MessageExchangeHeads, Self::Error> {
