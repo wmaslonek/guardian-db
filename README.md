@@ -4,7 +4,7 @@
 [![Discord](https://img.shields.io/discord/1410233136846995519?label=chat&logo=discord&logoColor=white&style=flat-square&color=7289DA)](https://discord.gg/https://discord.gg/Ezzk8PnGR5)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Rust](https://img.shields.io/badge/rust-1.89.0+-orange.svg)
-![Version](https://img.shields.io/badge/version-0.9.13-brightgreen.svg)
+![Version](https://img.shields.io/badge/version-0.10.15-brightgreen.svg)
 ![Build Status](https://img.shields.io/badge/build-passing-green.svg)
 ![Tests](https://img.shields.io/badge/tests-88%20passed-green.svg)
 ![Examples](https://img.shields.io/badge/examples-26%20demos-blue.svg)
