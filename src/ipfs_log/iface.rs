@@ -1,9 +1,9 @@
 use crate::error::Result;
+use crate::ipfs_core_api::client::IpfsClient;
 use crate::ipfs_log::access_controller::LogEntry;
 use crate::ipfs_log::identity::Identity;
 use crate::ipfs_log::identity_provider::IdentityProvider;
 use cid::Cid;
-use ipfs_api_backend_hyper::IpfsClient;
 use libipld::cbor::DagCborCodec;
 use libipld::codec::Codec;
 use libipld::multihash::{Code, Multihash, MultihashDigest};
@@ -18,7 +18,6 @@ pub trait IPFSLogEntry: LogEntry {
     fn copy(&self) -> Self
     where
         Self: Sized;
-
     fn get_log_id(&self) -> String;
     fn get_next(&self) -> Vec<Cid>;
     fn get_refs(&self) -> Vec<Cid>;
@@ -28,7 +27,6 @@ pub trait IPFSLogEntry: LogEntry {
     fn get_hash(&self) -> Cid;
     fn get_clock(&self) -> Box<dyn IPFSLogLamportClock>;
     fn get_additional_data(&self) -> HashMap<String, String>;
-
     fn set_payload(&mut self, payload: Vec<u8>);
     fn set_log_id(&mut self, id: String);
     fn set_next(&mut self, next: Vec<Cid>);
@@ -40,7 +38,6 @@ pub trait IPFSLogEntry: LogEntry {
     fn set_hash(&mut self, hash: Cid);
     fn set_clock(&mut self, clock: Box<dyn IPFSLogLamportClock>);
     fn set_additional_data_value(&mut self, key: String, value: String);
-
     fn is_valid(&self) -> bool;
     fn verify(
         &self,
@@ -83,23 +80,16 @@ pub trait IO {
         opts: Option<&WriteOpts>,
     ) -> std::result::Result<Cid, String>;
 
-    fn read(
-        &self,
-        ipfs: &IpfsClient,
-        cid: Cid,
-    ) -> std::result::Result<Box<dyn format::Node>, String>;
+    fn read(&self, ipfs: &IpfsClient, cid: Cid) -> std::result::Result<Box<dyn Node>, String>;
 
     fn decode_raw_entry(
         &self,
-        node: Box<dyn format::Node>,
+        node: Box<dyn Node>,
         hash: Cid,
         p: &dyn IdentityProvider,
     ) -> std::result::Result<Box<dyn IPFSLogEntry>, String>;
 
-    fn decode_raw_json_log(
-        &self,
-        node: Box<dyn format::Node>,
-    ) -> std::result::Result<JSONLog, String>;
+    fn decode_raw_json_log(&self, node: Box<dyn Node>) -> std::result::Result<JSONLog, String>;
 }
 
 /// Representa um log em formato JSON.
@@ -117,14 +107,7 @@ pub struct WriteOpts {
     pub encrypted_links_nonce: Option<String>,
 }
 
-/// Placeholder para format::Node (equivalente a format.Node no Go)
-pub mod format {
-    pub trait Node: Send + Sync {}
-}
-
-///============
 /// Trait que abstrai um nó IPLD genérico.
-/// Substituto do `format.Node` do Go.
 pub trait Node: Send + Sync {
     /// Retorna o CID do nó.
     fn cid(&self) -> IpldCid;
