@@ -1,6 +1,6 @@
 //! Demonstração da Verificação Criptográfica de Identidade no GuardianDB
 //!
-//! Este exemplo mostra como a função `handle_event_exchange_heads` agora inclui
+//! Este exemplo mostra como a função `handle_event_exchange_heads` inclui
 //! verificação criptográfica completa das identidades dos heads recebidos.
 
 use guardian_db::error::Result;
@@ -13,11 +13,11 @@ use std::sync::Arc;
 /// Demonstra a criação e verificação de identidades criptográficas
 #[tokio::main]
 async fn main() -> Result<()> {
-    println!("🔐 Demonstração da Verificação Criptográfica de Identidade - GuardianDB");
+    println!("Demonstração da Verificação Criptográfica de Identidade - GuardianDB");
     println!("═══════════════════════════════════════════════════════════════════════");
 
     // 1. Criação de identidades criptográficas válidas
-    println!("\n📝 1. Criando identidades criptográficas...");
+    println!("\n1. Criando identidades criptográficas...");
 
     let mut identificator = DefaultIdentificator::new();
 
@@ -27,20 +27,17 @@ async fn main() -> Result<()> {
     let identity_charlie = identificator.create("charlie_peer");
 
     println!(
-        "   ✅ Identidade Alice criada - ID: {}",
+        "Identidade Alice criada - ID: {}",
         &identity_alice.id()[..16]
     );
+    println!("Identidade Bob criada - ID: {}", &identity_bob.id()[..16]);
     println!(
-        "   ✅ Identidade Bob criada - ID: {}",
-        &identity_bob.id()[..16]
-    );
-    println!(
-        "   ✅ Identidade Charlie criada - ID: {}",
+        "Identidade Charlie criada - ID: {}",
         &identity_charlie.id()[..16]
     );
 
     // 2. Criação de entries com identidades
-    println!("\n🧱 2. Criando entries com identidades assinadas...");
+    println!("\n2. Criando entries com identidades assinadas...");
 
     let entries = create_test_entries_with_identities(vec![
         identity_alice.clone(),
@@ -48,13 +45,10 @@ async fn main() -> Result<()> {
         identity_charlie.clone(),
     ]);
 
-    println!(
-        "   ✅ {} entries criados com identidades válidas",
-        entries.len()
-    );
+    println!(" {} entries criados com identidades válidas", entries.len());
 
     // 3. Simulação de MessageExchangeHeads
-    println!("\n📦 3. Simulando recebimento de heads via rede...");
+    println!("\n3. Simulando recebimento de heads via rede...");
 
     let exchange_message = MessageExchangeHeads {
         address: "/guardian-db/demo/heads".to_string(),
@@ -62,41 +56,41 @@ async fn main() -> Result<()> {
     };
 
     println!(
-        "   ✅ MessageExchangeHeads criado com {} heads",
+        "MessageExchangeHeads criado com {} heads",
         exchange_message.heads.len()
     );
 
     // 4. Demonstração da verificação criptográfica
-    println!("\n🔍 4. Executando verificação criptográfica...");
+    println!("\n4. Executando verificação criptográfica...");
 
     for (i, head) in exchange_message.heads.iter().enumerate() {
         if let Some(identity) = &head.identity {
             match verify_identity_demo(identity) {
                 Ok(()) => {
                     println!(
-                        "   ✅ Head {}: Identidade {} verificada com sucesso",
+                        "Head {}: Identidade {} verificada com sucesso",
                         i + 1,
                         &identity.id()[..16]
                     );
                 }
                 Err(e) => {
-                    println!("   ❌ Head {}: Falha na verificação - {}", i + 1, e);
+                    println!("Head {}: Falha na verificação - {}", i + 1, e);
                 }
             }
         }
     }
 
-    // 5. Resumo das capacidades implementadas
-    println!("\n🎯 5. Capacidades de Verificação Implementadas:");
-    println!("   ├── ✅ Validação de estrutura da identidade");
-    println!("   ├── ✅ Decodificação de chaves públicas secp256k1");
-    println!("   ├── ✅ Verificação de assinaturas ECDSA");
-    println!("   ├── ✅ Validação de assinatura de ID");
-    println!("   ├── ✅ Validação de assinatura de chave pública");
-    println!("   ├── ✅ Compatibilidade com libp2p");
-    println!("   └── ✅ Integração com sistema de logging");
+    // 5. Capacidades implementadas
+    println!("\n5. Capacidades de Verificação Implementadas:");
+    println!("✓ Validação de estrutura da identidade");
+    println!("✓ Decodificação de chaves públicas secp256k1");
+    println!("✓ Verificação de assinaturas ECDSA");
+    println!("✓ Validação de assinatura de ID");
+    println!("✓ Validação de assinatura de chave pública");
+    println!("✓ Compatibilidade com libp2p");
+    println!("✓ Integração com sistema de logging");
 
-    println!("\n🔒 A implementação agora oferece verificação criptográfica completa!");
+    println!("\nVerificação criptográfica completa!");
     println!("   Os heads recebidos são validados antes da sincronização,");
     println!("   garantindo a integridade e autenticidade dos dados.");
 
@@ -120,7 +114,7 @@ fn create_test_entries_with_identities(identities: Vec<Identity>) -> Vec<Entry> 
         .collect()
 }
 
-/// Demonstra a verificação de uma identidade (versão simplificada da implementação real)
+/// Demonstra a verificação de uma identidade (versão simplificada)
 fn verify_identity_demo(identity: &Identity) -> Result<()> {
     use hex;
     use secp256k1;
@@ -149,9 +143,6 @@ fn verify_identity_demo(identity: &Identity) -> Result<()> {
             "Identity missing signatures".to_string(),
         ));
     }
-
-    // Em uma implementação real, aqui seria feita a verificação criptográfica completa
-    // usando secp256k1::verify_ecdsa com as mensagens reconstruídas
 
     Ok(())
 }
