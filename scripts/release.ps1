@@ -1,5 +1,4 @@
 # Guardian-DB Release Script for Windows
-# Usage: powershell -ExecutionPolicy Bypass -File .\scripts\release.ps1 -Version "0.x.x"
 # Example: powershell -ExecutionPolicy Bypass -File .\scripts\release.ps1 -Version "0.x.x"
 
 param(
