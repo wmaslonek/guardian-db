@@ -4,11 +4,11 @@ use crate::address::Address;
 use crate::error::{GuardianError, Result};
 use crate::iface::{CreateDBOptions, GuardianDBKVStoreProvider, KeyValueStore};
 use crate::ipfs_log::{access_controller, identity_provider::IdentityProvider};
-use log::warn;
-use slog::Logger;
+use crate::pubsub::event::{Emitter, EventBus};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use tokio::sync::{RwLock, broadcast};
+use tokio::sync::RwLock;
+use tracing::{Span, debug, instrument, warn};
 
 // Type alias para simplificar tipos complexos
 type KVStoreType =
@@ -38,12 +38,31 @@ impl Address for StringAddress {
     }
 }
 
-/// equivalente a EventUpdated em go
 #[derive(Debug, Clone)]
-pub struct EventUpdated;
+pub struct EventUpdated {
+    pub controller_type: String,
+    pub address: String,
+    pub action: String,
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+}
+
+impl EventUpdated {
+    pub fn new(controller_type: String, address: String, action: String) -> Self {
+        Self {
+            controller_type,
+            address,
+            action,
+            timestamp: chrono::Utc::now(),
+        }
+    }
+}
+
 pub struct GuardianDBAccessController {
-    /// O emissor de eventos, substituindo o eventbus do Go.
-    event_sender: broadcast::Sender<EventUpdated>,
+    /// EventBus para emitir eventos de access controller
+    event_bus: EventBus,
+
+    /// Emitter type-safe para eventos de atualização (com mutabilidade interior)
+    event_emitter: Arc<tokio::sync::Mutex<Option<Emitter<EventUpdated>>>>,
 
     /// Uma referência compartilhada à instância principal do GuardianDB.
     guardian_db: Arc<dyn GuardianDBKVStoreProvider<Error = GuardianError>>,
@@ -55,28 +74,20 @@ pub struct GuardianDBAccessController {
     /// Opções de manifesto.
     options: Box<dyn ManifestParams>,
 
-    /// Logger para registrar informações e avisos.
-    logger: RwLock<Arc<Logger>>,
+    /// Span para contexto de tracing estruturado.
+    span: Span,
 }
 
 impl GuardianDBAccessController {
-    /// equivalente a SetLogger em go
-    pub async fn set_logger(&self, logger: Arc<Logger>) {
-        let mut guard = self.logger.write().await;
-        *guard = logger;
+    /// Retorna uma referência ao span para contexto de tracing
+    pub fn span(&self) -> &Span {
+        &self.span
     }
 
-    /// equivalente a Logger em go
-    pub async fn logger(&self) -> Arc<Logger> {
-        self.logger.read().await.clone()
-    }
-
-    /// equivalente a Type em go
-    pub fn r#type(&self) -> &'static str {
+    pub fn get_type(&self) -> &'static str {
         "GuardianDB"
     }
 
-    /// equivalente a Address em go
     pub async fn address(&self) -> Option<Box<dyn Address>> {
         let store_guard = self.kv_store.read().await;
         // Retorna o endereço do kv_store, se ele existir.
@@ -90,7 +101,6 @@ impl GuardianDBAccessController {
         }
     }
 
-    /// equivalente a GetAuthorizedByRole em go
     pub async fn get_authorized_by_role(&self, role: &str) -> Result<Vec<String>> {
         let authorizations = self.get_authorizations().await?;
 
@@ -98,7 +108,6 @@ impl GuardianDBAccessController {
         Ok(authorizations.get(role).cloned().unwrap_or_default())
     }
 
-    /// equivalente a getAuthorizations em go
     async fn get_authorizations(&self) -> Result<HashMap<String, Vec<String>>> {
         let mut authorizations_set: HashMap<String, HashSet<String>> = HashMap::new();
 
@@ -139,7 +148,7 @@ impl GuardianDBAccessController {
         Ok(authorizations_list)
     }
 
-    /// equivalente a CanAppend em go
+    #[instrument(skip(self, entry, identity_provider, _additional_context))]
     pub async fn can_append(
         &self,
         entry: &dyn access_controller::LogEntry,
@@ -167,79 +176,84 @@ impl GuardianDBAccessController {
         Err(GuardianError::Store("Não autorizado".to_string()))
     }
 
-    /// equivalente a Grant em go
     #[allow(dead_code)]
+    #[instrument(skip(self), fields(capability = %capability, key_id = %key_id))]
     pub async fn grant(&self, capability: &str, key_id: &str) -> Result<()> {
-        let store_guard = self.kv_store.read().await;
-        let store_arc = store_guard
-            .as_ref()
-            .ok_or_else(|| GuardianError::Store("kv_store não inicializado".to_string()))?;
+        // Primeiro, executa as operações que precisam do store
+        {
+            let store_guard = self.kv_store.read().await;
+            let store_arc = store_guard
+                .as_ref()
+                .ok_or_else(|| GuardianError::Store("kv_store não inicializado".to_string()))?;
 
-        // Usa um HashSet para evitar duplicatas automaticamente.
-        let mut capabilities: HashSet<String> = self
-            .get_authorized_by_role(capability)
-            .await?
-            .into_iter()
-            .collect();
+            // Usa um HashSet para evitar duplicatas automaticamente.
+            let mut capabilities: HashSet<String> = self
+                .get_authorized_by_role(capability)
+                .await?
+                .into_iter()
+                .collect();
 
-        capabilities.insert(key_id.to_string());
+            capabilities.insert(key_id.to_string());
 
-        let capabilities_vec: Vec<String> = capabilities.into_iter().collect();
+            let capabilities_vec: Vec<String> = capabilities.into_iter().collect();
 
-        let capabilities_json = serde_json::to_vec(&capabilities_vec)?;
-
-        // Implementa operações de store para persistir as permissões
-        let mut store = store_arc.lock().await;
-        store
-            .put(capability, capabilities_json)
-            .await
-            .map_err(|e| GuardianError::Store(format!("Erro ao salvar no store: {}", e)))?;
-
-        // Emite evento de atualização
-        self.on_update().await;
-
-        Ok(())
-    }
-
-    /// equivalente a Revoke em go
-    #[allow(dead_code)]
-    pub async fn revoke(&self, capability: &str, key_id: &str) -> Result<()> {
-        let store_guard = self.kv_store.read().await;
-        let store_arc = store_guard
-            .as_ref()
-            .ok_or_else(|| GuardianError::Store("kv_store não inicializado".to_string()))?;
-
-        let mut capabilities: Vec<String> = self.get_authorized_by_role(capability).await?;
-
-        // Remove a chave, se ela existir.
-        capabilities.retain(|id| id != key_id);
-
-        let mut store = store_arc.lock().await;
-        if !capabilities.is_empty() {
-            let capabilities_json = serde_json::to_vec(&capabilities)?;
+            let capabilities_json = serde_json::to_vec(&capabilities_vec)?;
 
             // Implementa operações de store para persistir as permissões
+            let mut store = store_arc.lock().await;
             store
                 .put(capability, capabilities_json)
                 .await
-                .map_err(|e| {
-                    GuardianError::Store(format!("Erro ao persistir permissões: {}", e))
-                })?;
-        } else {
-            // Remove a entrada completamente se não há mais permissões
-            store
-                .delete(capability)
-                .await
-                .map_err(|e| GuardianError::Store(format!("Erro ao remover permissões: {}", e)))?;
-        }
+                .map_err(|e| GuardianError::Store(format!("Erro ao salvar no store: {}", e)))?;
+        } // store_guard é liberado aqui
 
-        // Emite evento de atualização
-        self.on_update().await;
+        // Depois, emite evento de atualização usando EventBus
+        self.on_update("grant", capability, key_id).await;
 
         Ok(())
     }
 
-    /// equivalente a Load em go
+    #[allow(dead_code)]
+    #[instrument(skip(self), fields(capability = %capability, key_id = %key_id))]
+    pub async fn revoke(&self, capability: &str, key_id: &str) -> Result<()> {
+        // Primeiro, executa as operações que precisam do store
+        {
+            let store_guard = self.kv_store.read().await;
+            let store_arc = store_guard
+                .as_ref()
+                .ok_or_else(|| GuardianError::Store("kv_store não inicializado".to_string()))?;
+
+            let mut capabilities: Vec<String> = self.get_authorized_by_role(capability).await?;
+
+            // Remove a chave, se ela existir.
+            capabilities.retain(|id| id != key_id);
+
+            let mut store = store_arc.lock().await;
+            if !capabilities.is_empty() {
+                let capabilities_json = serde_json::to_vec(&capabilities)?;
+
+                // Implementa operações de store para persistir as permissões
+                store
+                    .put(capability, capabilities_json)
+                    .await
+                    .map_err(|e| {
+                        GuardianError::Store(format!("Erro ao persistir permissões: {}", e))
+                    })?;
+            } else {
+                // Remove a entrada completamente se não há mais permissões
+                store.delete(capability).await.map_err(|e| {
+                    GuardianError::Store(format!("Erro ao remover permissões: {}", e))
+                })?;
+            }
+        } // store_guard é liberado aqui
+
+        // Depois, emite evento de atualização usando EventBus
+        self.on_update("revoke", capability, key_id).await;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self), fields(address = %address))]
     pub async fn load(&self, address: &str) -> Result<()> {
         let mut store_guard = self.kv_store.write().await;
         // Fecha qualquer store existente antes de carregar um novo.
@@ -267,7 +281,7 @@ impl GuardianDBAccessController {
         });
         store_options.access_controller = Some(Box::new(ipfs_ac_params));
 
-        // Implementa operações de store para carregar o key-value store
+        // Operações de store para carregar o key-value store
         let store = self
             .guardian_db
             .key_value(&db_address, &mut store_options)
@@ -280,21 +294,20 @@ impl GuardianDBAccessController {
         Ok(())
     }
 
-    /// equivalente a Save em go
+    #[instrument(skip(self))]
     pub async fn save(&self) -> Result<Box<dyn ManifestParams>> {
         let store_guard = self.kv_store.read().await;
         let store_arc = store_guard
             .as_ref()
             .ok_or_else(|| GuardianError::Store("kv_store não inicializado".to_string()))?;
 
-        // Implementa quando trait bounds estiverem resolvidos
         let store = store_arc.lock().await;
         let addr = store.address();
         let addr_string = format!("{}", addr);
 
-        log::debug!("Save executado para o store com endereço: {}", addr_string);
+        debug!(target: "access_controller", address = %addr_string, "Save executado para o store");
 
-        // Cria o manifesto baseado no endereço real do store
+        // Cria o manifesto baseado no endereço do store
         // Use default CID since string->CID conversion isn't trivial
         let cid = cid::Cid::default();
 
@@ -303,34 +316,64 @@ impl GuardianDBAccessController {
         Ok(Box::new(params))
     }
 
-    /// equivalente a Close em go
+    #[instrument(skip(self))]
     pub async fn close(&self) -> Result<()> {
         let mut store_guard = self.kv_store.write().await;
         if let Some(store_arc) = store_guard.take() {
             // Fecha o store usando o método close() da trait Store
             let store = store_arc.lock().await;
             match store.close().await {
-                Ok(_) => log::debug!("Store fechado com sucesso"),
-                Err(e) => log::warn!("Erro ao fechar o store: {}", e),
+                Ok(_) => debug!(target: "access_controller", "Store fechado com sucesso"),
+                Err(e) => warn!(target: "access_controller", error = %e, "Erro ao fechar o store"),
             }
         }
         Ok(())
     }
 
-    /// equivalente a onUpdate em go
-    async fn on_update(&self) {
-        if let Err(e) = self.event_sender.send(EventUpdated) {
-            warn!(target: "GuardianDB::ac", "não foi possível emitir o evento de atualização: {}", e);
+    async fn on_update(&self, action: &str, capability: &str, key_id: &str) {
+        let mut emitter_guard = self.event_emitter.lock().await;
+
+        // Inicializa o emitter se não existir
+        if emitter_guard.is_none() {
+            match self.event_bus.emitter::<EventUpdated>().await {
+                Ok(emitter) => {
+                    *emitter_guard = Some(emitter);
+                }
+                Err(e) => {
+                    warn!(target: "GuardianDB::ac", error = %e, "Falha ao inicializar event emitter");
+                    return;
+                }
+            }
+        }
+
+        // Emite o evento usando EventBus
+        if let Some(emitter) = emitter_guard.as_ref() {
+            let address = self
+                .address()
+                .await
+                .map(|addr| format!("{}", addr))
+                .unwrap_or_else(|| "unknown".to_string());
+
+            let event = EventUpdated::new(
+                "guardian".to_string(),
+                address,
+                format!("{}:{}:{}", action, capability, key_id),
+            );
+
+            if let Err(e) = emitter.emit(event) {
+                warn!(target: "GuardianDB::ac", error = %e, "Falha ao emitir evento de atualização");
+            } else {
+                debug!(target: "GuardianDB::ac", action = %action, capability = %capability, key_id = %key_id, "Evento emitido com sucesso");
+            }
         }
     }
 
-    /// equivalente a NewGuardianDBAccessController em go
-    /// Em Rust, é idiomático usar uma função `new` associada para construtores.
+    #[instrument(skip(guardian_db, params))]
     pub async fn new(
         guardian_db: Arc<dyn GuardianDBKVStoreProvider<Error = GuardianError>>,
-        params: Box<dyn ManifestParams>,
-        // Em Rust, opções funcionais podem ser implementadas com o padrão builder ou closures.
-    ) -> Result<Self> {
+        params: Box<dyn crate::access_controller::manifest::ManifestParams>,
+    ) -> std::result::Result<Self, GuardianError> {
+        let kv_provider = guardian_db;
         let addr_str = if !params.address().to_string().is_empty() {
             params.address().to_string()
         } else {
@@ -338,28 +381,26 @@ impl GuardianDBAccessController {
         };
 
         let mut opts = CreateDBOptions::default();
-        // Implementa quando trait bounds estiverem resolvidos
-        let kv_store = guardian_db
+        let kv_store = kv_provider
             .key_value(&addr_str, &mut opts)
             .await
             .map_err(|e| {
                 GuardianError::Store(format!("Erro ao inicializar key-value store: {}", e))
             })?;
 
-        log::debug!("Key-value store inicializada para: {}", addr_str);
+        debug!(target: "access_controller", address = %addr_str, "Key-value store inicializada");
 
-        // Usando um canal de broadcast do Tokio como exemplo de event bus.
-        let (tx, _rx) = broadcast::channel(16);
-
+        // Usa nosso EventBus para emitir eventos type-safe
+        let event_bus = EventBus::new();
         let _write_access = params.get_access("write");
-
         let controller = Self {
-            event_sender: tx,
-            guardian_db,
-            kv_store: RwLock::new(Some(Arc::new(tokio::sync::Mutex::new(kv_store)))), // Inicializa com o store real
+            event_bus,
+            event_emitter: Arc::new(tokio::sync::Mutex::new(None)), // Será inicializado lazy quando necessário
+            guardian_db: kv_provider,
+            kv_store: RwLock::new(Some(Arc::new(tokio::sync::Mutex::new(kv_store)))), // Inicializa com o store
             options: params,
-            // Inicializa com um logger padrão. Pode ser substituído com `set_logger`.
-            logger: RwLock::new(Arc::new(slog::Logger::root(slog::Discard, slog::o!()))),
+            // Cria um span para contexto de tracing
+            span: tracing::info_span!("guardian_access_controller", address = %addr_str),
         };
 
         // Inicializa permissões básicas se necessário
@@ -374,5 +415,44 @@ impl GuardianDBAccessController {
     }
 }
 
-// TODO: Implementar AccessController trait quando os bounds Send + Sync estiverem resolvidos
-// As dependências complexas da GuardianDBAccessController precisam de bounds adequados
+// Implementação da trait AccessController para GuardianDBAccessController
+#[async_trait::async_trait]
+impl crate::access_controller::traits::AccessController for GuardianDBAccessController {
+    fn get_type(&self) -> &str {
+        "guardian"
+    }
+
+    async fn get_authorized_by_role(&self, role: &str) -> Result<Vec<String>> {
+        self.get_authorized_by_role(role).await
+    }
+
+    async fn grant(&self, capability: &str, key_id: &str) -> Result<()> {
+        self.grant(capability, key_id).await
+    }
+
+    async fn revoke(&self, capability: &str, key_id: &str) -> Result<()> {
+        self.revoke(capability, key_id).await
+    }
+
+    async fn load(&self, address: &str) -> Result<()> {
+        self.load(address).await
+    }
+
+    async fn save(&self) -> Result<Box<dyn crate::access_controller::manifest::ManifestParams>> {
+        self.save().await
+    }
+
+    async fn close(&self) -> Result<()> {
+        self.close().await
+    }
+
+    async fn can_append(
+        &self,
+        entry: &dyn crate::ipfs_log::access_controller::LogEntry,
+        identity_provider: &dyn crate::ipfs_log::identity_provider::IdentityProvider,
+        additional_context: &dyn crate::ipfs_log::access_controller::CanAppendAdditionalContext,
+    ) -> Result<()> {
+        self.can_append(entry, identity_provider, additional_context)
+            .await
+    }
+}
