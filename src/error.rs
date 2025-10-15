@@ -89,13 +89,7 @@ impl From<serde_cbor::Error> for GuardianError {
     }
 }
 
-impl From<ipfs_api_backend_hyper::Error> for GuardianError {
-    fn from(err: ipfs_api_backend_hyper::Error) -> Self {
-        GuardianError::IpfsApi(err.to_string())
-    }
-}
-
-// Removendo conversões de anyhow já que não vamos mais usar
+// Nota: Conversão de IpfsError para GuardianError implementada em ipfs_core_api/errors.rs
 impl From<Box<dyn std::error::Error + Send + Sync>> for GuardianError {
     fn from(err: Box<dyn std::error::Error + Send + Sync>) -> Self {
         GuardianError::Other(err.to_string())
