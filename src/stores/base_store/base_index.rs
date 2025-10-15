@@ -4,9 +4,7 @@ use crate::ipfs_log::{entry::Entry, log::Log};
 use std::collections::{HashMap, HashSet};
 use std::sync::RwLock;
 
-/// Equivalente à struct `baseIndex` do Go.
-///
-/// BaseIndex é a implementação base de um índice para IPFS log stores.
+/// BaseIndex é a base de um índice para IPFS Log Stores.
 /// Mantém um mapeamento de chaves para valores, processando entradas do log
 /// de operações para manter o estado atualizado.
 pub struct BaseIndex {
@@ -19,8 +17,6 @@ pub struct BaseIndex {
     index: RwLock<HashMap<String, Vec<u8>>>,
 }
 
-/// Equivalente à função `NewBaseIndex` do Go.
-///
 /// Construtor para o `BaseIndex`. Cria uma nova instância com um HashMap vazio
 /// para armazenar o índice de chave-valor.
 pub fn new_base_index(
@@ -82,7 +78,6 @@ impl StoreIndex for BaseIndex {
         Ok(index_lock.is_empty())
     }
 
-    /// Equivalente à função `UpdateIndex` em Go.
     /// Atualiza o índice processando as entradas do log de operações.
     /// Implementa a lógica CRDT processando operações PUT e DEL.
     fn update_index(&mut self, _log: &Log, entries: &[Entry]) -> Result<(), Self::Error> {
@@ -165,38 +160,3 @@ impl BaseIndex {
         self.get_bytes(key)
     }
 }
-
-// MELHORIAS IMPLEMENTADAS:
-//
-// 1. Refatoração da trait StoreIndex:
-//    - Removido método get() problemático que retornava referências incompatíveis com locks
-//    - Adicionados métodos específicos e seguros: contains_key(), get_bytes(), keys(), etc.
-//    - Todos os métodos agora funcionam corretamente com dados protegidos por RwLock
-//
-// 2. Refatoração da estrutura de dados:
-//    - Mudou de Vec<Entry> para HashMap<String, Vec<u8>> para indexação eficiente
-//    - Permite busca O(1) por chave ao invés de iteração O(n)
-//
-// 3. Implementação correta do update_index:
-//    - Processa operações PUT e DEL corretamente
-//    - Implementa lógica CRDT (apenas a operação mais recente por chave)
-//    - Tratamento de erros sem panic (elimina unwrap() perigoso)
-//
-// 4. Métodos auxiliares consolidados:
-//    - Implementação da trait StoreIndex fornece funcionalidade completa
-//    - get_value(): método de conveniência que delega para get_bytes()
-//    - id(): acesso ao identificador do índice
-//
-// 5. Tratamento de erros robusto:
-//    - Uso de Result ao invés de unwrap()
-//    - Mensagens de erro descritivas
-//    - Logs de warning para operações problemáticas
-//
-// 6. Thread safety:
-//    - Uso adequado de RwLock para acesso concorrente
-//    - Tratamento de lock poisoning
-//
-// LIMITAÇÕES RESOLVIDAS:
-// - ✅ O método get() problemático foi removido e substituído por métodos seguros
-// - ✅ Todos os métodos agora funcionam corretamente com dados protegidos por lock
-// - ✅ A trait StoreIndex foi completamente refatorada para design seguro e eficiente
