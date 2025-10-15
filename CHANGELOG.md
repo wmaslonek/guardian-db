@@ -9,11 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.10.15] - 2025-10-15
 
-## [0.9.13] - 2025-09-13
-
 ### Added
+- New documentations
+- Migration to Tracing complete
+- Introducing the Embedded Iroh IPFS Node
 
 ### Fixed
+- Fixed design error in the implementation of the trait BaseGuardianDB for GuardianDB
+- Architecture improvements
 
 ## [0.9.13] - 2025-09-13
 
