@@ -12,8 +12,9 @@ use crate::stores::document_store::index::DocumentIndex;
 use crate::stores::operation::{operation, operation::Operation};
 use serde_json::{Map, Value};
 use std::sync::Arc;
+use tracing::{Span, instrument, warn};
 
-/// Representa um documento genérico, equivalente ao `interface{}` usado para documentos em Go.
+/// Representa um documento genérico.
 pub type Document = Value;
 
 /// Estrutura principal da DocumentStore.
@@ -26,7 +27,7 @@ pub struct GuardianDBDocumentStore {
     doc_index: Arc<DocumentIndex>,
     // Cache dos valores para resolver problemas de lifetime
     cached_address: Arc<dyn Address + Send + Sync>,
-    cached_logger: Arc<slog::Logger>,
+    span: Span,
     cached_replicator: Option<Arc<crate::stores::replicator::replicator::Replicator>>,
 }
 
@@ -41,7 +42,6 @@ impl Store for GuardianDBDocumentStore {
     }
 
     async fn close(&self) -> std::result::Result<(), Self::Error> {
-        // Agora podemos chamar o close da BaseStore que tem implementação completa
         self.base_store.close().await
     }
 
@@ -62,7 +62,6 @@ impl Store for GuardianDBDocumentStore {
     }
 
     fn replication_status(&self) -> crate::stores::replicator::replication_info::ReplicationInfo {
-        // BaseStore agora tem replication_status adequado que retorna ReplicationInfo diretamente
         self.base_store.replication_status()
     }
 
@@ -77,7 +76,7 @@ impl Store for GuardianDBDocumentStore {
 
     async fn drop(&mut self) -> std::result::Result<(), Self::Error> {
         // O método drop não é assíncrono, então não podemos usar await
-        // TODO: Implementar funcionalidade apropriada quando BaseStore for corrigido
+        // ***TODO: Implementar funcionalidade apropriada quando BaseStore for corrigido
         Ok(())
     }
 
@@ -94,18 +93,17 @@ impl Store for GuardianDBDocumentStore {
     }
 
     async fn load_more_from(&mut self, _amount: u64, entries: Vec<crate::ipfs_log::entry::Entry>) {
-        // BaseStore.load_more_from não é async e tem assinatura diferente
+        // ***BaseStore.load_more_from não é async e tem assinatura diferente
         let _ = self.base_store.load_more_from(entries);
     }
 
     async fn load_from_snapshot(&mut self) -> std::result::Result<(), Self::Error> {
-        // BaseStore refatorada agora permite implementação adequada
+        // ***BaseStore refatorada agora permite implementação adequada
         // Por enquanto, delegamos para BaseStore ou implementamos lógica básica
         Ok(())
     }
 
     fn op_log(&self) -> Arc<parking_lot::RwLock<crate::ipfs_log::log::Log>> {
-        // BaseStore agora retorna Arc<RwLock<Log>>, e a trait agora também espera isso
         self.base_store.op_log()
     }
 
@@ -122,7 +120,6 @@ impl Store for GuardianDBDocumentStore {
     }
 
     fn access_controller(&self) -> &dyn crate::access_controller::traits::AccessController {
-        // Usa o access_controller real do BaseStore
         self.base_store.access_controller()
     }
 
@@ -136,9 +133,8 @@ impl Store for GuardianDBDocumentStore {
             .await
     }
 
-    fn logger(&self) -> Arc<slog::Logger> {
-        // Usa o valor em cache para evitar problemas de lifetime
-        self.cached_logger.clone()
+    fn span(&self) -> Arc<tracing::Span> {
+        Arc::new(self.span.clone())
     }
 
     fn tracer(&self) -> Arc<TracerWrapper> {
@@ -146,8 +142,6 @@ impl Store for GuardianDBDocumentStore {
     }
 
     fn event_bus(&self) -> Arc<EventBus> {
-        // EventBus agora deve retornar Arc
-        // Para manter compatibilidade, retornamos uma nova instância
         Arc::new(EventBus::new())
     }
 
@@ -162,7 +156,12 @@ impl GuardianDBDocumentStore {
         &self.base_store
     }
 
-    // equivalente a NewGuardianDBDocumentStore em go
+    /// Retorna uma referência ao span de tracing para instrumentação
+    pub fn span(&self) -> &Span {
+        &self.span
+    }
+
+    #[instrument(level = "debug", skip(ipfs, identity, options))]
     pub async fn new(
         ipfs: Arc<IpfsClient>,
         identity: Arc<Identity>,
@@ -201,7 +200,7 @@ impl GuardianDBDocumentStore {
             Box::new(DocumentIndex::new(doc_opts_for_index.clone()))
         }));
 
-        // 5. Inicializa a BaseStore com as opções agora completas.
+        // 5. Inicializa a BaseStore
         //    Esta chamada assíncrona lida com toda a configuração do oplog, etc.
         let base_store = BaseStore::new(ipfs, identity, addr, Some(options))
             .await
@@ -217,27 +216,30 @@ impl GuardianDBDocumentStore {
 
         // Cache dos valores para resolver problemas de lifetime
         let cached_address = base_store.address();
-        let cached_logger = base_store.logger();
         let cached_replicator = base_store.replicator();
+
+        // Create a tracing span for the document store
+        let span = tracing::info_span!("document_store", address = %cached_address.to_string());
 
         let store = GuardianDBDocumentStore {
             base_store,
             doc_opts: (*doc_opts).clone(),
             doc_index,
             cached_address,
-            cached_logger,
+            span,
             cached_replicator,
         };
 
         Ok(store)
     }
 
-    // equivalente a Get em go
+    #[instrument(level = "debug", skip(self, opts))]
     pub async fn get(
         &self,
         key: &str,
         opts: Option<DocumentStoreGetOptions>,
     ) -> Result<Vec<Document>> {
+        let _entered = self.span.enter();
         let opts = opts.unwrap_or_default();
 
         // Prepara a chave de busca de acordo com as opções.
@@ -280,7 +282,6 @@ impl GuardianDBDocumentStore {
 
             // Obtém o valor usando o DocumentIndex diretamente
             if let Some(value_bytes) = doc_index.get_bytes(&index_key) {
-                // `from_slice` é o equivalente do `Unmarshal` do Go para `serde`.
                 let doc: Document = serde_json::from_slice(&value_bytes).map_err(|e| {
                     GuardianError::Serialization(format!(
                         "Impossível desserializar o valor para a chave {}: {}",
@@ -300,8 +301,9 @@ impl GuardianDBDocumentStore {
         Ok(documents)
     }
 
-    // equivalente a Put em go
+    #[instrument(level = "debug", skip(self, document))]
     pub async fn put(&mut self, document: Document) -> Result<Operation> {
+        let _entered = self.span.enter();
         // Extrai a chave e serializa o documento usando as funções fornecidas nas opções.
         let key = (self.doc_opts.key_extractor)(&document)?;
         let data = (self.doc_opts.marshal)(&document)?;
@@ -318,21 +320,22 @@ impl GuardianDBDocumentStore {
         Ok(parsed_op)
     }
 
-    // equivalente a Delete em go
-    pub async fn delete(&mut self, key: &str) -> Result<Operation> {
+    #[instrument(level = "debug", skip(self))]
+    pub async fn delete(&mut self, document_id: &str) -> Result<Operation> {
+        let _entered = self.span.enter();
         // Usa diretamente o DocumentIndex armazenado na struct
         let doc_index = &self.doc_index;
 
         // Verifica se a entrada existe antes de deletar.
-        if doc_index.get_bytes(key).is_none() {
+        if doc_index.get_bytes(document_id).is_none() {
             return Err(GuardianError::NotFound(format!(
                 "Nenhuma entrada com a chave '{}' na base de dados",
-                key
+                document_id
             )));
         }
 
         // Cria a operação DEL. O payload é None.
-        let op = Operation::new(Some(key.to_string()), "DEL".to_string(), None);
+        let op = Operation::new(Some(document_id.to_string()), "DEL".to_string(), None);
 
         // Adiciona a operação DEL ao log.
         let entry = self.base_store.add_operation(op, None).await?;
@@ -343,29 +346,27 @@ impl GuardianDBDocumentStore {
         Ok(parsed_op)
     }
 
-    // equivalente a PutBatch em go
-    pub async fn put_batch(&mut self, documents: Vec<Document>) -> Result<Operation> {
+    #[instrument(level = "debug", skip(self, documents))]
+    pub async fn put_batch(&mut self, documents: Vec<Document>) -> Result<Vec<Operation>> {
         if documents.is_empty() {
             return Err(GuardianError::InvalidArgument(
                 "Nada para adicionar à store".to_string(),
             ));
         }
 
-        let mut last_op: Option<Operation> = None;
+        let mut operations = Vec::new();
 
         // Itera sobre cada documento, chamando a função `put` individualmente.
         // Isso cria uma operação para cada documento no log.
         for doc in documents {
-            // A operação é sobrescrita a cada iteração, e o erro é propagado imediatamente.
             let op = self.put(doc).await?;
-            last_op = Some(op);
+            operations.push(op);
         }
 
-        // Safe unwrap because initial check ensures loop ran at least once
-        Ok(last_op.expect("Last operation should exist after processing documents"))
+        Ok(operations)
     }
 
-    // equivalente a PutAll em go
+    #[instrument(level = "debug", skip(self, documents))]
     pub async fn put_all(&mut self, documents: Vec<Document>) -> Result<Operation> {
         if documents.is_empty() {
             return Err(GuardianError::InvalidArgument(
@@ -393,7 +394,6 @@ impl GuardianDBDocumentStore {
         }
 
         // Cria uma única operação "PUTALL" com todos os documentos.
-        // A chave da operação principal é None (equivalente ao `&empty` do Go).
         let op = Operation::new_with_documents(None, "PUTALL".to_string(), to_add);
 
         let entry = self.base_store.add_operation(op, None).await?;
@@ -402,7 +402,7 @@ impl GuardianDBDocumentStore {
         Ok(parsed_op)
     }
 
-    // equivalente a Query em go
+    #[instrument(level = "debug", skip(self, filter))]
     pub fn query<F>(&self, mut filter: F) -> Result<Vec<Document>>
     where
         // Aceita qualquer closure que possa ser chamado múltiplas vezes,
@@ -433,13 +433,11 @@ impl GuardianDBDocumentStore {
         Ok(results)
     }
 
-    // equivalente a Type em go
     pub fn store_type(&self) -> &'static str {
         "docstore"
     }
 }
 
-// equivalente a MapKeyExtractor em go
 /// Retorna uma closure que extrai um campo de um `serde_json::Value::Object`.
 ///
 /// A closure retornada captura o `key_field` para uso posterior.
@@ -472,20 +470,17 @@ pub fn map_key_extractor(key_field: String) -> impl Fn(&Document) -> Result<Stri
     }
 }
 
-// equivalente a DefaultStoreOptsForMap em go
 /// Cria um conjunto de opções padrão para uma store que lida com documentos
 /// baseados em mapas (JSON Objects), usando um campo específico como chave.
 pub fn default_store_opts_for_map(key_field: &str) -> CreateDocumentDBOptions {
     CreateDocumentDBOptions {
-        // Equivalente a `json.Marshal`
         marshal: Arc::new(|doc: &Document| serde_json::to_vec(doc).map_err(GuardianError::from)),
-        // Equivalente a `json.Unmarshal`
         unmarshal: Arc::new(|bytes: &[u8]| {
             serde_json::from_slice(bytes).map_err(GuardianError::from)
         }),
-        // Usa a nossa função de ordem superior para criar a closure extratora de chave
+        // Usa a função de ordem superior para criar a closure extratora de chave
         key_extractor: Arc::new(map_key_extractor(key_field.to_string())),
-        // Equivalente a `func() interface{} { return map[string]interface{}{} }`
+
         item_factory: Arc::new(|| Value::Object(Map::new())),
     }
 }
