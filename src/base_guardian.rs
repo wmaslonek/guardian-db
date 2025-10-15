@@ -1599,12 +1599,12 @@ impl GuardianDB {
              address: Box<dyn crate::address::Address>,
              options: crate::iface::NewStoreOptions| {
                 Box::pin(async move {
-                    use crate::stores::event_log_store::log::OrbitDBEventLogStore;
+                    use crate::stores::event_log_store::log::GuardianDBEventLogStore;
                     // Converte Box<dyn Address> para Arc<dyn Address + Send + Sync>
                     let arc_address: Arc<dyn crate::address::Address + Send + Sync> =
                         Arc::from(address as Box<dyn crate::address::Address + Send + Sync>);
 
-                    let store = OrbitDBEventLogStore::new(ipfs, identity, arc_address, options)
+                    let store = GuardianDBEventLogStore::new(ipfs, identity, arc_address, options)
                         .await
                         .map_err(|e| crate::error::GuardianError::Store(e.to_string()))?;
 
@@ -1907,7 +1907,7 @@ impl GuardianDB {
         // EventLogStore - tenta acessar BaseStore interno
         if let Some(event_log_store) = store
             .as_any()
-            .downcast_ref::<crate::stores::event_log_store::log::OrbitDBEventLogStore>(
+            .downcast_ref::<crate::stores::event_log_store::log::GuardianDBEventLogStore>(
         ) {
             // Acessa o BaseStore interno que tem sync(&self)
             let base_store = event_log_store.basestore();
@@ -1965,7 +1965,7 @@ impl GuardianDB {
         // EventLogStore - tenta acessar BaseStore interno
         if let Some(event_log_store) = store
             .as_any()
-            .downcast_ref::<crate::stores::event_log_store::log::OrbitDBEventLogStore>(
+            .downcast_ref::<crate::stores::event_log_store::log::GuardianDBEventLogStore>(
         ) {
             let base_store = event_log_store.basestore();
             let op_log = base_store.op_log();
@@ -2105,7 +2105,7 @@ impl GuardianDB {
         // Obtém o Access Controller da store para verificação
         let access_controller = {
             // Tenta acessar o BaseStore interno das stores conhecidas
-            if let Some(event_log_store) = store.as_any().downcast_ref::<crate::stores::event_log_store::log::OrbitDBEventLogStore>() {
+            if let Some(event_log_store) = store.as_any().downcast_ref::<crate::stores::event_log_store::log::GuardianDBEventLogStore>() {
                 event_log_store.basestore().access_controller()
             } else if let Some(kv_store) = store.as_any().downcast_ref::<crate::stores::kv_store::keyvalue::GuardianDBKeyValue>() {
                 kv_store.basestore().access_controller()
@@ -2684,7 +2684,7 @@ impl GuardianDB {
             let already_exists = {
                 // Tenta acessar o oplog através dos tipos de store conhecidos
                 if let Some(event_log_store) = store.as_any()
-                    .downcast_ref::<crate::stores::event_log_store::log::OrbitDBEventLogStore>()
+                    .downcast_ref::<crate::stores::event_log_store::log::GuardianDBEventLogStore>()
                 {
                     event_log_store.basestore().op_log().read().has(head_hash)
                 } else if let Some(kv_store) = store.as_any()
