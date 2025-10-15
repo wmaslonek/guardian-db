@@ -1,20 +1,19 @@
 use guardian_db::error::{GuardianError, Result};
 use guardian_db::pubsub::direct_channel::{SwarmManager, create_test_peer_id};
 use libp2p::{Multiaddr, PeerId, gossipsub::TopicHash, identity::Keypair};
-use slog::Drain;
 use std::{
     collections::HashMap,
     time::{Duration, Instant},
 };
 
-/// Demonstra uso do transport real em SwarmBuilder
+/// Demonstra uso do transport em SwarmBuilder
 pub async fn demonstrate_swarm_integration(_swarm_manager: &SwarmManager) -> Result<()> {
-    println!("🔗 Demonstrando integração real com SwarmBuilder...");
+    println!("Demonstrando integração com SwarmBuilder...");
 
     let keypair = Keypair::generate_ed25519();
     let local_peer_id = keypair.public().to_peer_id();
 
-    println!("📋 Exemplo completo de como seria usado em produção:");
+    println!("Exemplo completo de como seria usado em produção:");
     println!("   use libp2p::SwarmBuilder;");
     println!("   ");
     println!("   let swarm = SwarmBuilder::with_existing_identity(keypair)");
@@ -33,15 +32,15 @@ pub async fn demonstrate_swarm_integration(_swarm_manager: &SwarmManager) -> Res
         local_peer_id
     );
 
-    println!("✅ Integração demonstrada: {}", integration_info);
+    println!("Integração demonstrada: {}", integration_info);
     Ok(())
 }
 
-/// Demonstra uso do transport real em cenários de produção
+/// Demonstra uso do transport
 pub async fn demonstrate_real_transport_usage(_swarm_manager: &SwarmManager) -> Result<()> {
-    println!("🚀 Demonstrando uso real do transport em produção...");
+    println!("Demonstrando uso do transport...");
 
-    // Cenários de uso real que seriam suportados
+    // Cenários de uso que seriam suportados
     let scenarios = vec![
         (
             "peer_discovery",
@@ -70,19 +69,19 @@ pub async fn demonstrate_real_transport_usage(_swarm_manager: &SwarmManager) -> 
     ];
 
     for (scenario, description) in scenarios {
-        println!("  ✅ {}: {}", scenario, description);
+        println!("  ✓ {}: {}", scenario, description);
         // Simula execução do cenário
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    println!("✅ Demonstração de uso real concluída com sucesso!");
+    println!("Demonstração de uso concluída com sucesso!");
 
     Ok(())
 }
 
 /// Executa testes de carga no transport
 pub async fn load_test_transport(_swarm_manager: &SwarmManager) -> Result<()> {
-    println!("⚡ Executando teste de carga no transport...");
+    println!("Executando teste de carga no transport...");
 
     let start_time = std::time::Instant::now();
     let concurrent_connections = 100;
@@ -122,7 +121,7 @@ pub async fn load_test_transport(_swarm_manager: &SwarmManager) -> Result<()> {
         elapsed.as_millis() as f64 / total_messages as f64
     );
 
-    println!("📊 Teste de carga concluído: {}", load_test_results);
+    println!("Teste de carga concluído: {}", load_test_results);
     Ok(())
 }
 
@@ -130,7 +129,7 @@ pub async fn load_test_transport(_swarm_manager: &SwarmManager) -> Result<()> {
 pub async fn collect_transport_metrics(
     _swarm_manager: &SwarmManager,
 ) -> Result<HashMap<String, f64>> {
-    println!("📈 Coletando métricas de performance do transport...");
+    println!("Coletando métricas de performance do transport...");
 
     let mut metrics = HashMap::new();
 
@@ -165,7 +164,7 @@ pub async fn collect_transport_metrics(
 
     // Log das métricas principais
     println!(
-        "📊 Métricas coletadas: {} conexões ativas | {:.0} msg/s | {:.1}ms RTT | {:.1}% sucesso",
+        "Métricas coletadas: {} conexões ativas | {:.0} msg/s | {:.1}ms RTT | {:.1}% sucesso",
         metrics["active_connections"],
         metrics["messages_per_second"],
         metrics["round_trip_time_ms"],
@@ -178,7 +177,7 @@ pub async fn collect_transport_metrics(
     // prometheus::register_counter!("transport_bytes_total", "Total bytes transferred");
 
     println!(
-        "✅ Métricas de transport coletadas: {} indicadores de performance",
+        "Métricas de transport coletadas: {} indicadores de performance",
         metrics.len()
     );
 
@@ -187,7 +186,7 @@ pub async fn collect_transport_metrics(
 
 /// Executa benchmark de performance do transport
 pub async fn benchmark_transport_performance(_swarm_manager: &SwarmManager) -> Result<()> {
-    println!("🏁 Executando benchmark de performance do transport...");
+    println!("Executando benchmark de performance do transport...");
 
     let start_time = std::time::Instant::now();
 
@@ -206,7 +205,7 @@ pub async fn benchmark_transport_performance(_swarm_manager: &SwarmManager) -> R
         let op_start = Instant::now();
         tokio::time::sleep(Duration::from_millis(50)).await;
         let op_duration = op_start.elapsed();
-        println!("  🔄 {}: {:?}", operation, op_duration);
+        println!("   {}: {:?}", operation, op_duration);
     }
 
     let elapsed = start_time.elapsed();
@@ -221,13 +220,13 @@ pub async fn benchmark_transport_performance(_swarm_manager: &SwarmManager) -> R
         elapsed.as_millis() as f64 / operations.len() as f64
     );
 
-    println!("🏆 Benchmark concluído: {}", performance_metrics);
+    println!("Benchmark concluído: {}", performance_metrics);
     Ok(())
 }
 
 /// Testa robustez do transport com cenários de falha
 pub async fn test_transport_resilience(_swarm_manager: &SwarmManager) -> Result<()> {
-    println!("🛡️ Testando robustez do transport...");
+    println!("Testando robustez do transport...");
 
     let scenarios = vec![
         ("network_partition", "Simulação de partição de rede"),
@@ -242,14 +241,14 @@ pub async fn test_transport_resilience(_swarm_manager: &SwarmManager) -> Result<
     ];
 
     for (scenario, description) in scenarios {
-        println!("  🧪 Testando {}: {}", scenario, description);
+        println!("Testando {}: {}", scenario, description);
         // Simula teste do cenário
         tokio::time::sleep(Duration::from_millis(200)).await;
-        println!("    ✅ Cenário {} passou no teste", scenario);
+        println!("Cenário {} passou no teste", scenario);
     }
 
     println!(
-        "🛡️ Teste de robustez concluído: Transport resiliente a {} cenários de falha",
+        "Teste de robustez concluído: Transport resiliente a {} cenários de falha",
         6
     );
     Ok(())
@@ -257,12 +256,12 @@ pub async fn test_transport_resilience(_swarm_manager: &SwarmManager) -> Result<
 
 /// Demonstra configuração completa do transport para integração com SwarmBuilder
 pub async fn create_production_transport(_swarm_manager: &SwarmManager) -> Result<String> {
-    println!("🏭 Criando transport de produção para integração com Swarm...");
+    println!("Criando transport para integração com Swarm...");
 
     let keypair = Keypair::generate_ed25519();
     let local_peer_id = keypair.public().to_peer_id();
 
-    println!("📋 Exemplo de como seria integrado com SwarmBuilder em produção:");
+    println!("Exemplo de como seria integrado com SwarmBuilder:");
     println!("   use libp2p::SwarmBuilder;");
     println!("   ");
     println!("   let swarm = SwarmBuilder::with_existing_identity(keypair)");
@@ -284,13 +283,13 @@ pub async fn create_production_transport(_swarm_manager: &SwarmManager) -> Resul
         local_peer_id
     );
 
-    println!("✅ Transport de produção criado: {}", config_summary);
+    println!("Transport de produção criado: {}", config_summary);
     Ok(config_summary)
 }
 
 /// Testa conectividade do transport configurado
 pub async fn test_transport_connectivity(_swarm_manager: &SwarmManager) -> Result<()> {
-    println!("🌐 Testando conectividade do transport...");
+    println!("Testando conectividade do transport...");
 
     let keypair = Keypair::generate_ed25519();
     let local_peer_id = keypair.public().to_peer_id();
@@ -305,59 +304,59 @@ pub async fn test_transport_connectivity(_swarm_manager: &SwarmManager) -> Resul
     for addr in &test_multiaddrs {
         match addr.parse::<Multiaddr>() {
             Ok(multiaddr) => {
-                println!("  ✅ Endereço válido: {} -> {}", addr, multiaddr);
+                println!("Endereço válido: {} -> {}", addr, multiaddr);
                 // Simula teste de conexão
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
             Err(e) => {
-                println!("  ❌ Endereço inválido: {} -> {}", addr, e);
+                println!("Endereço inválido: {} -> {}", addr, e);
             }
         }
     }
 
     println!(
-        "🌐 Teste de conectividade concluído para peer {} | {} endereços testados",
+        "Teste de conectividade concluído para peer {} | {} endereços testados",
         local_peer_id,
         test_multiaddrs.len()
     );
     Ok(())
 }
 
-/// Demonstra uso completo do Swarm em produção
+/// Demonstra uso completo do Swarm
 pub async fn demonstrate_production_usage(
     swarm_manager: &SwarmManager,
     target_peer: PeerId,
 ) -> Result<()> {
-    println!("🎯 Demonstrando uso completo do Swarm de produção");
+    println!("Demonstrando uso completo do Swarm");
 
-    // 1. Configura o Swarm de produção
+    // 1. Configura o Swarm
     let keypair = Keypair::generate_ed25519();
     let local_peer_id = keypair.public().to_peer_id();
-    println!("  🔧 Configurando Swarm para peer: {}", local_peer_id);
+    println!("Configurando Swarm para peer: {}", local_peer_id);
 
     // 2. Conecta a um peer específico
-    println!("  🤝 Conectando ao peer alvo: {}", target_peer);
+    println!("Conectando ao peer alvo: {}", target_peer);
 
     // 3. Cria tópico para comunicação
     let protocol = "/go-orbit-db/direct-channel/1.2.0";
     let communication_topic =
         TopicHash::from_raw(format!("{}/production/{}", protocol, target_peer));
-    println!("  📢 Tópico criado: {:?}", communication_topic);
+    println!("Tópico criado: {:?}", communication_topic);
 
     // 4. Envia mensagem de teste
     let test_message = b"Hello from production Swarm!";
-    println!("  📤 Enviando mensagem: {} bytes", test_message.len());
+    println!("Enviando mensagem: {} bytes", test_message.len());
 
     // 5. Monitora métricas
     let stats = swarm_manager.get_detailed_stats().await;
     println!(
-        "  📊 Estatísticas: {} peers conectados, {} tópicos inscritos, {} mensagens publicadas",
+        "Estatísticas: {} peers conectados, {} tópicos inscritos, {} mensagens publicadas",
         stats.get("connected_peers").unwrap_or(&0),
         stats.get("subscribed_topics").unwrap_or(&0),
         stats.get("total_messages_published").unwrap_or(&0)
     );
 
-    println!("✅ Demonstração de uso em produção concluída com sucesso");
+    println!("Demonstração de uso concluída com sucesso");
     Ok(())
 }
 
@@ -365,52 +364,47 @@ pub async fn demonstrate_production_usage(
 #[tokio::main]
 async fn main() -> Result<()> {
     // Configura logging simples para o exemplo
-    env_logger::init();
+    tracing_subscriber::fmt::init();
 
-    // Cria logger thread-safe usando slog_async
-    let decorator = slog_term::TermDecorator::new().build();
-    let drain = slog_term::FullFormat::new(decorator).build().fuse();
-    let drain = std::sync::Mutex::new(drain).fuse();
-    let logger = slog::Logger::root(drain, slog::o!());
-
-    println!("🚀 Iniciando demonstrações do DirectChannel Transport");
+    println!("Iniciando demonstrações do DirectChannel Transport");
     println!("===============================================");
 
     // Cria SwarmManager para as demonstrações
     let keypair = Keypair::generate_ed25519();
-    let swarm_manager = SwarmManager::new(logger.clone(), keypair)?;
+    let span = tracing::info_span!("direct_channel_demo");
+    let swarm_manager = SwarmManager::new(span, keypair)?;
 
     // Executa todas as demonstrações
-    println!("\n1️⃣ Demonstração de uso real do transport:");
+    println!("\n1. Demonstração de uso real do transport:");
     demonstrate_real_transport_usage(&swarm_manager).await?;
 
-    println!("\n2️⃣ Teste de carga do transport:");
+    println!("\n2. Teste de carga do transport:");
     load_test_transport(&swarm_manager).await?;
 
-    println!("\n3️⃣ Coleta de métricas de performance:");
+    println!("\n3. Coleta de métricas de performance:");
     let metrics = collect_transport_metrics(&swarm_manager).await?;
-    println!("   📊 {} métricas coletadas", metrics.len());
+    println!(" {} métricas coletadas", metrics.len());
 
-    println!("\n4️⃣ Demonstração de integração com Swarm:");
+    println!("\n4. Demonstração de integração com Swarm:");
     demonstrate_swarm_integration(&swarm_manager).await?;
 
-    println!("\n5️⃣ Benchmark de performance:");
+    println!("\n5. Benchmark de performance:");
     benchmark_transport_performance(&swarm_manager).await?;
 
-    println!("\n6️⃣ Teste de robustez:");
+    println!("\n6. Teste de robustez:");
     test_transport_resilience(&swarm_manager).await?;
 
-    println!("\n7️⃣ Criação de transport de produção:");
+    println!("\n7. Criação de transport de produção:");
     let _transport_config = create_production_transport(&swarm_manager).await?;
 
-    println!("\n8️⃣ Teste de conectividade:");
+    println!("\n8. Teste de conectividade:");
     test_transport_connectivity(&swarm_manager).await?;
 
-    println!("\n9️⃣ Demonstração de uso em produção:");
+    println!("\n9. Demonstração de uso em produção:");
     let target_peer = create_test_peer_id();
     demonstrate_production_usage(&swarm_manager, target_peer).await?;
 
-    println!("\n✅ Todas as demonstrações concluídas com sucesso!");
+    println!("\nTodas as demonstrações concluídas com sucesso!");
     println!("===============================================");
 
     Ok(())
