@@ -46,13 +46,12 @@ fn create_test_head(hash: &str, identity: Option<Identity>) -> Entry {
 
 /// Função auxiliar para criar SimpleAccessController configurado
 async fn create_test_access_controller() -> Arc<dyn AccessController> {
-    let logger = slog::Logger::root(slog::Discard, slog::o!());
     let mut permissions = HashMap::new();
     permissions.insert("read".to_string(), Vec::new());
     permissions.insert("write".to_string(), Vec::new());
     permissions.insert("admin".to_string(), Vec::new());
 
-    Arc::new(SimpleAccessController::new(logger, Some(permissions)))
+    Arc::new(SimpleAccessController::new(Some(permissions)))
 }
 
 #[tokio::test]
@@ -295,7 +294,7 @@ async fn test_verify_heads_permissions_by_public_key() -> Result<()> {
 }
 
 /// Função auxiliar que simula a verificação de permissões
-/// (implementa a mesma lógica que seria usada no handle_event_exchange_heads)
+/// (implementa a mesma lógica do handle_event_exchange_heads)
 async fn simulate_permission_check(
     heads: &[Entry],
     access_controller: &Arc<dyn AccessController>,
@@ -351,7 +350,7 @@ async fn test_access_controller_integration() -> Result<()> {
 
     // Verifica tipo
     assert_eq!(
-        access_controller.r#type(),
+        access_controller.get_type(),
         "simple",
         "Deve ser SimpleAccessController"
     );
