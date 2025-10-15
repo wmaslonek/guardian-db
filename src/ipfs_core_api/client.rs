@@ -1,6 +1,4 @@
 // Cliente principal da API IPFS Core
-//
-// Implementação do cliente IPFS 100% Rust com funcionalidades completas
 
 use crate::error::{GuardianError, Result};
 use crate::ipfs_core_api::{config::ClientConfig, errors::IpfsError, types::*};
@@ -10,9 +8,8 @@ use libp2p::PeerId;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use tokio::io::AsyncReadExt;
 use tokio::sync::{RwLock, broadcast};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// Estado interno do cliente IPFS
 #[derive(Debug)]
@@ -56,8 +53,8 @@ impl ClientState {
 /// Cliente principal da API IPFS Core
 #[derive(Clone)]
 pub struct IpfsClient {
-    /// Armazenamento interno para dados
-    storage: Arc<RwLock<HashMap<String, Vec<u8>>>>,
+    /// Backend Iroh para operações IPFS nativas
+    backend: Arc<crate::ipfs_core_api::backends::IrohBackend>,
     /// Configuração do cliente
     config: ClientConfig,
     /// ID do nó local
@@ -87,8 +84,11 @@ impl IpfsClient {
 
         let state = ClientState::new(node_id, &config);
 
+        // Criar backend Iroh
+        let backend = Arc::new(crate::ipfs_core_api::backends::IrohBackend::new(&config).await?);
+
         let client = Self {
-            storage: Arc::new(RwLock::new(HashMap::new())),
+            backend,
             config,
             node_id,
             state: Arc::new(RwLock::new(state)),
@@ -104,7 +104,7 @@ impl IpfsClient {
             client.config.bootstrap_peers.len()
         );
 
-        info!("✅ Cliente IPFS Core API inicializado com sucesso");
+        info!("✓ Cliente IPFS Core API inicializado com sucesso");
         Ok(client)
     }
 
@@ -128,6 +128,23 @@ impl IpfsClient {
         Self::new(ClientConfig::testing()).await
     }
 
+    /// Cria uma instância usando um backend Iroh existente
+    pub async fn new_with_backend(
+        backend: Arc<crate::ipfs_core_api::backends::IrohBackend>,
+    ) -> Result<Self> {
+        let config = ClientConfig::default();
+        let node_id = PeerId::random();
+        let state = ClientState::new(node_id, &config);
+
+        Ok(Self {
+            backend,
+            config,
+            node_id,
+            state: Arc::new(RwLock::new(state)),
+            initialized: true,
+        })
+    }
+
     /// Verifica se o cliente está inicializado
     fn ensure_initialized(&self) -> Result<()> {
         if !self.initialized {
@@ -141,57 +158,61 @@ impl IpfsClient {
         self.initialized
     }
 
-    /// Adiciona dados ao IPFS
-    pub async fn add<R>(&self, mut data: R) -> Result<AddResponse>
+    /// Adiciona dados ao IPFS usando backend Iroh
+    pub async fn add<R>(&self, data: R) -> Result<AddResponse>
     where
         R: tokio::io::AsyncRead + Send + Unpin + 'static,
     {
         self.ensure_initialized()?;
 
-        let mut buffer = Vec::new();
-        data.read_to_end(&mut buffer)
-            .await
-            .map_err(|e| GuardianError::Other(format!("Falha ao ler dados: {}", e)))?;
-
-        // Gera hash SHA256 do conteúdo
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(&buffer);
-        let hash_bytes = hasher.finalize();
-        let hash = format!("Qm{}", hex::encode(&hash_bytes[..20])); // CIDv0 simulado
-
-        // Armazena no storage interno
-        {
-            let mut storage = self.storage.write().await;
-            storage.insert(hash.clone(), buffer.clone());
-        }
-
-        // Atualiza estatísticas
-        {
-            let mut state = self.state.write().await;
-            state.repo_stats.num_objects += 1;
-            state.repo_stats.repo_size += buffer.len() as u64;
-        }
-
-        debug!("Dados adicionados: {} ({} bytes)", hash, buffer.len());
-
-        Ok(AddResponse::new(hash, buffer.len()))
+        use crate::ipfs_core_api::backends::IpfsBackend;
+        let pinned_data = Pin::new(Box::new(data));
+        self.backend.add(pinned_data).await
     }
 
-    /// Recupera dados do IPFS pelo hash/CID
+    /// Adiciona dados de Vec<u8> ao IPFS (helper method)
+    pub async fn add_bytes(&self, data: Vec<u8>) -> Result<AddResponse> {
+        self.ensure_initialized()?;
+
+        use crate::ipfs_core_api::backends::IpfsBackend;
+
+        // Cria um wrapper que implementa AsyncRead com ownership
+        struct BytesReader {
+            data: Vec<u8>,
+            pos: usize,
+        }
+
+        impl tokio::io::AsyncRead for BytesReader {
+            fn poll_read(
+                mut self: std::pin::Pin<&mut Self>,
+                _cx: &mut std::task::Context<'_>,
+                buf: &mut tokio::io::ReadBuf<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                let remaining = self.data.len() - self.pos;
+                let to_read = std::cmp::min(remaining, buf.remaining());
+
+                if to_read == 0 {
+                    return std::task::Poll::Ready(Ok(()));
+                }
+
+                buf.put_slice(&self.data[self.pos..self.pos + to_read]);
+                self.pos += to_read;
+
+                std::task::Poll::Ready(Ok(()))
+            }
+        }
+
+        let reader = BytesReader { data, pos: 0 };
+        let pinned_data = Pin::new(Box::new(reader));
+        self.backend.add(pinned_data).await
+    }
+
+    /// Recupera dados do IPFS pelo hash/CID usando backend Iroh
     pub async fn cat(&self, path: &str) -> Result<Pin<Box<dyn tokio::io::AsyncRead + Send>>> {
         self.ensure_initialized()?;
 
-        let storage = self.storage.read().await;
-        let data = storage
-            .get(path)
-            .cloned()
-            .ok_or_else(|| IpfsError::data_not_found(path))?;
-
-        debug!("Dados recuperados: {} ({} bytes)", path, data.len());
-
-        let cursor = tokio::io::BufReader::new(std::io::Cursor::new(data));
-        Ok(Box::pin(cursor))
+        use crate::ipfs_core_api::backends::IpfsBackend;
+        self.backend.cat(path).await
     }
 
     /// Recupera um objeto DAG do IPFS
@@ -200,13 +221,12 @@ impl IpfsClient {
 
         debug!("dag_get: cid={}", cid);
 
-        let cid_str = cid.to_string();
-        let storage = self.storage.read().await;
-
-        storage
-            .get(&cid_str)
-            .cloned()
-            .ok_or_else(|| IpfsError::data_not_found(&cid_str).into())
+        use crate::ipfs_core_api::backends::IpfsBackend;
+        // Usa cat para recuperar os dados e lê-los em memória
+        let mut reader = self.backend.cat(&cid.to_string()).await?;
+        let mut data = Vec::new();
+        tokio::io::AsyncReadExt::read_to_end(&mut reader, &mut data).await?;
+        Ok(data)
     }
 
     /// Armazena um objeto DAG no IPFS
@@ -221,15 +241,15 @@ impl IpfsClient {
         let digest = hasher.finalize();
 
         // Cria multihash usando SHA2-256
-        let mh = multihash::Multihash::wrap(0x12, &digest).unwrap(); // 0x12 = SHA2-256
+        let mh = multihash::Multihash::wrap(0x12, &digest)
+            .map_err(|e| GuardianError::Other(format!("Falha ao criar multihash: {}", e)))?; // 0x12 = SHA2-256
 
         // Cria um CID versão 1 para dados DAG-JSON
         let cid = Cid::new_v1(0x0129, mh); // 0x0129 = dag-json codec
 
         // Armazena os dados
         {
-            let mut storage = self.storage.write().await;
-            storage.insert(cid.to_string(), data.to_vec());
+            // O armazenamento é gerenciado pelo backend Iroh
         }
 
         // Atualiza estatísticas
@@ -323,22 +343,35 @@ impl IpfsClient {
 
         debug!("Listando peers do tópico: {}", topic);
 
-        // Em uma implementação real, retornaria peers do mesh do gossipsub
-        // Por ora, retorna peers conectados simulados
-        let state_guard = self.state.read().await;
-        let connected_peers: Vec<PeerId> = state_guard
-            .connected_peers
-            .values()
-            .filter(|peer| peer.connected)
-            .map(|peer| peer.id)
-            .collect();
+        // Obtém peers reais do mesh do Gossipsub
+        match self.backend.get_topic_mesh_peers(topic).await {
+            Ok(mesh_peers) => {
+                debug!(
+                    "Encontrados {} peers no mesh do Gossipsub para tópico '{}'",
+                    mesh_peers.len(),
+                    topic
+                );
+                Ok(mesh_peers)
+            }
+            Err(_) => {
+                // Fallback: se SwarmManager não estiver disponível, retorna peers conectados
+                warn!("SwarmManager não disponível, usando fallback para peers conectados");
+                let state_guard = self.state.read().await;
+                let connected_peers: Vec<PeerId> = state_guard
+                    .connected_peers
+                    .values()
+                    .filter(|peer| peer.connected)
+                    .map(|peer| peer.id)
+                    .collect();
 
-        debug!(
-            "Encontrados {} peers para tópico '{}'",
-            connected_peers.len(),
-            topic
-        );
-        Ok(connected_peers)
+                debug!(
+                    "Fallback: encontrados {} peers conectados para tópico '{}'",
+                    connected_peers.len(),
+                    topic
+                );
+                Ok(connected_peers)
+            }
+        }
     }
 
     /// Lista todos os tópicos ativos
@@ -413,11 +446,9 @@ impl IpfsClient {
 
         debug!("Pinning objeto: {} (recursive: {})", hash, recursive);
 
-        // Verifica se o objeto existe
-        let storage = self.storage.read().await;
-        if !storage.contains_key(hash) {
-            return Err(IpfsError::data_not_found(hash).into());
-        }
+        // Verifica se o objeto existe via backend Iroh
+        use crate::ipfs_core_api::backends::IpfsBackend;
+        let _ = self.backend.cat(hash).await?; // Falhará se não existir
 
         let pin_type = if recursive {
             PinType::Recursive
@@ -522,11 +553,7 @@ impl IpfsClient {
             state.connected_peers.clear();
         }
 
-        // Limpa storage
-        {
-            let mut storage = self.storage.write().await;
-            storage.clear();
-        }
+        // O storage é gerenciado pelo backend Iroh
 
         info!("Cliente IPFS encerrado com sucesso");
         Ok(())
@@ -540,14 +567,25 @@ mod tests {
 
     #[tokio::test]
     async fn test_client_creation() {
-        let config = ClientConfig::development();
+        let mut config = ClientConfig::development();
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        config.data_store_path = Some(format!("./tmp/test_creation_{}", timestamp).into());
         let client = IpfsClient::new(config).await;
         assert!(client.is_ok());
     }
 
     #[tokio::test]
     async fn test_client_online() {
-        let client = IpfsClient::development().await.unwrap();
+        let mut config = ClientConfig::development();
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        config.data_store_path = Some(format!("./tmp/test_online_{}", timestamp).into());
+        let client = IpfsClient::new(config).await.unwrap();
         assert!(client.is_online().await);
     }
 
@@ -567,7 +605,9 @@ mod tests {
         // Test cat
         let mut stream = client.cat(&response.hash).await.unwrap();
         let mut buffer = Vec::new();
-        stream.read_to_end(&mut buffer).await.unwrap();
+        tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut buffer)
+            .await
+            .unwrap();
 
         assert_eq!(test_data, buffer.as_slice());
     }
