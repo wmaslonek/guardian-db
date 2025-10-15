@@ -42,7 +42,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # Generate XML and HTML with tarpaulin
-Write-Host "→ Generating XML and HTML reports..." -ForegroundColor Gray
+Write-Host "Generating XML and HTML reports..." -ForegroundColor Gray
 cargo tarpaulin --all-features --workspace --out Xml --out Html --output-dir ./coverage/
 
 if ($LASTEXITCODE -ne 0) {
