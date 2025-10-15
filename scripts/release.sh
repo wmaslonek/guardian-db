@@ -1,8 +1,6 @@
 #!/bin/bash
-
 # Guardian-DB Release Script
-# Usage: ./scripts/release.sh <version>
-# Example: ./scripts/release.sh 0.9.5
+# Example: ./scripts/release.sh 0.x.x
 
 set -e
 
