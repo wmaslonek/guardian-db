@@ -46,7 +46,7 @@ impl Default for ClientConfig {
         Self {
             enable_pubsub: true,
             enable_swarm: true,
-            data_store_path: None,
+            data_store_path: Some(PathBuf::from("./ipfs_data")),
             listening_addrs: vec![
                 "/ip4/0.0.0.0/tcp/0".to_string(),
                 "/ip6/::/tcp/0".to_string(),
@@ -170,11 +170,28 @@ impl ClientConfig {
         Ok(())
     }
 
-    /// Cria configuração a partir de um cliente Hyper IPFS
-    pub fn from_hyper_client(_hyper_client: &ipfs_api_backend_hyper::IpfsClient) -> Self {
-        // Por enquanto, retorna configuração padrão já que o HyperIpfsClient
-        // não expõe sua configuração interna facilmente
-        Self::development()
+    /// Cria configuração para backend híbrido (Iroh + LibP2P)
+    pub fn hybrid() -> Self {
+        Self {
+            enable_pubsub: true,                           // LibP2P PubSub
+            enable_swarm: true,                            // LibP2P Swarm
+            data_store_path: Some("./hybrid_data".into()), // Armazenamento local Iroh
+            listening_addrs: vec![
+                "/ip4/0.0.0.0/tcp/0".to_string(),
+                "/ip6/::/tcp/0".to_string(),
+            ],
+            bootstrap_peers: vec![],
+            enable_mdns: true,                    // Descoberta de peers local
+            enable_kad: true,                     // DHT distribuído
+            network: NetworkConfig::production(), // Configuração robusta de rede
+            storage: StorageConfig::production(), // Cache otimizado
+            pubsub: PubsubConfig::production(),   // PubSub otimizado
+        }
+    }
+
+    /// Determina se deve usar backend embarcado (Iroh ou Híbrido)
+    pub fn should_use_embedded(&self) -> bool {
+        self.data_store_path.is_some()
     }
 }
 
@@ -536,5 +553,26 @@ mod tests {
         let config = ClientConfig::default().with_data_path("/custom/path");
 
         assert_eq!(config.data_store_path, Some(PathBuf::from("/custom/path")));
+    }
+
+    #[test]
+    fn test_hybrid_configuration() {
+        let config = ClientConfig::hybrid();
+
+        assert!(config.should_use_embedded());
+        assert!(config.enable_pubsub);
+        assert!(config.enable_swarm);
+        assert!(config.enable_kad);
+    }
+
+    #[test]
+    fn test_backend_detection() {
+        // Configuração embarcada
+        let embedded_config = ClientConfig::development();
+        assert!(embedded_config.should_use_embedded());
+
+        // Configuração híbrida
+        let hybrid_config = ClientConfig::hybrid();
+        assert!(hybrid_config.should_use_embedded());
     }
 }
