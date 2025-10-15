@@ -1,11 +1,9 @@
-// Exemplo de como usar o Event Bus baseado em Tokio
 use guardian_db::error::Result;
 use guardian_db::iface::EventPubSubPayload;
 use guardian_db::pubsub::event::{EventBus, PayloadEmitter};
 use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
 
-// Exemplo de evento personalizado
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CustomEvent {
     pub message: String,
@@ -23,7 +21,7 @@ async fn main() -> Result<()> {
     // 1. Criar o Event Bus
     let event_bus = EventBus::new();
 
-    // 2. Exemplo de uso com PayloadEmitter (compatível com código existente)
+    // 2. Exemplo de uso com PayloadEmitter
     println!("=== PayloadEmitter Example ===");
 
     let payload_emitter = PayloadEmitter::new(&event_bus).await?;
