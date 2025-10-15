@@ -1,4 +1,5 @@
 use crate::error::{GuardianError, Result};
+use crate::pubsub::event::{Emitter, EventBus};
 use async_trait::async_trait;
 use std::any::Any;
 use std::collections::VecDeque;
@@ -6,16 +7,10 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, Notify, broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 
-// Usando nosso EventBus implementado
-use crate::pubsub::event::{Emitter, EventBus};
-
 /// Um alias de tipo para um evento dinâmico e seguro para threads.
-/// Equivalente ao `type Event interface{}` em Go.
-/// Usando Arc para permitir cloning do evento
 pub type Event = Arc<dyn Any + Send + Sync>;
 
 /// Uma struct wrapper para enviar eventos através do bus, que pode exigir um tipo concreto.
-/// Equivalente ao `type eventBox struct { evt interface{} }` em Go.
 #[derive(Clone, Debug)]
 pub struct EventBox {
     pub evt: Event,
@@ -31,13 +26,11 @@ struct EventEmitterInternal {
 
 impl EventEmitterInternal {
     /// Obtém uma referência mutável ao bus, inicializando-o se ainda não existir.
-    /// Equivalente à lógica em `getBus()` em Go.
     fn get_bus_mut(&mut self) -> &mut EventBus {
         self.bus.get_or_insert_with(EventBus::new)
     }
 }
 
-// equivalente a 'EmitterInterface' em go
 #[async_trait]
 pub trait EmitterInterface {
     /// Envia um evento para os listeners inscritos.
@@ -130,7 +123,6 @@ impl EmitterInterface for EventEmitter {
 
 // A struct pública que os usuários irão interagir.
 /// Registra listeners e despacha eventos para eles.
-// Em Go: type EventEmitter struct { ... }
 #[derive(Clone)]
 pub struct EventEmitter {
     internal: Arc<Mutex<EventEmitterInternal>>,
@@ -149,7 +141,6 @@ impl EventEmitter {
         }
     }
 
-    // equivalente a 'Emit' em go
     /// Envia um evento para os listeners inscritos.
     pub async fn emit(&self, evt: Event) {
         let mut guard = self.internal.lock().await;
@@ -167,13 +158,10 @@ impl EventEmitter {
         // O lock ainda está ativo, então é seguro usar unwrap.
         if let Some(emitter) = guard.emitter.as_ref() {
             let event_box = EventBox { evt };
-
-            // A versão em Go ignora o resultado, então fazemos o mesmo aqui.
             let _ = emitter.emit(event_box);
         }
     }
 
-    // equivalente a 'Subscribe' em go
     /// Retorna um canal que recebe os eventos emitidos.
     pub async fn subscribe(&self) -> (mpsc::Receiver<Event>, CancellationToken) {
         let mut guard = self.internal.lock().await;
@@ -200,7 +188,6 @@ impl EventEmitter {
         (receiver, cancellation_token)
     }
 
-    // equivalente a 'UnsubscribeAll' em go
     /// Fecha todos os canais de listeners (cancelando as tarefas de escuta).
     pub async fn unsubscribe_all(&self) {
         let guard = self.internal.lock().await;
@@ -209,14 +196,10 @@ impl EventEmitter {
         for token in &guard.cancellations {
             token.cancel();
         }
-
-        // A lógica original em Go não limpa o array de funções de cancelamento.
-        // Mantemos o mesmo comportamento aqui, apenas sinalizando o cancelamento.
     }
 
-    // equivalente a 'handleSubscriber' em go
     /// Processa eventos de uma inscrição, gerenciando uma fila interna para lidar com
-    /// consumidores lentos. Esta é a implementação completa que substitui o stub anterior.
+    /// consumidores lentos.
     async fn handle_subscriber(
         &self,
         token: CancellationToken,
@@ -296,10 +279,9 @@ impl EventEmitter {
         rx
     }
 
-    // equivalente a 'GlobalChannel' em go
     /// Retorna um canal global que recebe todos os eventos emitidos.
-    /// Nota: Esta versão usa um canal de broadcast para permitir múltiplos listeners
-    /// independentes, que é uma prática mais idiomática em Rust.
+    /// Nota: Usa um canal de broadcast para permitir múltiplos listeners
+    /// independentes.
     pub async fn global_channel(&self) -> broadcast::Receiver<Event> {
         let mut guard = self.internal.lock().await;
 
@@ -342,7 +324,6 @@ impl EventEmitter {
         rx
     }
 
-    // equivalente a 'GetBus' em go
     /// Retorna a nova instância do event bus, inicializando-a se necessário.
     pub async fn get_bus(&self) -> EventBus {
         let mut guard = self.internal.lock().await;
@@ -353,7 +334,6 @@ impl EventEmitter {
         EventBus::new() // Retorna uma nova instância para compatibilidade
     }
 
-    // equivalente a 'SetBus' em go
     /// Define a instância do event bus, retornando um erro se já estiver inicializada.
     pub async fn set_bus(&self, bus: EventBus) -> Result<()> {
         let mut guard = self.internal.lock().await;
@@ -407,7 +387,6 @@ mod tests {
         assert_eq!(*s, "test_event");
     }
 
-    // equivalente ao teste 'TestMissingListeners' em go
     #[tokio::test]
     async fn test_missing_listeners() {
         let e = EventEmitter::new();
@@ -423,7 +402,6 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    // equivalente ao teste 'TestPartialListeners' em go
     #[tokio::test]
     #[ignore] // Test takes too long in CI environment
     async fn test_partial_listeners() {
