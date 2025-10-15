@@ -2,12 +2,12 @@ use crate::access_controller::{
     manifest::ManifestParams, traits::AccessController, traits::Option as AccessControllerOption,
 };
 use crate::address::Address;
-use crate::data_store::Datastore; // Import da trait Datastore do módulo data_store
+use crate::data_store::Datastore;
 use crate::error::GuardianError;
 use crate::events::{self, EmitterInterface};
-use crate::ipfs_core_api::client::IpfsClient; // Use o cliente local
+use crate::ipfs_core_api::client::IpfsClient;
 use crate::ipfs_log::{entry::Entry, identity::Identity, log::Log};
-use crate::pubsub::event::EventBus; // Import do nosso EventBus
+use crate::pubsub::event::EventBus;
 use crate::stores::{
     operation::operation::Operation,
     replicator::{replication_info::ReplicationInfo, replicator::Replicator},
@@ -15,11 +15,10 @@ use crate::stores::{
 use cid::Cid;
 use futures::stream::Stream;
 use libp2p::core::PeerId;
-use opentelemetry::global::BoxedTracer;
-use opentelemetry::trace::noop::NoopTracer;
+use opentelemetry::global::{BoxedSpan, BoxedTracer};
+use opentelemetry::trace::{Tracer, noop::NoopTracer};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use slog::Logger;
 use std::any::Any;
 use std::error::Error;
 use std::future::Future;
@@ -27,6 +26,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tracing::Span;
 
 // Type aliases para reduzir complexidade de tipos
 type KeyExtractorFn =
@@ -37,8 +37,9 @@ type ItemFactoryFn = Arc<dyn Fn() -> serde_json::Value + Send + Sync>;
 type CleanupCallback = Box<
     dyn FnOnce() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> + Send + Sync,
 >;
-// Temporary type definitions until proper modules are available
-pub type SortFn = fn(&Entry, &Entry) -> std::cmp::Ordering;
+
+// Re-export from the canonical location to avoid duplication
+pub use crate::stores::replicator::traits::SortFn;
 
 // Type aliases para melhorar legibilidade de assinaturas complexas
 /// Alias para documentos dinâmicos thread-safe
@@ -62,53 +63,205 @@ pub type AsyncDocumentFilter = Pin<
 /// Alias para callback de progresso
 pub type ProgressCallback = mpsc::Sender<Entry>;
 
-/// Enum para resolver problema de dyn compatibility do Tracer
+/// Wrapper para diferentes tipos de tracer, integrado com o sistema tracing
+///
+/// Este enum permite usar tanto tracers OpenTelemetry quanto o sistema
+/// tracing nativo do Rust de forma transparente.
+#[derive(Default)]
 pub enum TracerWrapper {
-    Boxed(Arc<BoxedTracer>),
+    /// Tracer OpenTelemetry para observabilidade distribuída
+    OpenTelemetry(Arc<BoxedTracer>),
+    /// Tracer baseado no sistema tracing nativo do Rust
+    #[default]
+    Tracing,
+    /// Tracer noop para quando telemetria está desabilitada
     Noop(NoopTracer),
 }
 
 impl Clone for TracerWrapper {
     fn clone(&self) -> Self {
         match self {
-            TracerWrapper::Boxed(tracer) => TracerWrapper::Boxed(tracer.clone()),
+            TracerWrapper::OpenTelemetry(tracer) => TracerWrapper::OpenTelemetry(tracer.clone()),
+            TracerWrapper::Tracing => TracerWrapper::Tracing,
             TracerWrapper::Noop(_) => TracerWrapper::Noop(NoopTracer::new()),
         }
     }
 }
 
 impl TracerWrapper {
-    /// Start method para criar spans
-    pub fn start(&self, name: &str) -> TracerSpan {
-        let _name = name; // Suppress unused warning
+    /// Cria um novo TracerWrapper usando o sistema tracing nativo
+    pub fn new_tracing() -> Self {
+        TracerWrapper::Tracing
+    }
+
+    /// Cria um novo TracerWrapper usando OpenTelemetry
+    pub fn new_opentelemetry(tracer: Arc<BoxedTracer>) -> Self {
+        TracerWrapper::OpenTelemetry(tracer)
+    }
+
+    /// Cria um TracerWrapper noop (sem operação)
+    pub fn new_noop() -> Self {
+        TracerWrapper::Noop(NoopTracer::new())
+    }
+
+    /// Inicia um novo span instrumentado
+    ///
+    /// Este método cria spans de forma consistente independentemente
+    /// do tipo de tracer sendo usado.
+    pub fn start_span(&self, name: &str) -> TracerSpan {
         match self {
-            TracerWrapper::Boxed(_) => TracerSpan::Boxed,
-            TracerWrapper::Noop(_) => TracerSpan::Noop,
+            TracerWrapper::OpenTelemetry(tracer) => {
+                // Para OpenTelemetry, cria um span usando a trait Tracer
+                let span = tracer.start(name.to_string());
+                TracerSpan::OpenTelemetry(span)
+            }
+            TracerWrapper::Tracing => {
+                // Para tracing nativo, usa a macro tracing::span!
+                let span = tracing::info_span!("guardian_db", operation = name);
+                TracerSpan::Tracing(span)
+            }
+            TracerWrapper::Noop(_) => {
+                // Para noop, retorna um span vazio
+                TracerSpan::Noop
+            }
+        }
+    }
+
+    /// Verifica se o tracer está ativo (não é noop)
+    pub fn is_active(&self) -> bool {
+        !matches!(self, TracerWrapper::Noop(_))
+    }
+
+    /// Retorna o tipo do tracer como string para logs/debug
+    pub fn tracer_type(&self) -> &'static str {
+        match self {
+            TracerWrapper::OpenTelemetry(_) => "opentelemetry",
+            TracerWrapper::Tracing => "tracing",
+            TracerWrapper::Noop(_) => "noop",
         }
     }
 }
 
-/// Struct simples para representar spans
+/// Enum para representar diferentes tipos de spans instrumentados
+///
+/// Permite trabalhar com spans de diferentes sistemas de tracing
+/// de forma unificada.
 pub enum TracerSpan {
-    Boxed,
+    /// Span OpenTelemetry para observabilidade distribuída
+    OpenTelemetry(BoxedSpan),
+    /// Span do sistema tracing nativo do Rust
+    Tracing(tracing::Span),
+    /// Span noop para quando telemetria está desabilitada
     Noop,
+}
+
+impl TracerSpan {
+    /// Adiciona um atributo/campo ao span
+    pub fn set_attribute<T: Into<opentelemetry::Value>>(&mut self, key: &str, value: T) {
+        match self {
+            TracerSpan::OpenTelemetry(span) => {
+                use opentelemetry::trace::Span as OtelSpan;
+                span.set_attribute(opentelemetry::KeyValue::new(key.to_string(), value));
+            }
+            TracerSpan::Tracing(span) => {
+                // Para tracing, registra como evento dentro do span
+                span.in_scope(|| {
+                    tracing::info!(key = %format!("{:?}", value.into()), "span_attribute");
+                });
+            }
+            TracerSpan::Noop => {
+                // Noop - não faz nada
+            }
+        }
+    }
+
+    /// Registra um evento no span
+    pub fn add_event(&mut self, name: &str, attributes: Vec<(&str, &str)>) {
+        match self {
+            TracerSpan::OpenTelemetry(span) => {
+                use opentelemetry::trace::Span as OtelSpan;
+                let attrs: Vec<opentelemetry::KeyValue> = attributes
+                    .into_iter()
+                    .map(|(k, v)| opentelemetry::KeyValue::new(k.to_string(), v.to_string()))
+                    .collect();
+                span.add_event(name.to_string(), attrs);
+            }
+            TracerSpan::Tracing(span) => {
+                // Para tracing, registra como evento estruturado
+                span.in_scope(|| {
+                    let fields: std::collections::HashMap<&str, &str> =
+                        attributes.into_iter().collect();
+                    tracing::info!(event = name, ?fields, "span_event");
+                });
+            }
+            TracerSpan::Noop => {
+                // Noop - não faz nada
+            }
+        }
+    }
+
+    /// Marca o span como erro
+    pub fn set_error<E: std::fmt::Display>(&mut self, error: E) {
+        match self {
+            TracerSpan::OpenTelemetry(span) => {
+                use opentelemetry::trace::Span as OtelSpan;
+                span.set_status(opentelemetry::trace::Status::Error {
+                    description: std::borrow::Cow::Owned(error.to_string()),
+                });
+                span.set_attribute(opentelemetry::KeyValue::new("error".to_string(), true));
+                span.set_attribute(opentelemetry::KeyValue::new(
+                    "error.message".to_string(),
+                    error.to_string(),
+                ));
+            }
+            TracerSpan::Tracing(span) => {
+                span.in_scope(|| {
+                    tracing::error!(error = %error, "span_error");
+                });
+            }
+            TracerSpan::Noop => {
+                // Noop - não faz nada
+            }
+        }
+    }
+
+    /// Finaliza o span explicitamente
+    pub fn finish(mut self) {
+        match &mut self {
+            TracerSpan::OpenTelemetry(_span) => {
+                // OpenTelemetry spans são finalizados automaticamente no Drop
+                // Mas podemos marcar como concluído aqui se necessário
+            }
+            TracerSpan::Tracing(_span) => {
+                // Tracing spans são finalizados automaticamente quando saem de escopo
+                // Não é necessário fazer nada aqui
+            }
+            TracerSpan::Noop => {
+                // Noop - não faz nada
+            }
+        }
+        // O Drop será chamado automaticamente quando self sair de escopo
+    }
 }
 
 impl Drop for TracerSpan {
     fn drop(&mut self) {
-        // Automatic span ending
+        // Para OpenTelemetry, garantimos que o span seja finalizado
+        match self {
+            TracerSpan::OpenTelemetry(_span) => {
+                // OpenTelemetry spans são finalizados automaticamente quando Drop
+                // Não precisamos chamar end() explicitamente aqui
+            }
+            TracerSpan::Tracing(_) => {
+                // Tracing spans são finalizados automaticamente quando saem de escopo
+            }
+            TracerSpan::Noop => {
+                // Noop - não faz nada
+            }
+        }
     }
 }
 
-// Removemos implementação de Tracer para TracerWrapper por enquanto - será implementada depois
-// quando todos os types estiverem definidos corretamente
-
-/// equivalente a struct `MessageExchangeHeads` em go
-///
-/// Adicionamos os derives de `serde` para permitir a serialização e desserialização
-/// de/para JSON, que é o propósito das tags `json:"..."` no código Go.
-/// A struct agora possui os dados (owned data) em vez de slices de ponteiros
-/// para se alinhar com o modelo de propriedade do Rust.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct MessageExchangeHeads {
     #[serde(rename = "address")]
@@ -118,13 +271,6 @@ pub struct MessageExchangeHeads {
     pub heads: Vec<Entry>,
 }
 
-/// equivalente a interface `MessageMarshaler` em go
-///
-/// Interfaces em Go são traduzidas para `traits` em Rust.
-/// O trait define um comportamento (serializar e desserializar) que pode ser
-/// implementado por diferentes tipos. O método `unmarshal` foi adaptado
-/// para retornar um `Result<MessageExchangeHeads, ...>` o que é mais idiomático
-/// em Rust do que modificar um parâmetro de entrada.
 pub trait MessageMarshaler: Send + Sync {
     /// Define um tipo de erro associado para flexibilidade na implementação.
     type Error: std::error::Error + Send + Sync + 'static;
@@ -136,13 +282,6 @@ pub trait MessageMarshaler: Send + Sync {
     fn unmarshal(&self, data: &[u8]) -> Result<MessageExchangeHeads, Self::Error>;
 }
 
-/// equivalente a struct `CreateDBOptions` em go
-///
-/// Campos que em Go eram ponteiros (ex: `*string`, `*bool`) são traduzidos
-/// para `Option<T>` em Rust. Isso representa de forma segura a possibilidade
-/// de um valor estar ausente.
-/// Interfaces Go (`keystore.Interface`, `MessageMarshaler`) são traduzidas para
-/// `Arc<dyn Trait>`, que é um ponteiro inteligente thread-safe para um objeto trait.
 #[derive(Default)]
 pub struct CreateDBOptions {
     pub event_bus: Option<EventBus>,
@@ -154,33 +293,24 @@ pub struct CreateDBOptions {
     pub access_controller_address: Option<String>,
     pub access_controller: Option<Box<dyn ManifestParams>>,
     pub replicate: Option<bool>,
-    pub keystore: Option<Arc<dyn std::fmt::Display>>, // Placeholder until keystore trait is available
+    pub keystore: Option<Arc<dyn crate::ipfs_log::identity_provider::Keystore>>,
     pub cache: Option<Arc<dyn Datastore>>,
     pub identity: Option<Identity>,
     pub sort_fn: Option<SortFn>,
     pub timeout: Option<Duration>,
     pub message_marshaler: Option<Arc<dyn MessageMarshaler<Error = GuardianError>>>,
-    pub logger: Option<Logger>,
-
-    /// Um `Box<dyn FnOnce()>` é um bom equivalente para uma função de fechamento que só deve ser chamada uma vez.
+    pub span: Option<Span>,
     pub close_func: Option<Box<dyn FnOnce() + Send>>,
-
-    /// `interface{}` em Go é traduzido para `Box<dyn Any + Send + Sync>` em Rust
-    /// para permitir qualquer tipo de dado de forma segura entre threads.
     pub store_specific_opts: Option<Box<dyn Any + Send + Sync>>,
 }
 
-// O tipo `StoreConstructor` precisa ser definido para ser usado na trait `BaseGuardianDB`.
-// Em Go: func(coreiface.CoreAPI, *identityprovider.Identity, address.Address, *NewStoreOptions) (Store, error)
-// Em Rust, isso se torna um tipo que pode ser um `Fn` ou `FnMut`.
-// Usamos `Pin<Box<dyn Future>>` para um retorno assíncrono.
-// REFATORAÇÃO: Usando Arc<dyn Fn> em vez de Box<dyn Fn> para permitir clonagem
+// Usando Arc<dyn Fn> em vez de Box<dyn Fn> para permitir clonagem
 pub type StoreConstructor = Arc<
     dyn Fn(
             Arc<IpfsClient>,
             Arc<Identity>,
             Box<dyn Address>,
-            NewStoreOptions, // Assumindo que NewStoreOptions será definida
+            NewStoreOptions,
         ) -> Pin<
             Box<
                 dyn Future<Output = Result<Box<dyn Store<Error = GuardianError>>, GuardianError>>
@@ -190,13 +320,6 @@ pub type StoreConstructor = Arc<
         + Sync,
 >;
 
-/// equivalente a struct `CreateDocumentDBOptions` em go
-///
-/// Funções em Go (func) são traduzidas para tipos `Box<dyn Fn(...)>` em Rust.
-/// O tipo `interface{}` de Go é representado por `Box<dyn Any>`.
-///
-/// Nota: Em um design idiomático de Rust, seria mais comum usar genéricos (`<T>`)
-/// em vez de `Box<dyn Any>`, mas esta é a tradução mais direta do conceito de Go.
 #[derive(Clone)]
 pub struct CreateDocumentDBOptions {
     /// Extrai a chave de um documento genérico.
@@ -212,21 +335,13 @@ pub struct CreateDocumentDBOptions {
     pub item_factory: ItemFactoryFn,
 }
 
-/// equivalente a struct `DetermineAddressOptions` em go
-///
-/// Os campos que eram ponteiros em Go (`*bool`) tornam-se `Option<bool>` em Rust,
-/// representando valores que podem ou não ser fornecidos.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct DetermineAddressOptions {
     pub only_hash: Option<bool>,
     pub replicate: Option<bool>,
     pub access_controller: crate::access_controller::manifest::CreateAccessControllerOptions,
 }
 
-/// equivalente a interface `BaseGuardianDB` em go
-///
-/// A interface é convertida para uma trait em Rust. Funções que recebiam `context.Context`
-/// em Go foram convertidas para métodos `async` em Rust.
 #[async_trait::async_trait]
 pub trait BaseGuardianDB: Send + Sync {
     /// Define um tipo de erro associado para flexibilidade na implementação.
@@ -235,18 +350,18 @@ pub trait BaseGuardianDB: Send + Sync {
     /// Retorna a instância da API do IPFS.
     fn ipfs(&self) -> Arc<IpfsClient>;
 
-    /// Retorna a identidade utilizada pela GuardianDB.
-    fn identity(&self) -> &Identity;
+    /// Retorna a identidade utilizada pelo GuardianDB.
+    fn identity(&self) -> Arc<Identity>;
 
     /// Cria ou abre uma store com o endereço e opções fornecidos.
     async fn open(
         &self,
         address: &str,
         options: &mut CreateDBOptions,
-    ) -> Result<Box<dyn Store<Error = GuardianError>>, Self::Error>;
+    ) -> Result<Arc<dyn Store<Error = GuardianError>>, Self::Error>;
 
     /// Retorna uma instância da store se ela já estiver aberta.
-    fn get_store(&self, address: &str) -> Option<Box<dyn Store<Error = GuardianError>>>;
+    fn get_store(&self, address: &str) -> Option<Arc<dyn Store<Error = GuardianError>>>;
 
     /// Cria uma nova store com o nome, tipo e opções fornecidos.
     async fn create(
@@ -254,7 +369,7 @@ pub trait BaseGuardianDB: Send + Sync {
         name: &str,
         store_type: &str,
         options: &mut CreateDBOptions,
-    ) -> Result<Box<dyn Store<Error = GuardianError>>, Self::Error>;
+    ) -> Result<Arc<dyn Store<Error = GuardianError>>, Self::Error>;
 
     /// Determina o endereço de um banco de dados com base nos seus parâmetros.
     async fn determine_address(
@@ -288,15 +403,13 @@ pub trait BaseGuardianDB: Send + Sync {
     /// Retorna o barramento de eventos.
     fn event_bus(&self) -> EventBus;
 
-    /// Retorna o logger.
-    fn logger(&self) -> &slog::Logger;
+    /// Retorna o span para tracing.
+    fn span(&self) -> &tracing::Span;
 
     /// Retorna o tracer para telemetria.
     fn tracer(&self) -> Arc<TracerWrapper>;
 }
 
-/// equivalente a interface `GuardianDBDocumentStoreProvider` em go
-///
 /// Expõe um método para criar ou abrir uma `DocumentStore`.
 #[async_trait::async_trait]
 pub trait GuardianDBDocumentStoreProvider {
@@ -310,20 +423,12 @@ pub trait GuardianDBDocumentStoreProvider {
         options: &mut CreateDBOptions,
     ) -> Result<Box<dyn DocumentStore<Error = GuardianError>>, Self::Error>;
 }
-
-/// equivalente a interface `GuardianDBDocumentStore` em go
-///
-/// Em Rust, a composição de interfaces é feita através da herança de traits.
-/// Esta trait combina as capacidades de `BaseGuardianDB` e `GuardianDBDocumentStoreProvider`.
-/// Uma struct que implemente `GuardianDBDocumentStore` deverá também implementar as outras duas traits.
+/// Combina as traits `BaseGuardianDB` e `GuardianDBDocumentStoreProvider`.
 pub trait GuardianDBDocumentStore: BaseGuardianDB + GuardianDBDocumentStoreProvider {}
 
-// Para permitir que qualquer tipo que implemente as traits base possa ser
-// usado como um `GuardianDBDocumentStore`, podemos fornecer uma implementação "blanket".
+// Implementação "blanket" que aplica automaticamente a trait `GuardianDBDocumentStore`
 impl<T: BaseGuardianDB + GuardianDBDocumentStoreProvider> GuardianDBDocumentStore for T {}
 
-/// equivalente a interface `GuardianDBKVStoreProvider` em go
-///
 /// Expõe um método para criar ou abrir uma `KeyValueStore`.
 #[async_trait::async_trait]
 pub trait GuardianDBKVStoreProvider: Send + Sync {
@@ -338,18 +443,13 @@ pub trait GuardianDBKVStoreProvider: Send + Sync {
     ) -> Result<Box<dyn KeyValueStore<Error = GuardianError>>, Self::Error>;
 }
 
-/// equivalente a interface `GuardianDBKVStore` em go
-///
-/// Combina as traits `BaseGuardianDB` e `GuardianDBKVStoreProvider` (definida no passo anterior).
-/// Qualquer tipo que implemente `GuardianDBKVStore` deve implementar ambas as traits base.
+/// Combina as traits `BaseGuardianDB` e `GuardianDBKVStoreProvider`.
 pub trait GuardianDBKVStore: BaseGuardianDB + GuardianDBKVStoreProvider {}
 
 // Implementação "blanket" que aplica automaticamente a trait `GuardianDBKVStore`
 // a qualquer tipo que já satisfaça as condições.
 impl<T: BaseGuardianDB + GuardianDBKVStoreProvider> GuardianDBKVStore for T {}
 
-/// equivalente a interface `GuardianDBLogStoreProvider` em go
-///
 /// Expõe um método para criar ou abrir uma `EventLogStore`.
 #[async_trait::async_trait]
 pub trait GuardianDBLogStoreProvider {
@@ -364,20 +464,13 @@ pub trait GuardianDBLogStoreProvider {
     ) -> Result<Box<dyn EventLogStore<Error = GuardianError>>, Self::Error>;
 }
 
-/// equivalente a interface `GuardianDBLogStore` em go
-///
 /// Combina as traits `BaseGuardianDB` e `GuardianDBLogStoreProvider`.
 pub trait GuardianDBLogStore: BaseGuardianDB + GuardianDBLogStoreProvider {}
 
 // Implementação "blanket" para `GuardianDBLogStore`.
 impl<T: BaseGuardianDB + GuardianDBLogStoreProvider> GuardianDBLogStore for T {}
 
-/// equivalente a interface `GuardianDB` em go
-///
-/// Esta é a interface principal que agrega todas as funcionalidades.
-/// Em Rust, criamos uma trait `GuardianDB` que herda de `BaseGuardianDB` e de todos
-/// os `...Provider` traits. Isso garante que qualquer tipo que implemente `GuardianDB`
-/// terá todos os métodos necessários (`ipfs`, `identity`, `log`, `key_value`, `docs`, etc.).
+/// Combina todas as traits principais do GuardianDB.
 pub trait GuardianDB:
     BaseGuardianDB
     + GuardianDBKVStoreProvider
@@ -387,7 +480,7 @@ pub trait GuardianDB:
 }
 
 // A implementação "blanket" permite que qualquer tipo que já satisfaça todas
-// as constraints seja automaticamente considerado um `GuardianDB`.
+// as constraints seja automaticamente considerado `GuardianDB`.
 impl<
     T: BaseGuardianDB
         + GuardianDBKVStoreProvider
@@ -397,12 +490,6 @@ impl<
 {
 }
 
-/// equivalente a struct `StreamOptions` em go
-///
-/// Esta struct define os parâmetros para filtrar um stream de dados de um log.
-/// Os campos que em Go eram ponteiros (`*cid.Cid`, `*int`) para indicar valores
-/// opcionais, são convertidos para `Option<T>` em Rust, que é a forma
-/// idiomática e segura de representar opcionalidade.
 #[derive(Default, Debug, Clone)]
 pub struct StreamOptions {
     /// "Greater Than": Retorna entradas que são posteriores à CID fornecida.
@@ -421,24 +508,15 @@ pub struct StreamOptions {
     pub amount: Option<i32>,
 }
 
-/// equivalente a interface `StoreEvents` em go
-///
-/// Uma interface simples que se torna uma trait em Rust.
-/// O método `subscribe` recebe `&mut self`, pois é provável que a inscrição
-/// modifique o estado do objeto (ex: adicionando um listener a uma lista interna).
 pub trait StoreEvents {
     fn subscribe(&mut self);
 }
 
-/// equivalente a interface `Store` em go
-///
-/// Esta é a trait fundamental que define as operações comuns a todos os tipos de stores.
-/// Muitas funções são `async` porque envolvem operações de I/O (rede ou disco).
+/// Define as operações comuns a todos os tipos de stores.
 #[async_trait::async_trait]
 pub trait Store: Send + Sync {
     type Error: std::error::Error + Send + Sync + 'static;
 
-    // A interface `EmitterInterface` foi marcada como obsoleta no código Go.
     #[deprecated(note = "use event_bus() instead")]
     fn events(&self) -> &dyn EmitterInterface;
 
@@ -460,7 +538,6 @@ pub trait Store: Send + Sync {
     fn replication_status(&self) -> ReplicationInfo;
 
     /// Retorna o replicador responsável pela sincronização de dados.
-    /// Retorna Option<Arc> para refletir a realidade arquitetural
     fn replicator(&self) -> Option<Arc<Replicator>>;
 
     /// Retorna o cache da store.
@@ -498,31 +575,26 @@ pub trait Store: Send + Sync {
     fn access_controller(&self) -> &dyn AccessController;
 
     /// Adiciona uma nova operação à store.
-    /// O canal `on_progress_callback` é usado para notificar o progresso,
-    /// similar ao `chan<-` em Go.
     async fn add_operation(
         &mut self,
         op: Operation,
         on_progress_callback: Option<ProgressCallback>,
     ) -> Result<Entry, Self::Error>;
 
-    /// Retorna o logger.
+    /// Retorna o span.
     /// Modificado para retornar Arc para evitar problemas de lifetime
-    fn logger(&self) -> Arc<Logger>;
+    fn span(&self) -> Arc<Span>;
 
     /// Retorna o tracer para telemetria.
     fn tracer(&self) -> Arc<TracerWrapper>;
 
     /// Retorna o barramento de eventos.
-    /// Modificado para retornar Arc para refletir arquitetura real
     fn event_bus(&self) -> Arc<EventBus>;
 
     /// Método auxiliar para downcast
     fn as_any(&self) -> &dyn std::any::Any;
 }
 
-/// equivalente a interface `EventLogStore` em go
-///
 /// Uma store que se comporta como um log de eventos "append-only" distribuído.
 /// Herda todas as funcionalidades da trait `Store` e adiciona operações
 /// específicas para logs sequenciais imutáveis.
@@ -554,9 +626,15 @@ pub trait EventLogStore: Store {
     /// Retorna um stream de operações, com opções de filtro.
     /// Em Rust, em vez de passar um canal, é idiomático retornar um `Stream`.
     ///
-    /// # Nota
-    /// Esta funcionalidade está comentada até que a implementação de Stream seja finalizada.
-    // async fn stream(&self, options: Option<StreamOptions>) -> Result<impl Stream<Item = Operation>, Self::Error>;
+    /// # TODO
+    /// Esta funcionalidade requer implementação cuidadosa de Stream para evitar
+    /// problemas de lifetime. Por enquanto, use `list()` para casos síncronos.
+    ///
+    /// # Implementação futura
+    /// ```ignore
+    /// async fn stream(&self, options: Option<StreamOptions>)
+    ///     -> Result<Pin<Box<dyn Stream<Item = Operation> + Send>>, Self::Error>;
+    /// ```
     /// Retorna uma lista de operações que ocorreram na store, com opções de filtro.
     /// Permite consultas históricas com critérios específicos de tempo/posição.
     ///
@@ -568,8 +646,6 @@ pub trait EventLogStore: Store {
     async fn list(&self, options: Option<StreamOptions>) -> Result<Vec<Operation>, Self::Error>;
 }
 
-/// equivalente a interface `KeyValueStore` em go
-///
 /// Uma store que se comporta como um banco de dados chave-valor distribuído.
 /// Herda todas as funcionalidades da trait `Store` e adiciona operações
 /// específicas para pares chave-valor com semântica CRDT.
@@ -614,17 +690,13 @@ pub trait KeyValueStore: Store {
     async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Self::Error>;
 }
 
-/// equivalente a struct `DocumentStoreGetOptions` em go
-///
 /// Uma struct simples para passar opções ao método `get` de uma DocumentStore.
-/// Derivar `Default` e `Copy` a torna mais fácil de usar.
 #[derive(Default, Debug, Clone, Copy)]
 pub struct DocumentStoreGetOptions {
     pub case_insensitive: bool,
     pub partial_matches: bool,
 }
 
-/// equivalente a struct `DocumentStoreQueryOptions` em go
 #[derive(Default, Debug, Clone)]
 pub struct DocumentStoreQueryOptions {
     pub limit: Option<usize>,
@@ -632,11 +704,7 @@ pub struct DocumentStoreQueryOptions {
     pub sort: Option<String>,
 }
 
-/// equivalente a interface `DocumentStore` em go
-///
 /// Uma store que lida com documentos (objetos semi-estruturados).
-/// O tipo `interface{}` de Go é traduzido para `Box<dyn Any + Send + Sync>` em Rust
-/// para permitir o armazenamento de qualquer tipo de dado de forma dinâmica e segura.
 ///
 /// Esta trait combina funcionalidades de store básica com operações específicas
 /// para documentos, incluindo consultas avançadas e operações em lote.
@@ -667,21 +735,12 @@ pub trait DocumentStore: Store {
     ) -> Result<Vec<Document>, Self::Error>;
 
     /// Encontra documentos usando uma função de filtro (predicado).
-    /// A função de filtro em Go é `func(doc interface{}) (bool, error)`, que é traduzida
-    /// para uma closure que pode falhar (`Result<bool, ...>`).
-    /// A closure deve ser thread-safe (Send + Sync) para permitir processamento paralelo.
     async fn query(&self, filter: AsyncDocumentFilter) -> Result<Vec<Document>, Self::Error>;
 }
 
-/// equivalente a interface `StoreIndex` em go
-///
 /// Index contém o estado atual de uma store. Ele processa o log de
 /// operações (`OpLog`) para construir a visão mais recente dos dados,
 /// implementando a lógica do CRDT.
-///
-/// REFATORAÇÃO: Removido o método get() problemático que retornava referências
-/// incompatíveis com dados protegidos por lock. Adicionados métodos mais específicos
-/// e seguros para diferentes tipos de acesso aos dados.
 pub trait StoreIndex: Send + Sync {
     type Error: Error + Send + Sync + 'static;
 
@@ -738,7 +797,7 @@ pub trait StoreIndex: Send + Sync {
     /// - O(end - start) para coleção dos resultados
     /// - Evita deserialização de bytes para Entry
     fn get_entries_range(&self, _start: usize, _end: usize) -> Option<Vec<Entry>> {
-        // Implementação padrão retorna None - índices que suportam podem override
+        // ***Implementação padrão retorna None - índices que suportam podem override
         None
     }
 
@@ -756,7 +815,7 @@ pub trait StoreIndex: Send + Sync {
     /// `Some(Vec<Entry>)` se o índice suporta acesso direto
     /// `None` se não suportado
     fn get_last_entries(&self, _count: usize) -> Option<Vec<Entry>> {
-        // Implementação padrão retorna None
+        // ***Implementação padrão retorna None
         None
     }
 
@@ -773,7 +832,7 @@ pub trait StoreIndex: Send + Sync {
     /// `Some(Entry)` se encontrada e suportada
     /// `None` se não encontrada ou não suportada
     fn get_entry_by_cid(&self, _cid: &Cid) -> Option<Entry> {
-        // Implementação padrão retorna None
+        // ***Implementação padrão retorna None
         None
     }
 
@@ -782,23 +841,14 @@ pub trait StoreIndex: Send + Sync {
     /// Permite que o código cliente determine se pode usar os métodos
     /// opcionais de otimização.
     fn supports_entry_queries(&self) -> bool {
-        // Implementação padrão retorna false
+        // ***Implementação padrão retorna false
         false
     }
 }
 
-/// equivalente a struct `NewStoreOptions` em go
-///
 /// Opções detalhadas para a criação de uma nova instância de Store.
 /// Esta struct é o ponto central de configuração para todas as funcionalidades
 /// avançadas de uma store, incluindo índices, cache, replicação e telemetria.
-///
-/// # Organização dos campos:
-/// - **Core**: Campos essenciais para funcionamento básico
-/// - **Networking**: Configurações de rede e comunicação P2P  
-/// - **Performance**: Cache, índices e otimizações
-/// - **Observability**: Logging, telemetria e monitoramento
-/// - **Lifecycle**: Callbacks e gerenciamento de recursos
 pub struct NewStoreOptions {
     // === CORE CONFIGURATION ===
     /// Barramento de eventos para comunicação interna
@@ -851,7 +901,7 @@ pub struct NewStoreOptions {
 
     // === OBSERVABILITY ===
     /// Sistema de logging estruturado
-    pub logger: Option<Logger>,
+    pub span: Option<Span>,
 
     /// Tracer para telemetria distribuída (OpenTelemetry)
     pub tracer: Option<Arc<TracerWrapper>>,
@@ -868,13 +918,7 @@ pub struct NewStoreOptions {
 
 impl Default for NewStoreOptions {
     fn default() -> Self {
-        // Create a dummy PeerId for default - in real usage this should be properly generated
-        let peer_id = PeerId::from_bytes(&[0u8; 32]).unwrap_or_else(|_| {
-            // Fallback: generate a random PeerId
-            libp2p::identity::Keypair::generate_ed25519()
-                .public()
-                .to_peer_id()
-        });
+        let peer_id = PeerId::random();
 
         Self {
             event_bus: None,
@@ -892,7 +936,7 @@ impl Default for NewStoreOptions {
             reference_count: None,
             max_history: None,
             replicate: None,
-            logger: None,
+            span: None,
             tracer: None,
             close_func: None,
             store_specific_opts: None,
@@ -900,18 +944,13 @@ impl Default for NewStoreOptions {
     }
 }
 
-/// equivalente a struct `DirectChannelOptions` em go
-///
 /// Opções para configurar um `DirectChannel`.
 #[derive(Default, Clone)]
 pub struct DirectChannelOptions {
-    pub logger: Option<Logger>,
+    pub span: Option<Span>,
 }
 
-/// equivalente a interface `DirectChannel` em go
-///
-/// Uma trait para a comunicação direta com outro par na rede.
-/// Os métodos são `async` pois envolvem operações de rede.
+/// Trait para a comunicação direta com outro par na rede.
 #[async_trait::async_trait]
 pub trait DirectChannel: Send + Sync + std::any::Any {
     type Error: Error + Send + Sync + 'static;
@@ -933,8 +972,6 @@ pub trait DirectChannel: Send + Sync + std::any::Any {
     fn as_any(&self) -> &dyn std::any::Any;
 }
 
-/// equivalente a struct `EventPubSubPayload` em go
-///
 /// Define o conteúdo de uma mensagem recebida via pubsub ou canal direto.
 /// Esta struct é necessária para a definição de `DirectChannelEmitter`.
 #[derive(Debug, Clone)]
@@ -943,8 +980,6 @@ pub struct EventPubSubPayload {
     pub peer: PeerId,
 }
 
-/// equivalente a interface `DirectChannelEmitter` em go
-///
 /// Uma trait usada para emitir eventos recebidos de um `DirectChannel`.
 #[async_trait::async_trait]
 pub trait DirectChannelEmitter: Send + Sync {
@@ -957,11 +992,7 @@ pub trait DirectChannelEmitter: Send + Sync {
     async fn close(&self) -> Result<(), Self::Error>;
 }
 
-/// equivalente ao tipo `DirectChannelFactory` em go
-///
-/// Em Rust, um tipo `func` de Go é traduzido para um alias de tipo para uma `Closure`.
-/// Esta é uma fábrica para criar instâncias de `DirectChannel`.
-/// REFATORAÇÃO: Usando Arc<dyn Fn> em vez de Box<dyn Fn> para permitir clonagem
+/// Uma fábrica para criar instâncias de `DirectChannel`.
 pub type DirectChannelFactory = Arc<
     dyn Fn(
             Arc<dyn DirectChannelEmitter<Error = GuardianError>>,
@@ -979,15 +1010,11 @@ pub type DirectChannelFactory = Arc<
         + Sync,
 >;
 
-/// equivalente ao tipo `IndexConstructor` em go
-///
 /// Define o protótipo de uma função (ou closure) que constrói e retorna
 /// uma nova instância de um `StoreIndex`.
 pub type IndexConstructor =
     Box<dyn Fn(&[u8]) -> Box<dyn StoreIndex<Error = GuardianError>> + Send + Sync>;
 
-/// equivalente ao tipo `OnWritePrototype` em go
-///
 /// Um protótipo para a função de callback que é acionada quando novas entradas
 /// (`Entry`) são escritas na store. É um tipo de função assíncrona.
 pub type OnWritePrototype = Box<
@@ -1001,21 +1028,13 @@ pub type OnWritePrototype = Box<
         + Sync,
 >;
 
-/// equivalente a struct `EventPubSubMessage` em go
-///
 /// Representa uma nova mensagem recebida em um tópico pub/sub.
 #[derive(Debug, Clone)]
 pub struct EventPubSubMessage {
     pub content: Vec<u8>,
 }
 
-/// equivalente ao tipo `AccessControllerConstructor` em go
-///
 /// Define o protótipo para um construtor de `AccessController`.
-/// Funções variádicas em Go (`...accesscontroller.Option`) são
-/// geralmente traduzidas como um `Vec<T>` ou slice `&[T]` em Rust.
-/// Usando o tipo concreto CreateAccessControllerOptions em vez da trait para dyn-compatibility.
-/// REFATORAÇÃO: Usando Arc<dyn Fn> em vez de Box<dyn Fn> para permitir clonagem
 pub type AccessControllerConstructor = Arc<
     dyn Fn(
             Arc<dyn BaseGuardianDB<Error = GuardianError>>,
@@ -1027,8 +1046,6 @@ pub type AccessControllerConstructor = Arc<
         + Sync,
 >;
 
-/// equivalente a interface `PubSubTopic` em go
-///
 /// Representa a inscrição em um tópico pub/sub específico.
 #[async_trait::async_trait]
 pub trait PubSubTopic: Send + Sync {
@@ -1041,7 +1058,6 @@ pub trait PubSubTopic: Send + Sync {
     async fn peers(&self) -> Result<Vec<PeerId>, Self::Error>;
 
     /// Observa os pares que entram e saem do tópico.
-    /// Em Rust, em vez de retornar um canal (chan), é idiomático retornar um `Stream`.
     async fn watch_peers(
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = events::Event> + Send>>, Self::Error>;
@@ -1055,9 +1071,7 @@ pub trait PubSubTopic: Send + Sync {
     fn topic(&self) -> &str;
 }
 
-/// equivalente a interface `PubSubInterface` em go
-///
-/// Interface principal do sistema pub/sub.
+/// Trait principal do sistema pub/sub.
 #[async_trait::async_trait]
 pub trait PubSubInterface: Send + Sync + std::any::Any {
     type Error: Error + Send + Sync + 'static;
@@ -1072,21 +1086,18 @@ pub trait PubSubInterface: Send + Sync + std::any::Any {
     fn as_any(&self) -> &dyn std::any::Any;
 }
 
-/// equivalente a struct `PubSubSubscriptionOptions` em go
-///
 /// Opções para a criação de uma inscrição em um tópico Pub/Sub.
-/// Usamos `Option` para indicar que o logger e o tracer podem não ser fornecidos.
 #[derive(Default, Clone)]
 pub struct PubSubSubscriptionOptions {
-    pub logger: Option<Logger>,
+    pub span: Option<Span>,
     pub tracer: Option<Arc<TracerWrapper>>,
 }
 
-/// EventPubSub::Leave equivalente a struct `EventPubSubLeave` em go
+/// EventPubSub::Leave
 /// Representa um evento disparado quando um par (peer) sai
 /// de um tópico do canal Pub/Sub.
 ///
-/// EventPubSub::Join equivalente a struct `EventPubSubJoin` em go
+/// EventPubSub::Join
 /// Representa um evento disparado quando um par (peer) entra
 /// em um tópico do canal Pub/Sub.
 #[derive(Debug, Clone, PartialEq, Eq)]
