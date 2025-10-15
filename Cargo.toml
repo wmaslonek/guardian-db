@@ -7,24 +7,22 @@ rust-version = "1.89.0"
 
 [dependencies]
 async-trait = "0.1.89"
+async-stream = "0.3.6"
 base64 = "0.22.1"
 byteorder = "1.5.0"
 chrono = { version = "0.4", features = ["serde"] }
 cid = { version = "0.11.1", features = ["serde-codec"] }
-env_logger = "0.11.8"
 fastrand = "2.3"
 futures = "0.3.31"
 libp2p = { version = "0.56.0", features = ["tokio", "tcp", "quic", "noise", "yamux", "relay", "identify", "ping", "kad", "gossipsub", "serde"] }
 libp2p-identity = { version = "0.2.12", features = ["serde"] }
-log = "0.4.27"
-opentelemetry = "0.30.0"
+opentelemetry = "0.31.0"
 parking_lot = "0.12.4"
 path-slash = "0.2.1"
 reqwest = "0.12.23"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_cbor = "0.11.2"
 serde_json = "1.0.143"
-slog = "2.7.0"
 slog-term = "2.9.2"
 tempfile = "3.21.0"
 thiserror = "2.0.16"
@@ -33,24 +31,30 @@ tokio-stream = "0.1.17"
 tokio-util = "0.7.16"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
-ipfs-api-backend-hyper = "0.6.0"
 sha2 = "0.10.9"
 rand = "0.9.2"
 hex = "0.4.3"
 secp256k1 = "0.31.1"
 libipld = "0.16.0"
-datastore = "0.1.5"
 unsigned-varint = "0.8.0"
 multihash = "0.19.3"
 sled = "0.34.7"
-
-# Conditional dependencies for future native implementations
-async-stream = "0.3.6"
-#iroh = "0.91.2"
-#ipfs-embed = "0.26.1"
+iroh = "0.92.0" #Nós vamos atualizar novamente quando a versão 1.0 for lançada
+iroh-io = "0.6.0"
+iroh-blobs = "0.35.0" #Versão para produção conforme docs.rs
+bytes = "1.9.0"
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+uuid = { version = "1.18.1", features = ["serde"] }
+blake3 = "1.8.2"
+bincode = { version = "2.0.1", features = ["serde"] }
+lru = "0.16.1"
+zstd = "0.13.3"
+futures-lite = "2.6.1"
 
 [dev-dependencies]
+tempdir = "0.3.7"
 tokio-test = "0.4"
+criterion = "0.7.0"
 
 [[example]]
 name = "ipfs_core_api_demo"
@@ -59,3 +63,7 @@ path = "examples/ipfs_core_api_demo.rs"
 [[example]]
 name = "direct_channel_transport_demo"
 path = "examples/direct_channel_transport_demo.rs"
+
+[[bench]]
+name = "iroh_gossipsub_performance"
+harness = false
