@@ -1,8 +1,8 @@
+use crate::ipfs_core_api::client::IpfsClient;
 use crate::ipfs_log::access_controller::LogEntry;
 use crate::ipfs_log::identity::Identity;
 use crate::ipfs_log::lamport_clock::LamportClock;
-use futures::{TryStreamExt, future::join_all};
-use ipfs_api_backend_hyper::{IpfsApi, IpfsClient};
+use futures::future::join_all;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::cmp::Ordering;
@@ -13,14 +13,14 @@ use tokio::runtime::Runtime;
 
 #[derive(Debug)]
 pub enum Error {
-    Ipfs(ipfs_api_backend_hyper::Error),
+    Ipfs(crate::error::GuardianError),
     Json(serde_json::Error),
     Io(std::io::Error),
     Other(String),
 }
 
-impl From<ipfs_api_backend_hyper::Error> for Error {
-    fn from(err: ipfs_api_backend_hyper::Error) -> Self {
+impl From<crate::error::GuardianError> for Error {
+    fn from(err: crate::error::GuardianError) -> Self {
         Error::Ipfs(err)
     }
 }
@@ -176,19 +176,20 @@ impl Entry {
     /// **N.B.** *At the moment converts the entry from JSON, not CBOR DAG.*
     pub async fn from_multihash(ipfs: &IpfsClient, hash: &str) -> Result<Entry, Error> {
         let h = hash.to_owned();
-        match ipfs
-            .cat(hash)
-            .map_ok(|chunk| chunk.to_vec())
-            .try_concat()
-            .await
-        {
-            Ok(bytes) => {
-                match serde_json::from_str::<Entry>(std::str::from_utf8(&bytes).unwrap()) {
-                    Ok(mut e) => {
-                        e.hash = h;
-                        Ok(e)
+        match ipfs.cat(hash).await {
+            Ok(mut reader) => {
+                let mut bytes = Vec::new();
+                match tokio::io::AsyncReadExt::read_to_end(&mut reader, &mut bytes).await {
+                    Ok(_) => {
+                        match serde_json::from_str::<Entry>(std::str::from_utf8(&bytes).unwrap()) {
+                            Ok(mut e) => {
+                                e.hash = h;
+                                Ok(e)
+                            }
+                            Err(json_err) => Err(Error::from(json_err)),
+                        }
                     }
-                    Err(json_err) => Err(Error::from(json_err)),
+                    Err(io_err) => Err(Error::from(io_err)),
                 }
             }
             Err(e) => Err(Error::from(e)),
