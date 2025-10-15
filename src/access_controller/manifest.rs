@@ -1,39 +1,28 @@
-use crate::access_controller::traits::AccessController;
 use crate::error::{GuardianError, Result};
+use crate::ipfs_core_api::client::IpfsClient;
 use cid::Cid;
-use ipfs_api_backend_hyper::IpfsClient;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-// Type aliases para simplificar tipos complexos
-type LoggerFuture<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>>;
-type LoggerClosure =
-    Box<dyn for<'a> Fn(&'a dyn AccessController) -> LoggerFuture<'a> + Send + Sync>;
-
-/// equivalente a Manifest em go
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Manifest {
     /// O tipo do controlador de acesso (ex: "ipfs", "GuardianDB").
     #[serde(rename = "type")]
-    pub r#type: String,
+    pub get_type: String,
 
     /// Os parâmetros de configuração para este controlador de acesso.
     #[serde(rename = "params")]
     pub params: CreateAccessControllerOptions,
 }
 
-/// equivalente a CreateAccessControllerOptions em go
 /// Contém as opções de configuração para um controlador de acesso.
 #[derive(Debug, Clone)]
 pub struct CreateAccessControllerOptions {
     pub skip_manifest: bool,
     pub address: Cid,
-    pub r#type: String,
+    pub get_type: String,
     pub name: String,
-
-    // O campo `Access` não é renomeado na versão Go.
-    // Usamos um Mutex para acesso concorrente seguro, como o `sync.RWMutex` do Go.
     access: Arc<Mutex<HashMap<String, Vec<String>>>>,
 }
 
@@ -44,20 +33,17 @@ impl Serialize for CreateAccessControllerOptions {
         S: serde::Serializer,
     {
         use serde::ser::SerializeStruct;
-
         let mut state = serializer.serialize_struct("CreateAccessControllerOptions", 5)?;
         state.serialize_field("skip_manifest", &self.skip_manifest)?;
-        // Note: CID serialization may need custom implementation
-        state.serialize_field("type", &self.r#type)?;
+        state.serialize_field("address", &self.address)?; // CID serializa nativamente  
+        state.serialize_field("type", &self.get_type)?;
         state.serialize_field("name", &self.name)?;
-
         // Serializa os dados de acesso diretamente do Mutex
         if let Ok(access_guard) = self.access.lock()
             && !access_guard.is_empty()
         {
             state.serialize_field("access", &*access_guard)?;
         }
-
         state.end()
     }
 }
@@ -70,16 +56,12 @@ impl<'de> Deserialize<'de> for CreateAccessControllerOptions {
     {
         use serde::de::{MapAccess, Visitor};
         use std::fmt;
-
         struct OptionsVisitor;
-
         impl<'de> Visitor<'de> for OptionsVisitor {
             type Value = CreateAccessControllerOptions;
-
             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
                 formatter.write_str("struct CreateAccessControllerOptions")
             }
-
             fn visit_map<V>(
                 self,
                 mut map: V,
@@ -88,7 +70,7 @@ impl<'de> Deserialize<'de> for CreateAccessControllerOptions {
                 V: MapAccess<'de>,
             {
                 let mut skip_manifest = false;
-                let address = Cid::default();
+                let mut address = Cid::default();
                 let mut type_field = String::new();
                 let mut name = String::new();
                 let mut access = HashMap::new();
@@ -97,8 +79,7 @@ impl<'de> Deserialize<'de> for CreateAccessControllerOptions {
                     match key.as_str() {
                         "skip_manifest" => skip_manifest = map.next_value()?,
                         "address" => {
-                            // Note: Custom CID deserialization may be needed
-                            // For now, use default
+                            address = map.next_value()?; // CID deserializa nativamente
                         }
                         "type" => type_field = map.next_value()?,
                         "name" => name = map.next_value()?,
@@ -108,11 +89,10 @@ impl<'de> Deserialize<'de> for CreateAccessControllerOptions {
                         }
                     }
                 }
-
                 Ok(CreateAccessControllerOptions {
                     skip_manifest,
                     address,
-                    r#type: type_field,
+                    get_type: type_field,
                     name,
                     access: Arc::new(Mutex::new(access)),
                 })
@@ -132,15 +112,14 @@ impl Default for CreateAccessControllerOptions {
         Self {
             skip_manifest: false,
             address: Cid::default(),
-            r#type: String::new(),
+            get_type: String::new(),
             name: String::new(),
             access: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
 
-/// equivalente a ManifestParams em go
-/// Uma trait que define a interface para os parâmetros de um manifesto.
+/// Define a interface para os parâmetros de um manifesto.
 pub trait ManifestParams: Send + Sync {
     fn skip_manifest(&self) -> bool;
     fn address(&self) -> Cid;
@@ -149,11 +128,12 @@ pub trait ManifestParams: Send + Sync {
     fn set_type(&mut self, t: String);
     fn get_name(&self) -> &str;
     fn set_name(&mut self, name: String);
-
-    // Métodos síncronos para tornar a trait dyn-compatible
     fn set_access(&mut self, role: String, allowed: Vec<String>);
     fn get_access(&self, role: &str) -> Option<Vec<String>>;
     fn get_all_access(&self) -> HashMap<String, Vec<String>>;
+
+    /// Permite downcast seguro para implementações concretas
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 impl ManifestParams for CreateAccessControllerOptions {
@@ -167,10 +147,10 @@ impl ManifestParams for CreateAccessControllerOptions {
         self.address = addr;
     }
     fn get_type(&self) -> &str {
-        &self.r#type
+        &self.get_type
     }
     fn set_type(&mut self, t: String) {
-        self.r#type = t;
+        self.get_type = t;
     }
     fn get_name(&self) -> &str {
         &self.name
@@ -193,41 +173,40 @@ impl ManifestParams for CreateAccessControllerOptions {
         let guard = self.access.lock().expect("Failed to acquire lock");
         guard.clone()
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 impl CreateAccessControllerOptions {
-    /// equivalente a NewManifestParams em go
     pub fn new(address: Cid, skip_manifest: bool, manifest_type: String) -> Self {
         Self {
             address,
             skip_manifest,
-            r#type: manifest_type,
+            get_type: manifest_type,
             ..Default::default()
         }
     }
 
-    /// equivalente a NewEmptyManifestParams em go
     pub fn new_empty() -> Self {
         Default::default()
     }
 
-    /// equivalente a NewSimpleManifestParams em go
     pub fn new_simple(manifest_type: String, access: HashMap<String, Vec<String>>) -> Self {
         Self {
             skip_manifest: true,
-            r#type: manifest_type,
+            get_type: manifest_type,
             access: Arc::new(Mutex::new(access)),
             ..Default::default()
         }
     }
 
-    /// equivalente a CloneManifestParams em go
     pub fn from_params(params: &CreateAccessControllerOptions) -> Self {
         params.clone()
     }
 }
 
-/// equivalente a CreateManifest em go
 /// Cria um novo manifesto e retorna seu CID.
 pub async fn create(
     ipfs: Arc<IpfsClient>,
@@ -246,11 +225,11 @@ pub async fn create(
     }
 
     let manifest = Manifest {
-        r#type: controller_type,
+        get_type: controller_type,
         params: CreateAccessControllerOptions {
             skip_manifest: params.skip_manifest(),
             address: params.address(),
-            r#type: params.get_type().to_string(),
+            get_type: params.get_type().to_string(),
             name: params.get_name().to_string(),
             access: params.access.clone(),
         },
@@ -267,10 +246,9 @@ pub async fn create(
         ));
     }
 
-    // Armazena no IPFS usando o cliente
-    use ipfs_api_backend_hyper::IpfsApi;
+    // Armazena no IPFS usando o cliente nativo
     let response = ipfs
-        .add(std::io::Cursor::new(cbor_data))
+        .add_bytes(cbor_data)
         .await
         .map_err(|e| GuardianError::Store(format!("Failed to store manifest in IPFS: {}", e)))?;
 
@@ -286,7 +264,6 @@ pub async fn create(
     Ok(cid)
 }
 
-/// equivalente a ResolveManifest em go
 /// Recupera um manifesto a partir do seu endereço.
 pub async fn resolve(
     ipfs: Arc<IpfsClient>,
@@ -301,7 +278,7 @@ pub async fn resolve(
         }
 
         return Ok(Manifest {
-            r#type: params.get_type().to_string(),
+            get_type: params.get_type().to_string(),
             params: params.clone(),
         });
     }
@@ -324,17 +301,16 @@ pub async fn resolve(
         .map_err(|e| GuardianError::Store(format!("Invalid CID format: {}", e)))?;
 
     // Busca os dados do manifesto no IPFS
-    use futures::TryStreamExt;
-    use ipfs_api_backend_hyper::IpfsApi;
+    use tokio::io::AsyncReadExt;
 
-    let data_stream = ipfs.cat(&cid.to_string());
-    let data_bytes: Vec<u8> = data_stream
-        .try_collect::<Vec<_>>()
+    let mut data_reader = ipfs.cat(&cid.to_string()).await.map_err(|e| {
+        GuardianError::Store(format!("Failed to retrieve manifest from IPFS: {}", e))
+    })?;
+    let mut data_bytes = Vec::new();
+    data_reader
+        .read_to_end(&mut data_bytes)
         .await
-        .map_err(|e| GuardianError::Store(format!("Failed to retrieve manifest from IPFS: {}", e)))?
-        .into_iter()
-        .flatten()
-        .collect();
+        .map_err(|e| GuardianError::Store(format!("Failed to read manifest data: {}", e)))?;
 
     // Valida que os dados não estão vazios
     if data_bytes.is_empty() {
@@ -348,7 +324,7 @@ pub async fn resolve(
         .map_err(|e| GuardianError::Store(format!("Failed to deserialize manifest: {}", e)))?;
 
     // Validação adicional do manifesto
-    if manifest.r#type.is_empty() {
+    if manifest.get_type.is_empty() {
         return Err(GuardianError::Store(
             "Manifest type cannot be empty".to_string(),
         ));
@@ -385,32 +361,46 @@ pub fn create_manifest_with_validation(
     }
 
     Ok(Manifest {
-        r#type: controller_type,
+        get_type: controller_type,
         params,
     })
 }
 
-// equivalente a WithLogger em go
-// Função de alta ordem para configurar um logger (padrão de opção funcional).
-// Retorna uma closure que pode ser aplicada a qualquer AccessController
-pub fn with_logger(logger: Arc<slog::Logger>) -> LoggerClosure {
-    Box::new(move |ac: &dyn AccessController| {
-        let logger_clone = logger.clone();
-        Box::pin(async move {
-            ac.set_logger(logger_clone).await;
-        })
-    })
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
 
-// Versão alternativa mais simples para uso direto
-pub async fn apply_logger_to_controller(
-    controller: &dyn AccessController,
-    logger: Arc<slog::Logger>,
-) -> Result<()> {
-    controller.set_logger(logger).await;
-    Ok(())
-}
+    #[test]
+    fn test_cid_serialization_deserialization() {
+        // Demonstra que CID serializa/deserializa nativamente sem implementação customizada
+        let mut access = HashMap::new();
+        access.insert("write".to_string(), vec!["test_key".to_string()]);
 
-// O bloco `init()` do Go, que registra os tipos para serialização CBOR,
-// é substituído em Rust pelo uso de atributos da crate `serde`, como `#[serde(rename = "...")]`,
-// que são declarativos e aplicados diretamente nas definições das structs.
+        let original_cid = Cid::default();
+        let options = CreateAccessControllerOptions {
+            skip_manifest: false,
+            address: original_cid,
+            get_type: "test".to_string(),
+            name: "test_controller".to_string(),
+            access: Arc::new(std::sync::Mutex::new(access)),
+        };
+
+        // Serialização JSON (funciona nativamente)
+        let json =
+            serde_json::to_string(&options).expect("CID serializa sem implementação customizada");
+        let deserialized: CreateAccessControllerOptions =
+            serde_json::from_str(&json).expect("CID deserializa sem implementação customizada");
+
+        assert_eq!(deserialized.address, original_cid);
+        assert_eq!(deserialized.get_type, "test");
+        assert_eq!(deserialized.name, "test_controller");
+
+        // Serialização CBOR (também funciona nativamente)
+        let cbor = serde_cbor::to_vec(&options).expect("CID serializa em CBOR nativamente");
+        let cbor_deserialized: CreateAccessControllerOptions =
+            serde_cbor::from_slice(&cbor).expect("CID deserializa de CBOR nativamente");
+
+        assert_eq!(cbor_deserialized.address, original_cid);
+    }
+}
