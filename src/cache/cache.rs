@@ -2,22 +2,21 @@ use crate::address::Address;
 use crate::data_store::Datastore;
 use crate::error::{GuardianError, Result};
 use sled::{Config, Db};
-use slog::{Logger, debug, error, info, warn};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use tracing::{Span, debug, error, info, instrument, warn};
 
 // Type aliases para simplificar tipos complexos
 type DatastoreBox = Box<dyn Datastore + Send + Sync>;
 type CleanupFn = Box<dyn FnOnce() -> Result<()> + Send + Sync>;
 type NewCacheResult = Result<(DatastoreBox, CleanupFn)>;
 
-// equivalente à struct Options em go
 /// Define as opções para a criação de um cache.
 #[derive(Debug, Clone)]
 pub struct Options {
-    /// Uma instância de um logger estruturado (slog).
-    pub logger: Option<Logger>,
+    /// Span para logging estruturado com tracing.
+    pub span: Option<Span>,
     /// Tamanho máximo do cache em bytes (padrão: 100MB)
     pub max_cache_size: Option<u64>,
     /// Modo de cache: persistente ou em memória
@@ -38,14 +37,13 @@ pub enum CacheMode {
 impl Default for Options {
     fn default() -> Self {
         Self {
-            logger: None,
+            span: None,
             max_cache_size: Some(100 * 1024 * 1024), // 100MB
             cache_mode: CacheMode::Auto,
         }
     }
 }
 
-// equivalente à Interface em go
 /// A trait `Cache` define a interface para um mecanismo de cache
 /// para os bancos de dados GuardianDB.
 pub trait Cache: Send + Sync {
@@ -60,15 +58,12 @@ pub trait Cache: Send + Sync {
     }
 
     /// Carrega um cache para um determinado endereço de banco de dados e um diretório raiz.
-    // equivalente a Load em go
     fn load(&self, directory: &str, db_address: &dyn Address) -> Result<DatastoreBox>;
 
     /// Fecha um cache e todos os seus armazenamentos de dados associados.
-    // equivalente a Close em go
     fn close(&mut self) -> Result<()>;
 
     /// Remove todos os dados em cache de um banco de dados.
-    // equivalente a Destroy em go
     fn destroy(&self, directory: &str, db_address: &dyn Address) -> Result<()>;
 }
 
@@ -88,13 +83,9 @@ impl SledCache {
     }
 
     /// Factory method para criar instâncias de cache
+    #[instrument(level = "info")]
     pub fn create_cache_instance(path: &str, opts: Options) -> NewCacheResult {
-        let logger = opts
-            .logger
-            .clone()
-            .unwrap_or_else(|| slog::Logger::root(slog::Discard, slog::o!()));
-
-        info!(logger, "Creating cache instance"; "path" => path);
+        info!("Creating cache instance: path={}", path);
 
         let datastore = SledDatastore::new(path, opts.clone())?;
         let path_clone = path.to_string();
@@ -104,13 +95,13 @@ impl SledCache {
             if path_clone != ":memory:" && Path::new(&path_clone).exists() {
                 match std::fs::remove_dir_all(&path_clone) {
                     Ok(_) => {
-                        debug!(logger, "Cache directory cleaned up"; "path" => &path_clone);
+                        debug!("Cache directory cleaned up: path={}", &path_clone);
                         Ok(())
                     }
                     Err(e) => {
-                        warn!(logger, "Failed to cleanup cache directory";
-                            "path" => &path_clone,
-                            "error" => %e
+                        warn!(
+                            "Failed to cleanup cache directory: path={}, error={}",
+                            &path_clone, e
                         );
                         Err(GuardianError::Other(format!(
                             "Failed to cleanup cache: {}",
@@ -137,27 +128,23 @@ impl SledCache {
 }
 
 impl Cache for SledCache {
+    #[instrument(level = "info", skip(self, db_address))]
     fn load(
         &self,
         directory: &str,
         db_address: &dyn Address,
     ) -> Result<Box<dyn Datastore + Send + Sync>> {
         let cache_key = Self::generate_cache_key(directory, db_address);
-        let logger = self
-            .options
-            .logger
-            .clone()
-            .unwrap_or_else(|| slog::Logger::root(slog::Discard, slog::o!()));
 
-        info!(logger, "Loading cache";
-            "directory" => directory,
-            "cache_key" => &cache_key
+        info!(
+            "Loading cache: directory={}, cache_key={}",
+            directory, &cache_key
         );
 
         let mut caches = self.caches.lock().unwrap();
 
         if let Some(existing_cache) = caches.get(&cache_key) {
-            debug!(logger, "Using existing cache"; "cache_key" => &cache_key);
+            debug!("Using existing cache: cache_key={}", &cache_key);
             return Ok(Box::new(existing_cache.as_ref().clone()));
         }
 
@@ -166,17 +153,13 @@ impl Cache for SledCache {
         let arc_datastore = Arc::new(datastore.clone());
         caches.insert(cache_key.clone(), arc_datastore);
 
-        info!(logger, "Created new cache"; "cache_key" => &cache_key);
+        info!("Created new cache: cache_key={}", &cache_key);
         Ok(Box::new(datastore))
     }
 
+    #[instrument(level = "info", skip(self))]
     fn close(&mut self) -> Result<()> {
-        let logger = self
-            .options
-            .logger
-            .clone()
-            .unwrap_or_else(|| slog::Logger::root(slog::Discard, slog::o!()));
-        info!(logger, "Closing all caches");
+        info!("Closing all caches");
 
         let caches = {
             let mut cache_map = self.caches.lock().unwrap();
@@ -187,25 +170,21 @@ impl Cache for SledCache {
 
         for cache in caches {
             if let Err(e) = cache.close() {
-                warn!(logger, "Failed to close cache"; "error" => %e);
+                warn!("Failed to close cache: error={}", e);
             }
         }
 
-        info!(logger, "All caches closed");
+        info!("All caches closed");
         Ok(())
     }
 
+    #[instrument(level = "info", skip(self, db_address))]
     fn destroy(&self, directory: &str, db_address: &dyn Address) -> Result<()> {
         let cache_key = Self::generate_cache_key(directory, db_address);
-        let logger = self
-            .options
-            .logger
-            .clone()
-            .unwrap_or_else(|| slog::Logger::root(slog::Discard, slog::o!()));
 
-        info!(logger, "Destroying cache";
-            "directory" => directory,
-            "cache_key" => &cache_key
+        info!(
+            "Destroying cache: directory={}, cache_key={}",
+            directory, &cache_key
         );
 
         // Remove do mapa de caches
@@ -225,7 +204,7 @@ impl Cache for SledCache {
                 GuardianError::Other(format!("Failed to remove cache directory: {}", e))
             })?;
 
-            info!(logger, "Cache directory removed"; "path" => &cache_key);
+            info!("Cache directory removed: path={}", &cache_key);
         }
 
         Ok(())
@@ -237,27 +216,24 @@ impl Cache for SledCache {
 pub struct SledDatastore {
     db: Db,
     path: String,
-    logger: Logger,
+    span: Span,
 }
 
 impl SledDatastore {
     /// Cria uma nova instância do SledDatastore
+    #[instrument(level = "debug")]
     pub fn new(path: &str, opts: Options) -> Result<Self> {
-        let logger = opts
-            .logger
-            .unwrap_or_else(|| slog::Logger::root(slog::Discard, slog::o!()));
-
-        debug!(logger, "Creating SledDatastore"; "path" => path);
+        debug!("Creating SledDatastore: path={}", path);
 
         let db = if path == ":memory:" || matches!(opts.cache_mode, CacheMode::InMemory) {
             // Cache em memória
-            debug!(logger, "Creating in-memory cache");
+            debug!("Creating in-memory cache");
             Config::new().temporary(true).open().map_err(|e| {
                 GuardianError::Store(format!("Failed to create in-memory cache: {}", e))
             })?
         } else {
             // Cache persistente
-            debug!(logger, "Creating persistent cache"; "path" => path);
+            debug!("Creating persistent cache: path={}", path);
 
             // Cria o diretório se não existir
             if let Some(parent) = Path::new(path).parent() {
@@ -278,114 +254,119 @@ impl SledDatastore {
             })?
         };
 
-        info!(logger, "SledDatastore created successfully";
-            "path" => path,
-            "memory_mode" => path == ":memory:"
+        info!(
+            "SledDatastore created successfully: path={}, memory_mode={}",
+            path,
+            path == ":memory:"
         );
 
         Ok(Self {
             db,
             path: path.to_string(),
-            logger,
+            span: opts.span.unwrap_or_else(tracing::Span::current),
         })
     }
 
+    /// Retorna uma referência ao span de tracing para instrumentação
+    pub fn span(&self) -> &Span {
+        &self.span
+    }
+
     /// Fecha o datastore
+    #[instrument(level = "debug", skip(self))]
     pub fn close(&self) -> Result<()> {
-        debug!(self.logger, "Closing SledDatastore"; "path" => &self.path);
+        let _entered = self.span.enter();
+        debug!("Closing SledDatastore: path={}", &self.path);
 
         self.db
             .flush()
             .map_err(|e| GuardianError::Store(format!("Failed to flush cache: {}", e)))?;
 
-        info!(self.logger, "SledDatastore closed"; "path" => &self.path);
+        info!("SledDatastore closed: path={}", &self.path);
         Ok(())
     }
 }
 
 #[async_trait::async_trait]
 impl Datastore for SledDatastore {
+    #[instrument(level = "debug", skip(self, key))]
     async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        let _entered = self.span.enter();
         match self.db.get(key) {
             Ok(Some(value)) => {
-                debug!(self.logger, "Cache hit"; "key_len" => key.len());
+                debug!("Cache hit: key_len={}", key.len());
                 Ok(Some(value.to_vec()))
             }
             Ok(None) => {
-                debug!(self.logger, "Cache miss"; "key_len" => key.len());
+                debug!("Cache miss: key_len={}", key.len());
                 Ok(None)
             }
             Err(e) => {
-                error!(self.logger, "Cache get error";
-                    "key_len" => key.len(),
-                    "error" => %e
-                );
+                error!("Cache get error: key_len={}, error={}", key.len(), e);
                 Err(GuardianError::Store(format!("Cache get error: {}", e)))
             }
         }
     }
 
+    #[instrument(level = "debug", skip(self, key, value))]
     async fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
+        let _entered = self.span.enter();
         match self.db.insert(key, value) {
             Ok(_) => {
-                debug!(self.logger, "Cache put success";
-                    "key_len" => key.len(),
-                    "value_len" => value.len()
+                debug!(
+                    "Cache put success: key_len={}, value_len={}",
+                    key.len(),
+                    value.len()
                 );
                 Ok(())
             }
             Err(e) => {
-                error!(self.logger, "Cache put error";
-                    "key_len" => key.len(),
-                    "error" => %e
-                );
+                error!("Cache put error: key_len={}, error={}", key.len(), e);
                 Err(GuardianError::Store(format!("Cache put error: {}", e)))
             }
         }
     }
 
+    #[instrument(level = "debug", skip(self, key))]
     async fn has(&self, key: &[u8]) -> Result<bool> {
+        let _entered = self.span.enter();
         match self.db.contains_key(key) {
             Ok(exists) => {
-                debug!(self.logger, "Cache has check";
-                    "key_len" => key.len(),
-                    "exists" => exists
-                );
+                debug!("Cache has check: key_len={}, exists={}", key.len(), exists);
                 Ok(exists)
             }
             Err(e) => {
-                error!(self.logger, "Cache has error";
-                    "key_len" => key.len(),
-                    "error" => %e
-                );
+                error!("Cache has error: key_len={}, error={}", key.len(), e);
                 Err(GuardianError::Store(format!("Cache has error: {}", e)))
             }
         }
     }
 
+    #[instrument(level = "debug", skip(self, key))]
     async fn delete(&self, key: &[u8]) -> Result<()> {
+        let _entered = self.span.enter();
         match self.db.remove(key) {
             Ok(_) => {
-                debug!(self.logger, "Cache delete success"; "key_len" => key.len());
+                debug!("Cache delete success: key_len={}", key.len());
                 Ok(())
             }
             Err(e) => {
-                error!(self.logger, "Cache delete error";
-                    "key_len" => key.len(),
-                    "error" => %e
-                );
+                error!("Cache delete error: key_len={}, error={}", key.len(), e);
                 Err(GuardianError::Store(format!("Cache delete error: {}", e)))
             }
         }
     }
 
+    #[instrument(level = "debug", skip(self, query))]
     async fn query(&self, query: &crate::data_store::Query) -> Result<crate::data_store::Results> {
+        let _entered = self.span.enter();
         use crate::data_store::{Key, ResultItem};
 
-        debug!(self.logger, "Cache query";
-            "has_prefix" => query.prefix.is_some(),
-            "limit" => query.limit,
-            "order" => ?query.order
+        debug!(
+            "Cache query: has_prefix={}, limit={:?}, order={:?}",
+            query.prefix.is_some(),
+            query.limit,
+            query.order
         );
 
         let iter: Box<dyn Iterator<Item = sled::Result<(sled::IVec, sled::IVec)>>> =
@@ -429,7 +410,7 @@ impl Datastore for SledDatastore {
                     }
                 }
                 Err(e) => {
-                    error!(self.logger, "Cache query iteration error"; "error" => %e);
+                    error!("Cache query iteration error: error={}", e);
                     return Err(GuardianError::Store(format!("Cache query error: {}", e)));
                 }
             }
@@ -440,18 +421,21 @@ impl Datastore for SledDatastore {
             results.reverse();
         }
 
-        debug!(self.logger, "Cache query completed";
-            "results_count" => results.len(),
-            "skipped" => skipped
+        debug!(
+            "Cache query completed: results_count={}, skipped={}",
+            results.len(),
+            skipped
         );
 
         Ok(results)
     }
 
+    #[instrument(level = "debug", skip(self, prefix))]
     async fn list_keys(&self, prefix: &[u8]) -> Result<Vec<crate::data_store::Key>> {
+        let _entered = self.span.enter();
         use crate::data_store::Key;
 
-        debug!(self.logger, "Cache list_keys"; "prefix_len" => prefix.len());
+        debug!("Cache list_keys: prefix_len={}", prefix.len());
 
         let mut keys = Vec::new();
 
@@ -463,7 +447,7 @@ impl Datastore for SledDatastore {
                     keys.push(key);
                 }
                 Err(e) => {
-                    error!(self.logger, "Cache list_keys iteration error"; "error" => %e);
+                    error!("Cache list_keys iteration error: error={}", e);
                     return Err(GuardianError::Store(format!(
                         "Cache list_keys error: {}",
                         e
@@ -472,7 +456,7 @@ impl Datastore for SledDatastore {
             }
         }
 
-        debug!(self.logger, "Cache list_keys completed"; "keys_count" => keys.len());
+        debug!("Cache list_keys completed: keys_count={}", keys.len());
         Ok(keys)
     }
 
