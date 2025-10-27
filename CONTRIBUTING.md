@@ -94,34 +94,7 @@ cargo clippy -- -D warnings
 cargo clippy -- -D clippy::all
 ```
 
-### Step 7: Run the release preparation script
-
-GuardianDB provides several utility scripts to streamline development and release processes. These scripts are available for both Unix/Linux/macOS (`.sh`) and Windows (`.ps1`) environments.
-
-**Unix/Linux/macOS:**
-```bash
-# Make script executable (first time only)
-chmod +x scripts/release.sh
-
-# Prepare release (example version)
-./scripts/release.sh 0.x.x
-```
-
-**Windows PowerShell:**
-```powershell
-# Prepare release (example version)
-powershell -ExecutionPolicy Bypass -File .\scripts\release.ps1 -Version "0.x.x"
-```
-
-This script will:
-- Validate version format (semantic versioning)
-- Update version in `Cargo.toml`
-- Run full test suite
-- Check code formatting and linting
-- Generate changelog entries
-- Create git tags and commits
-
-### Step 8: Submit a Pull Request
+### Step 7: Submit a Pull Request
 
 After you've made your changes and run the release preparation script you're ready to submit a pull request. This can be done through the GitHub website or the [GitHub Desktop application](https://desktop.github.com/).
 

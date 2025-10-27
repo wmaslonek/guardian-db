@@ -2,6 +2,7 @@
 name = "guardian-db"
 version = "0.10.15"
 authors = ["William Maslonek <wmaslonek@icloud.com>"]
+license = "MIT OR Apache-2.0"
 edition = "2024"
 rust-version = "1.89.0"
 
