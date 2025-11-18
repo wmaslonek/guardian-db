@@ -28,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("1. Testando descoberta DHT de peers...");
 
     // Gerar PeerIds aleatórios válidos para evitar problemas de parsing
-    let test_peers = vec![PeerId::random(), PeerId::random(), PeerId::random()];
+    let test_peers = [PeerId::random(), PeerId::random(), PeerId::random()];
 
     for peer_id in &test_peers {
         println!("\nBuscando peer: {}", peer_id);

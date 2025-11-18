@@ -29,7 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Demonstrar discovery básico vs avançado
     println!("1. Comparando Discovery Básico vs Avançado...\n");
 
-    let test_peers = vec![
+    let test_peers = [
         PeerId::random(), // Peer DHT
         PeerId::random(), // Peer mDNS
         PeerId::random(), // Peer Bootstrap
