@@ -1,5 +1,5 @@
-use crate::iface::{CreateDocumentDBOptions, StoreIndex};
 use crate::ipfs_log::{entry::Entry, log::Log};
+use crate::traits::{CreateDocumentDBOptions, StoreIndex};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
@@ -16,7 +16,6 @@ pub struct DocumentIndex {
 }
 
 impl DocumentIndex {
-    /// equivalente a newDocumentIndex em go
     /// Cria uma nova instância de DocumentIndex.
     pub fn new(opts: Arc<CreateDocumentDBOptions>) -> Self {
         Self {
@@ -25,7 +24,6 @@ impl DocumentIndex {
         }
     }
 
-    /// equivalente a Keys em go
     /// Retorna uma cópia de todas as chaves presentes no índice.
     pub fn keys(&self) -> Vec<String> {
         // Adquire um bloqueio de leitura. O unwrap trata casos de "poisoning" do mutex.
@@ -33,7 +31,6 @@ impl DocumentIndex {
             .index
             .read()
             .expect("Failed to acquire read lock on document index");
-
         // Coleta as chaves do mapa. `.keys()` retorna um iterador de &String,
         // então `.cloned()` cria novas Strings a partir das referências.
         index_lock.keys().cloned().collect()
@@ -50,7 +47,7 @@ impl DocumentIndex {
     }
 }
 
-// Implementa o trait StoreIndex, análogo à implementação da interface em Go.
+// Implementa o trait StoreIndex para DocumentIndex
 impl StoreIndex for DocumentIndex {
     type Error = crate::error::GuardianError;
 
@@ -99,7 +96,6 @@ impl StoreIndex for DocumentIndex {
         Ok(index_lock.is_empty())
     }
 
-    /// equivalente a UpdateIndex em go
     /// Atualiza o índice processando as entradas do log de operações (oplog).
     fn update_index(
         &mut self,
