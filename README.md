@@ -3,11 +3,13 @@
 
 [![Discord](https://img.shields.io/discord/1410233136846995519?label=chat&logo=discord&logoColor=white&style=flat-square&color=7289DA)](https://discord.gg/https://discord.gg/Ezzk8PnGR5)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 ![Rust](https://img.shields.io/badge/rust-1.89.0+-orange.svg)
 ![Version](https://img.shields.io/badge/version-0.10.15-brightgreen.svg)
 ![Build Status](https://img.shields.io/badge/build-passing-green.svg)
 ![Tests](https://img.shields.io/badge/tests-88%20passed-green.svg)
 ![Examples](https://img.shields.io/badge/examples-26%20demos-blue.svg)
+[![codecov](https://codecov.io/github/wmaslonek/guardian-db/branch/main/graph/badge.svg?token=AKOZE17VN8)](https://codecov.io/github/wmaslonek/guardian-db)
 
 ---
 
