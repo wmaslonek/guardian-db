@@ -1,10 +1,11 @@
 use crate::base_guardian::{GuardianDB as BaseGuardianDB, NewGuardianDBOptions};
 use crate::error::{GuardianError, Result};
-use crate::iface::{
-    AsyncDocumentFilter, CreateDBOptions, Document, DocumentStore, EventLogStore, KeyValueStore,
-    ProgressCallback, Store,
-};
 use crate::ipfs_core_api::client::IpfsClient;
+use crate::traits::{
+    AsyncDocumentFilter, BaseGuardianDB as BaseGuardianDBTrait, CreateDBOptions, Document,
+    DocumentStore, EventLogStore, GuardianDBKVStoreProvider, KeyValueStore, ProgressCallback,
+    Store,
+};
 use parking_lot::RwLock;
 use std::sync::Arc;
 pub struct GuardianDB {
@@ -17,11 +18,11 @@ impl GuardianDB {
         // Usar imports necessários
         use crate::ipfs_log::identity::{Identity, Signatures};
 
-        // Criar uma identidade temporária para usar com new_orbit_db
+        // Criar uma identidade temporária para usar com new_guardian_db
         let signatures = Signatures::new("temp_sig", "temp_pub_sig");
         let identity = Identity::new("temp_id", "temp_pubkey", signatures);
 
-        let base = BaseGuardianDB::new_orbit_db(ipfs, identity, options).await?;
+        let base = BaseGuardianDB::new_guardian_db(ipfs, identity, options).await?;
         Ok(GuardianDB { base })
     }
 
@@ -119,7 +120,7 @@ impl EventLogStoreWrapper {
     /// Query otimizada usando o índice da store
     fn query_from_index(
         &self,
-        options: &crate::iface::StreamOptions,
+        options: &crate::traits::StreamOptions,
     ) -> Result<Vec<crate::ipfs_log::entry::Entry>> {
         let index = self.store.index();
 
@@ -169,7 +170,7 @@ impl EventLogStoreWrapper {
     /// Fallback: busca direta no oplog quando índice não suporta a query
     fn query_from_oplog(
         &self,
-        options: &crate::iface::StreamOptions,
+        options: &crate::traits::StreamOptions,
     ) -> Result<Vec<crate::ipfs_log::entry::Entry>> {
         let oplog = self.store.op_log();
         let oplog_guard = oplog.read();
@@ -256,7 +257,7 @@ impl Store for EventLogStoreWrapper {
         self.store.address()
     }
 
-    fn index(&self) -> Box<dyn crate::iface::StoreIndex<Error = GuardianError> + Send + Sync> {
+    fn index(&self) -> Box<dyn crate::traits::StoreIndex<Error = GuardianError> + Send + Sync> {
         self.store.index()
     }
 
@@ -400,11 +401,11 @@ impl Store for EventLogStoreWrapper {
         self.store.span()
     }
 
-    fn tracer(&self) -> Arc<crate::iface::TracerWrapper> {
+    fn tracer(&self) -> Arc<crate::traits::TracerWrapper> {
         self.store.tracer()
     }
 
-    fn event_bus(&self) -> Arc<crate::pubsub::event::EventBus> {
+    fn event_bus(&self) -> Arc<crate::p2p::events::EventBus> {
         self.store.event_bus()
     }
 
@@ -475,7 +476,7 @@ impl EventLogStore for EventLogStoreWrapper {
 
     async fn list(
         &self,
-        options: Option<crate::iface::StreamOptions>,
+        options: Option<crate::traits::StreamOptions>,
     ) -> std::result::Result<Vec<crate::stores::operation::operation::Operation>, Self::Error> {
         // Lista operações com filtros opcionais
         let options = options.unwrap_or_default();
@@ -533,7 +534,7 @@ impl Store for KeyValueStoreWrapper {
         self.store.address()
     }
 
-    fn index(&self) -> Box<dyn crate::iface::StoreIndex<Error = GuardianError> + Send + Sync> {
+    fn index(&self) -> Box<dyn crate::traits::StoreIndex<Error = GuardianError> + Send + Sync> {
         self.store.index()
     }
 
@@ -676,11 +677,11 @@ impl Store for KeyValueStoreWrapper {
         self.store.span()
     }
 
-    fn tracer(&self) -> Arc<crate::iface::TracerWrapper> {
+    fn tracer(&self) -> Arc<crate::traits::TracerWrapper> {
         self.store.tracer()
     }
 
-    fn event_bus(&self) -> Arc<crate::pubsub::event::EventBus> {
+    fn event_bus(&self) -> Arc<crate::p2p::events::EventBus> {
         self.store.event_bus()
     }
 
@@ -864,7 +865,7 @@ impl DocumentStoreWrapper {
     fn search_documents_by_key(
         &self,
         key: &str,
-        opts: &crate::iface::DocumentStoreGetOptions,
+        opts: &crate::traits::DocumentStoreGetOptions,
     ) -> Result<Vec<Document>> {
         let index = self.store.index();
 
@@ -931,7 +932,7 @@ impl DocumentStoreWrapper {
     fn search_documents_from_oplog(
         &self,
         key: &str,
-        opts: &crate::iface::DocumentStoreGetOptions,
+        opts: &crate::traits::DocumentStoreGetOptions,
     ) -> Result<Vec<Document>> {
         let oplog = self.store.op_log();
         let oplog_guard = oplog.read();
@@ -1031,7 +1032,7 @@ impl Store for DocumentStoreWrapper {
         self.store.address()
     }
 
-    fn index(&self) -> Box<dyn crate::iface::StoreIndex<Error = GuardianError> + Send + Sync> {
+    fn index(&self) -> Box<dyn crate::traits::StoreIndex<Error = GuardianError> + Send + Sync> {
         self.store.index()
     }
 
@@ -1174,11 +1175,11 @@ impl Store for DocumentStoreWrapper {
         self.store.span()
     }
 
-    fn tracer(&self) -> Arc<crate::iface::TracerWrapper> {
+    fn tracer(&self) -> Arc<crate::traits::TracerWrapper> {
         self.store.tracer()
     }
 
-    fn event_bus(&self) -> Arc<crate::pubsub::event::EventBus> {
+    fn event_bus(&self) -> Arc<crate::p2p::events::EventBus> {
         self.store.event_bus()
     }
 
@@ -1284,7 +1285,7 @@ impl DocumentStore for DocumentStoreWrapper {
     async fn get(
         &self,
         key: &str,
-        opts: Option<crate::iface::DocumentStoreGetOptions>,
+        opts: Option<crate::traits::DocumentStoreGetOptions>,
     ) -> std::result::Result<Vec<Document>, Self::Error> {
         // Busca documentos por chave com opções avançadas
 
@@ -1338,5 +1339,418 @@ impl DocumentStore for DocumentStoreWrapper {
         }
 
         Ok(filtered_documents)
+    }
+}
+
+#[async_trait::async_trait]
+impl BaseGuardianDBTrait for GuardianDB {
+    type Error = GuardianError;
+
+    async fn open(
+        &self,
+        address: &str,
+        options: &mut CreateDBOptions,
+    ) -> std::result::Result<Arc<dyn Store<Error = GuardianError>>, Self::Error> {
+        let opts = options.clone();
+        let result = self.base.open(address, opts).await?;
+        // Convert Send+Sync to non-Send+Sync
+        Ok(result as Arc<dyn Store<Error = GuardianError>>)
+    }
+
+    async fn determine_address(
+        &self,
+        name: &str,
+        store_type: &str,
+        options: &crate::traits::DetermineAddressOptions,
+    ) -> std::result::Result<Box<dyn crate::address::Address>, Self::Error> {
+        let opts = Some(options.clone());
+        let result = self.base.determine_address(name, store_type, opts).await?;
+        Ok(Box::new(result))
+    }
+
+    fn ipfs(&self) -> Arc<crate::ipfs_core_api::client::IpfsClient> {
+        Arc::new(self.base.ipfs().clone())
+    }
+
+    fn identity(&self) -> Arc<crate::ipfs_log::identity::Identity> {
+        Arc::new(self.base.identity().clone())
+    }
+
+    fn get_store(&self, address: &str) -> Option<Arc<dyn Store<Error = GuardianError>>> {
+        self.base
+            .get_store(address)
+            .map(|store| store as Arc<dyn Store<Error = GuardianError>>)
+    }
+
+    async fn create(
+        &self,
+        name: &str,
+        store_type: &str,
+        options: &mut CreateDBOptions,
+    ) -> std::result::Result<Arc<dyn Store<Error = GuardianError>>, Self::Error> {
+        let opts = Some(options.clone());
+        let result = self.base.create(name, store_type, opts).await?;
+        Ok(result as Arc<dyn Store<Error = GuardianError>>)
+    }
+
+    fn register_store_type(
+        &mut self,
+        store_type: &str,
+        constructor: crate::traits::StoreConstructor,
+    ) {
+        // Usar unsafe para conseguir acesso mutável ao base
+        // Isso é seguro porque temos &mut self
+        unsafe {
+            let base_ptr = &self.base as *const crate::base_guardian::GuardianDB
+                as *mut crate::base_guardian::GuardianDB;
+            (*base_ptr).register_store_type(store_type.to_string(), constructor);
+        }
+    }
+
+    fn unregister_store_type(&mut self, store_type: &str) {
+        // Usar unsafe para conseguir acesso mutável a base
+        unsafe {
+            let base_ptr = &self.base as *const crate::base_guardian::GuardianDB
+                as *mut crate::base_guardian::GuardianDB;
+            (*base_ptr).unregister_store_type(store_type);
+        }
+    }
+
+    fn register_access_controller_type(
+        &mut self,
+        constructor: crate::traits::AccessControllerConstructor,
+    ) -> std::result::Result<(), Self::Error> {
+        // Usar unsafe para conseguir acesso mutável ao base
+        unsafe {
+            let base_ptr = &self.base as *const crate::base_guardian::GuardianDB
+                as *mut crate::base_guardian::GuardianDB;
+            // Criar um runtime temporário para executar a função async
+            let rt = tokio::runtime::Runtime::new().map_err(|_| "Failed to create runtime")?;
+            rt.block_on((*base_ptr).register_access_controller_type(constructor))
+        }
+    }
+
+    fn unregister_access_controller_type(&mut self, controller_type: &str) {
+        // Usar unsafe para conseguir acesso mutável ao base
+        unsafe {
+            let base_ptr = &self.base as *const crate::base_guardian::GuardianDB
+                as *mut crate::base_guardian::GuardianDB;
+            (*base_ptr).unregister_access_controller_type(controller_type);
+        }
+    }
+
+    fn get_access_controller_type(
+        &self,
+        controller_type: &str,
+    ) -> Option<crate::traits::AccessControllerConstructor> {
+        self.base.get_access_controller_type(controller_type)
+    }
+
+    fn event_bus(&self) -> crate::p2p::events::EventBus {
+        (*self.base.event_bus()).clone()
+    }
+
+    fn span(&self) -> &tracing::Span {
+        self.base.span()
+    }
+
+    fn tracer(&self) -> Arc<crate::traits::TracerWrapper> {
+        // Converter BoxedTracer para TracerWrapper
+        let boxed_tracer = self.base.tracer();
+        Arc::new(crate::traits::TracerWrapper::new_opentelemetry(
+            boxed_tracer,
+        ))
+    }
+}
+
+#[async_trait::async_trait]
+impl GuardianDBKVStoreProvider for GuardianDB {
+    type Error = GuardianError;
+
+    async fn key_value(
+        &self,
+        address: &str,
+        options: &mut CreateDBOptions,
+    ) -> std::result::Result<Box<dyn KeyValueStore<Error = GuardianError>>, Self::Error> {
+        // Usa o método já implementado do wrapper que retorna Arc
+        let opts_clone = options.clone();
+        let arc_store = self.key_value(address, Some(opts_clone)).await?;
+
+        // Converte Arc para Box usando um wrapper
+        Ok(Box::new(KeyValueStoreBoxWrapper::new(arc_store)))
+    }
+}
+
+/// Wrapper para converter Arc<dyn KeyValueStore> para Box<dyn KeyValueStore>
+pub struct KeyValueStoreBoxWrapper {
+    inner: Arc<dyn KeyValueStore<Error = GuardianError>>,
+}
+
+impl KeyValueStoreBoxWrapper {
+    pub fn new(inner: Arc<dyn KeyValueStore<Error = GuardianError>>) -> Self {
+        Self { inner }
+    }
+}
+
+#[async_trait::async_trait]
+impl Store for KeyValueStoreBoxWrapper {
+    type Error = GuardianError;
+
+    fn address(&self) -> &dyn crate::address::Address {
+        self.inner.address()
+    }
+
+    fn store_type(&self) -> &str {
+        self.inner.store_type()
+    }
+
+    async fn close(&self) -> std::result::Result<(), Self::Error> {
+        // Delega para o store interno usando close()
+        self.inner.close().await
+    }
+
+    async fn drop(&mut self) -> std::result::Result<(), Self::Error> {
+        // Delega para BaseStore usando downcasting para limpeza
+        if let Some(_base_store) =
+            self.inner
+                .as_any()
+                .downcast_ref::<crate::stores::base_store::base_store::BaseStore>()
+        {
+            // BaseStore não tem método drop específico, fazemos a limpeza usando close
+            self.inner.close().await
+        } else {
+            Err(GuardianError::Store(
+                "Não foi possível fazer downcast para BaseStore".to_string(),
+            ))
+        }
+    }
+
+    fn events(&self) -> &dyn crate::events::EmitterInterface {
+        // events() está deprecated
+        unimplemented!("events() is deprecated, use event_bus() instead")
+    }
+
+    fn index(&self) -> Box<dyn crate::traits::StoreIndex<Error = Self::Error> + Send + Sync> {
+        self.inner.index()
+    }
+
+    fn replication_status(&self) -> crate::stores::replicator::replication_info::ReplicationInfo {
+        self.inner.replication_status()
+    }
+
+    fn replicator(&self) -> Option<Arc<crate::stores::replicator::replicator::Replicator>> {
+        self.inner.replicator()
+    }
+
+    fn cache(&self) -> Arc<dyn crate::data_store::Datastore> {
+        self.inner.cache()
+    }
+
+    async fn load(&mut self, amount: usize) -> std::result::Result<(), Self::Error> {
+        // load usando downcasting
+        if let Some(base_store) =
+            self.inner
+                .as_any()
+                .downcast_ref::<crate::stores::base_store::base_store::BaseStore>()
+        {
+            base_store.load(Some(amount as isize)).await
+        } else {
+            Err(GuardianError::Store(
+                "Não foi possível fazer downcast para BaseStore".to_string(),
+            ))
+        }
+    }
+
+    async fn sync(
+        &mut self,
+        heads: Vec<crate::ipfs_log::entry::Entry>,
+    ) -> std::result::Result<(), Self::Error> {
+        // sync usando downcasting
+        if let Some(base_store) =
+            self.inner
+                .as_any()
+                .downcast_ref::<crate::stores::base_store::base_store::BaseStore>()
+        {
+            base_store.sync(heads).await
+        } else {
+            Err(GuardianError::Store(
+                "Não foi possível fazer downcast para BaseStore".to_string(),
+            ))
+        }
+    }
+
+    async fn load_more_from(&mut self, _amount: u64, entries: Vec<crate::ipfs_log::entry::Entry>) {
+        // load_more_from usando downcasting
+        if let Some(base_store) =
+            self.inner
+                .as_any()
+                .downcast_ref::<crate::stores::base_store::base_store::BaseStore>()
+        {
+            let _ = base_store.load_more_from(entries);
+        } else {
+            eprintln!("Aviso: Não foi possível fazer downcast para BaseStore em load_more_from");
+        }
+    }
+
+    async fn load_from_snapshot(&mut self) -> std::result::Result<(), Self::Error> {
+        // load_from_snapshot usando downcasting
+        if let Some(base_store) =
+            self.inner
+                .as_any()
+                .downcast_ref::<crate::stores::base_store::base_store::BaseStore>()
+        {
+            base_store.load_from_snapshot().await
+        } else {
+            Err(GuardianError::Store(
+                "Não foi possível fazer downcast para BaseStore".to_string(),
+            ))
+        }
+    }
+
+    fn op_log(&self) -> Arc<parking_lot::RwLock<crate::ipfs_log::log::Log>> {
+        self.inner.op_log()
+    }
+
+    fn ipfs(&self) -> Arc<crate::ipfs_core_api::client::IpfsClient> {
+        self.inner.ipfs()
+    }
+
+    fn db_name(&self) -> &str {
+        self.inner.db_name()
+    }
+
+    fn identity(&self) -> &crate::ipfs_log::identity::Identity {
+        self.inner.identity()
+    }
+
+    fn access_controller(&self) -> &dyn crate::access_controller::traits::AccessController {
+        self.inner.access_controller()
+    }
+
+    async fn add_operation(
+        &mut self,
+        op: crate::stores::operation::operation::Operation,
+        on_progress_callback: Option<crate::traits::ProgressCallback>,
+    ) -> std::result::Result<crate::ipfs_log::entry::Entry, Self::Error> {
+        // add_operation usando downcasting
+        if let Some(base_store) =
+            self.inner
+                .as_any()
+                .downcast_ref::<crate::stores::base_store::base_store::BaseStore>()
+        {
+            base_store.add_operation(op, on_progress_callback).await
+        } else {
+            Err(GuardianError::Store(
+                "Não foi possível fazer downcast para BaseStore".to_string(),
+            ))
+        }
+    }
+
+    fn span(&self) -> Arc<tracing::Span> {
+        self.inner.span()
+    }
+
+    fn tracer(&self) -> Arc<crate::traits::TracerWrapper> {
+        self.inner.tracer()
+    }
+
+    fn event_bus(&self) -> Arc<crate::p2p::events::EventBus> {
+        self.inner.event_bus()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+#[async_trait::async_trait]
+impl KeyValueStore for KeyValueStoreBoxWrapper {
+    async fn put(
+        &mut self,
+        key: &str,
+        value: Vec<u8>,
+    ) -> std::result::Result<crate::stores::operation::operation::Operation, Self::Error> {
+        // put usando downcasting para persistir dados
+        let operation = crate::stores::operation::operation::Operation::new(
+            Some(key.to_string()),
+            "PUT".to_string(),
+            Some(value),
+        );
+
+        // Persiste a operação usando add_operation através do downcasting
+        if let Some(base_store) =
+            self.inner
+                .as_any()
+                .downcast_ref::<crate::stores::base_store::base_store::BaseStore>()
+        {
+            // Executa a operação no store - persiste os dados
+            let _entry = base_store
+                .add_operation(operation.clone(), None)
+                .await
+                .map_err(|e| {
+                    GuardianError::Store(format!("Failed to persist put operation: {}", e))
+                })?;
+
+            // Operação foi persistida com sucesso
+            Ok(operation)
+        } else {
+            Err(GuardianError::Store(
+                "Não foi possível fazer downcast para BaseStore para persistir operação PUT"
+                    .to_string(),
+            ))
+        }
+    }
+
+    async fn get(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, Self::Error> {
+        self.inner.get(key).await
+    }
+
+    async fn delete(
+        &mut self,
+        key: &str,
+    ) -> std::result::Result<crate::stores::operation::operation::Operation, Self::Error> {
+        // Verifica se a chave existe antes de deletar
+        let all_data = self.inner.all();
+        let key_exists = all_data.contains_key(key);
+        if !key_exists {
+            return Err(GuardianError::Store(format!(
+                "Key '{}' not found for deletion",
+                key
+            )));
+        }
+
+        // Cria e executa operação delete
+        let operation = crate::stores::operation::operation::Operation::new(
+            Some(key.to_string()),
+            "DELETE".to_string(),
+            None,
+        );
+
+        // Persiste a operação usando add_operation através do downcasting
+        if let Some(base_store) =
+            self.inner
+                .as_any()
+                .downcast_ref::<crate::stores::base_store::base_store::BaseStore>()
+        {
+            // Executa a operação no store
+            let _entry = base_store
+                .add_operation(operation.clone(), None)
+                .await
+                .map_err(|e| {
+                    GuardianError::Store(format!("Failed to persist delete operation: {}", e))
+                })?;
+
+            // Operação foi persistida com sucesso
+            Ok(operation)
+        } else {
+            Err(GuardianError::Store(
+                "Não foi possível fazer downcast para BaseStore para persistir operação DELETE"
+                    .to_string(),
+            ))
+        }
+    }
+
+    fn all(&self) -> std::collections::HashMap<String, Vec<u8>> {
+        self.inner.all()
     }
 }
