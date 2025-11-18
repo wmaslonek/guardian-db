@@ -11,7 +11,7 @@ use super::{
 };
 use crate::error::{GuardianError, Result};
 use crate::ipfs_core_api::{config::ClientConfig, types::*};
-use crate::pubsub::direct_channel::SwarmManager;
+use crate::p2p::manager::SwarmManager;
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose};
 use bytes::Bytes;
@@ -4775,11 +4775,8 @@ impl CustomDiscoveryService {
             return Ok(discovery_record);
         }
 
-        // Fallback: consulta DHT real usando endpoint do Iroh se cache local falhou
-        debug!(
-            "Cache local DHT vazio para {}, tentando discovery real",
-            node_id
-        );
+        // Fallback: consulta DHT usando endpoint do Iroh se cache local falhou
+        debug!("Cache local DHT vazio para {}, tentando discovery", node_id);
 
         // Tenta usar discovery do próprio Iroh como fallback
         if let Ok(discovered_addresses) = Self::query_iroh_endpoint_for_peer_fallback(node_id).await
@@ -4819,7 +4816,7 @@ impl CustomDiscoveryService {
                 }
 
                 debug!(
-                    "Registro DHT real descoberto para {} com {} endereços",
+                    "Registro DHT descoberto para {} com {} endereços",
                     node_id,
                     real_record.addresses.len()
                 );
@@ -4836,10 +4833,7 @@ impl CustomDiscoveryService {
         &mut self,
         node_id: NodeId,
     ) -> std::result::Result<Vec<NodeAddr>, Box<dyn std::error::Error + Send + Sync>> {
-        debug!(
-            "Consultando endpoint Iroh real para descobrir peer: {}",
-            node_id
-        );
+        debug!("Consultando endpoint Iroh para descobrir peer: {}", node_id);
         // Usa métodos de discovery avançados disponíveis
         // 1. Usa custom_discover que integra múltiplos métodos
         match self.custom_discover(&node_id).await {
@@ -4961,9 +4955,9 @@ impl CustomDiscoveryService {
             return Ok(addresses);
         }
 
-        // Fallback: tenta descoberta real em vez de endereço fictício
+        // Fallback: tenta descoberta
         debug!(
-            "Cache DHT vazio para endereços de {}, tentando discovery real",
+            "Cache DHT vazio para endereços de {}, tentando discovery",
             node_id
         );
 
@@ -4983,10 +4977,7 @@ impl CustomDiscoveryService {
                 let addresses_json = serde_json::to_string(&addresses).unwrap_or_default();
                 let _ = std::fs::write(&cache_file, addresses_json);
 
-                debug!(
-                    "Endereços reais descobertos para {}: {:?}",
-                    node_id, addresses
-                );
+                debug!("Endereços descobertos para {}: {:?}", node_id, addresses);
                 return Ok(addresses);
             }
         }
@@ -5906,18 +5897,15 @@ impl IrohBackend {
         Ok(self.swarm_manager.clone())
     }
 
-    /// Obtém peers reais do mesh do Gossipsub para um tópico específico
+    /// Obtém peers do mesh do Gossipsub para um tópico específico
     pub async fn get_topic_mesh_peers(&self, topic: &str) -> Result<Vec<PeerId>> {
-        debug!(
-            "Obtendo peers reais do mesh do Gossipsub para tópico: {}",
-            topic
-        );
+        debug!("Obtendo peers do mesh do Gossipsub para tópico: {}", topic);
 
         let swarm_arc = self.get_swarm_manager().await?;
         let swarm_lock = swarm_arc.read().await;
 
         if let Some(swarm) = swarm_lock.as_ref() {
-            // Usa o método real do SwarmManager que acessa o Gossipsub mesh
+            // Usa o método do SwarmManager que acessa o Gossipsub mesh
             let topic_hash = TopicHash::from_raw(topic);
             let mesh_peers = swarm.get_topic_mesh_peers(&topic_hash).await?;
 
@@ -5935,9 +5923,8 @@ impl IrohBackend {
         }
     }
 
-    /// Publica mensagem em tópico Gossipsub (reservado para uso futuro)
-    #[allow(dead_code)]
-    async fn publish_gossip(&self, topic: &str, data: &[u8]) -> Result<()> {
+    /// Publica mensagem em tópico Gossipsub
+    pub async fn publish_gossip(&self, topic: &str, data: &[u8]) -> Result<()> {
         debug!("Publicando mensagem Gossipsub no tópico: {}", topic);
 
         let swarm_arc = self.get_swarm_manager().await?;
@@ -5967,9 +5954,8 @@ impl IrohBackend {
         }
     }
 
-    /// Subscreve a um tópico Gossipsub (reservado para uso futuro)
-    #[allow(dead_code)]
-    async fn subscribe_gossip(&self, topic: &str) -> Result<()> {
+    /// Subscreve a um tópico Gossipsub
+    pub async fn subscribe_gossip(&self, topic: &str) -> Result<()> {
         debug!("Subscrevendo tópico Gossipsub: {}", topic);
 
         let swarm_arc = self.get_swarm_manager().await?;
