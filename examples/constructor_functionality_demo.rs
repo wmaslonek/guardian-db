@@ -8,8 +8,8 @@ use guardian_db::{
     access_controller::{manifest::ManifestParams, simple::SimpleAccessController},
     base_guardian::GuardianDB,
     error::Result,
-    iface::AccessControllerConstructor,
     ipfs_core_api::config::ClientConfig,
+    traits::AccessControllerConstructor,
 };
 use std::sync::Arc;
 use tracing::{info, info_span};
@@ -110,7 +110,7 @@ async fn demonstrate_constructor_functionality(guardian_db: &GuardianDB) -> Resu
 /// Demonstra como criar um construtor de AccessController
 /// Esta função mostra o padrão que deveria ser usado nos módulos específicos
 fn _example_how_to_create_constructor() {
-    use guardian_db::iface::AccessControllerConstructor;
+    use guardian_db::traits::AccessControllerConstructor;
     use std::sync::Arc;
 
     // Exemplo de como criar um construtor:
