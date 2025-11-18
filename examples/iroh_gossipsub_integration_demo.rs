@@ -8,11 +8,11 @@
 
 use guardian_db::{
     error::Result,
-    iface::PubSubInterface,
     ipfs_core_api::{
         backends::{IpfsBackend, IrohBackend},
         config::ClientConfig,
     },
+    traits::PubSubInterface,
 };
 use std::{path::PathBuf, sync::Arc};
 use tokio::time::{Duration, sleep};
