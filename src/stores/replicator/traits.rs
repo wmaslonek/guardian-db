@@ -15,7 +15,7 @@
 use crate::access_controller::traits::AccessController;
 use crate::ipfs_core_api::client::IpfsClient;
 use crate::ipfs_log::{entry::Entry, identity::Identity, log::Log};
-use crate::pubsub::event::EventBus;
+use crate::p2p::events::EventBus;
 use cid::Cid;
 use std::future::Future;
 use std::sync::Arc;
