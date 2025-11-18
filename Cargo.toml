@@ -15,7 +15,7 @@ chrono = { version = "0.4", features = ["serde"] }
 cid = { version = "0.11.1", features = ["serde-codec"] }
 fastrand = "2.3"
 futures = "0.3.31"
-libp2p = { version = "0.56.0", features = ["tokio", "tcp", "quic", "noise", "yamux", "relay", "identify", "ping", "kad", "gossipsub", "serde"] }
+libp2p = { version = "0.56.0", features = ["tokio", "tcp", "quic", "noise", "yamux", "relay", "identify", "ping", "kad", "gossipsub", "mdns", "serde"] }
 libp2p-identity = { version = "0.2.12", features = ["serde"] }
 opentelemetry = "0.31.0"
 parking_lot = "0.12.4"
@@ -40,9 +40,9 @@ libipld = "0.16.0"
 unsigned-varint = "0.8.0"
 multihash = "0.19.3"
 sled = "0.34.7"
-iroh = "0.92.0" #Nós vamos atualizar novamente quando a versão 1.0 for lançada
+iroh = "0.92.0" #We will update it again when version 1.0 is released
 iroh-io = "0.6.0"
-iroh-blobs = "0.35.0" #Versão para produção conforme docs.rs
+iroh-blobs = "0.35.0" #Production version according to docs.rs
 bytes = "1.9.0"
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
 uuid = { version = "1.18.1", features = ["serde"] }
