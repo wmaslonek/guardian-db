@@ -4,9 +4,9 @@
 // usando o SwarmManager do LibP2P Gossipsub integrado ao Iroh
 
 use crate::error::{GuardianError, Result};
-use crate::iface::{EventPubSubMessage, PubSubInterface, PubSubTopic};
 use crate::ipfs_core_api::backends::iroh::IrohBackend;
-use crate::pubsub::direct_channel::SwarmManager;
+use crate::p2p::manager::SwarmManager;
+use crate::traits::{EventPubSubMessage, PubSubInterface, PubSubTopic};
 use async_trait::async_trait;
 use futures::stream::{Stream, StreamExt};
 use libp2p::{PeerId, gossipsub::TopicHash};
