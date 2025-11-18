@@ -8,7 +8,6 @@ struct InfoState {
     max: usize,
 }
 
-// equivalente a replicationInfo struct em go
 /// Implementação thread-safe da interface `ReplicationInfo`.
 /// Utiliza um `RwLock` para garantir acesso seguro de múltiplas threads.
 ///
@@ -38,7 +37,6 @@ impl ReplicationInfo {
     }
 }
 
-// equivalente a NewReplicationInfo em go
 impl ReplicationInfo {
     /// Cria uma nova instância de ReplicationInfo.
     pub fn new() -> Self {
@@ -133,34 +131,27 @@ impl ReplicationInfo {
     }
 }
 
-// Implementação do trait `ReplicationInfo` para a nossa struct.
-// Isso garante que nossa struct está em conformidade com a interface que definimos.
 impl ReplicationInfoTrait for ReplicationInfo {
-    // equivalente a GetProgress em go
     async fn get_progress(&self) -> usize {
         let state = self.state.read().await;
         state.progress
     }
 
-    // equivalente a GetMax em go
     async fn get_max(&self) -> usize {
         let state = self.state.read().await;
         state.max
     }
 
-    // equivalente a SetProgress em go
     async fn set_progress(&self, i: usize) {
         let mut state = self.state.write().await;
         state.progress = i;
     }
 
-    // equivalente a SetMax em go
     async fn set_max(&self, i: usize) {
         let mut state = self.state.write().await;
         state.max = i;
     }
 
-    // equivalente a Reset em go
     async fn reset(&self) {
         let mut state = self.state.write().await;
         state.progress = 0;
