@@ -3,16 +3,17 @@
 /// Processamento inteligente em lotes para otimizar throughput
 /// de operações IPFS, reduzindo overhead e melhorando eficiência de I/O.
 use crate::error::{GuardianError, Result};
+use crate::ipfs_core_api::backends::IpfsBackend;
 use crate::ipfs_core_api::types::AddResponse;
 use bytes::Bytes;
 use cid::Cid;
 use futures;
-use rand;
+
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock, Semaphore, mpsc, oneshot};
-use tracing::{debug, info, instrument};
+use tracing::{debug, info, instrument, warn};
 use uuid::Uuid;
 
 /// Processador de operações em batch
@@ -32,6 +33,8 @@ pub struct BatchProcessor {
     processing_semaphore: Arc<Semaphore>,
     /// Histórico de operações para otimização
     operation_history: Arc<RwLock<OperationHistory>>,
+    /// Backend Iroh para operações IPFS
+    iroh_backend: Arc<crate::ipfs_core_api::backends::IrohBackend>,
 }
 
 /// Operação em batch
@@ -289,8 +292,11 @@ impl Default for BatchConfig {
 }
 
 impl BatchProcessor {
-    /// Cria novo processador de batch
-    pub fn new(config: BatchConfig) -> Self {
+    /// Cria novo processador de batch com IrohBackend
+    pub fn new(
+        config: BatchConfig,
+        iroh_backend: Arc<crate::ipfs_core_api::backends::IrohBackend>,
+    ) -> Self {
         let (control_sender, _control_receiver) = mpsc::channel(100);
 
         Self {
@@ -301,12 +307,13 @@ impl BatchProcessor {
             control_sender,
             processing_semaphore: Arc::new(Semaphore::new(8)), // max concurrent batches
             operation_history: Arc::new(RwLock::new(OperationHistory::default())),
+            iroh_backend,
         }
     }
 
     /// Adiciona operação para processamento em batch
     #[instrument(skip(self, data))]
-    pub async fn add_operation(
+    pub async fn add_batch_operation(
         &self,
         operation_type: OperationType,
         data: OperationData,
@@ -533,7 +540,7 @@ impl BatchProcessor {
         if combined_data.len() > self.config.compression_threshold && batch.len() > 1 {
             // Processa como blob combinado
             let combined_blob = Bytes::from(combined_data);
-            let combined_result = self.simulate_add_operation(combined_blob).await?;
+            let combined_result = self.add_operation(combined_blob).await?;
 
             // Distribui resultados
             for operation in batch {
@@ -569,7 +576,7 @@ impl BatchProcessor {
             if let OperationData::GetCid { cid, .. } = &operation.data {
                 let cid_clone = cid.clone();
                 let future = async move {
-                    let result = self.simulate_get_operation(cid_clone).await;
+                    let result = self.get_operation(cid_clone).await;
                     (operation, result)
                 };
                 futures.push(future);
@@ -607,7 +614,7 @@ impl BatchProcessor {
         }
 
         // Executa pin em batch
-        let batch_result = self.simulate_batch_pin_operation(pin_cids).await?;
+        let batch_result = self.batch_pin_operation(pin_cids).await?;
 
         // Distribui resultados
         for (i, operation) in batch.into_iter().enumerate() {
@@ -700,23 +707,23 @@ impl BatchProcessor {
 
         let result = match operation.data {
             OperationData::AddData { data, .. } => {
-                let add_result = self.simulate_add_operation(data).await?;
+                let add_result = self.add_operation(data).await?;
                 Ok(OperationResult::AddResult(add_result))
             }
             OperationData::GetCid { cid, .. } => {
-                let get_result = self.simulate_get_operation(cid).await?;
+                let get_result = self.get_operation(cid).await?;
                 Ok(OperationResult::GetResult(get_result))
             }
             OperationData::PinCid { cid, .. } => {
-                let pin_result = self.simulate_pin_operation(cid).await?;
+                let pin_result = self.pin_operation(cid).await?;
                 Ok(OperationResult::PinResult(pin_result))
             }
             OperationData::DagPutData { data, .. } => {
-                let dag_result = self.simulate_dag_put_operation(data).await?;
+                let dag_result = self.dag_put_operation(data).await?;
                 Ok(OperationResult::DagPutResult(dag_result))
             }
             OperationData::PubSubData { topic, data } => {
-                let pubsub_result = self.simulate_pubsub_operation(topic, data).await?;
+                let pubsub_result = self.pubsub_operation(topic, data).await?;
                 Ok(OperationResult::PubSubResult(pubsub_result))
             }
             _ => Err(GuardianError::Other(
@@ -740,150 +747,183 @@ impl BatchProcessor {
     }
 
     /// Operação Add usando IrohBackend
-    async fn simulate_add_operation(&self, data: Bytes) -> Result<AddResponse> {
-        // ***TODO: Integrar com IrohBackend real quando disponível no contexto
-        // Por enquanto, usa implementação otimizada baseada em hash real
+    async fn add_operation(&self, data: Bytes) -> Result<AddResponse> {
+        use std::pin::Pin;
+        use tokio::io::AsyncRead;
 
-        use sha2::{Digest, Sha256};
+        // Converte Bytes para AsyncRead usando cursor
+        let cursor = std::io::Cursor::new(data.to_vec());
+        let async_read: Pin<Box<dyn AsyncRead + Send>> = Box::pin(cursor);
 
-        // Gera hash SHA256 real dos dados
-        let mut hasher = Sha256::new();
-        hasher.update(&data);
-        let hash_bytes = hasher.finalize();
-        let hash = format!("Qm{}", hex::encode(&hash_bytes[..20])); // CIDv0 format
+        // Chama o método add do IrohBackend
+        let add_result = self
+            .iroh_backend
+            .add(async_read)
+            .await
+            .map_err(|e| GuardianError::Other(format!("Erro no IrohBackend.add(): {}", e)))?;
 
-        // Simula persistência (seria feita pelo IrohBackend)
-        let processing_time = Duration::from_millis(5 + (data.len() as u64 / 1024)); // Base time + size factor
-        tokio::time::sleep(processing_time).await;
+        debug!(
+            "BatchProcessor: Conteúdo adicionado via IrohBackend - Hash: {}, Size: {}",
+            add_result.hash, add_result.size
+        );
 
-        Ok(AddResponse {
-            name: format!("batch_add_{}", hash),
-            hash,
-            size: data.len().to_string(),
-        })
+        Ok(add_result)
     }
 
     /// Operação Get usando IrohBackend
-    async fn simulate_get_operation(&self, cid: String) -> Result<Bytes> {
-        // ***TODO: Integrar com IrohBackend.cat() quando disponível no contexto
-        // Por enquanto, simula com validação de CID
+    async fn get_operation(&self, cid: String) -> Result<Bytes> {
+        use tokio::io::AsyncReadExt;
 
-        // Valida formato do CID
-        if !cid.starts_with("Qm") && !cid.starts_with("bafy") {
-            return Err(GuardianError::Other(format!("CID inválido: {}", cid)));
-        }
+        // Chama o método cat do IrohBackend
+        let mut async_read = self.iroh_backend.cat(&cid).await.map_err(|e| {
+            GuardianError::Other(format!("Erro no IrohBackend.cat({}): {}", cid, e))
+        })?;
 
-        // Simula tempo de busca baseado na complexidade do CID
-        let processing_time = Duration::from_millis(3 + (cid.len() as u64));
-        tokio::time::sleep(processing_time).await;
+        // Lê todos os dados do stream
+        let mut buffer = Vec::new();
+        async_read.read_to_end(&mut buffer).await.map_err(|e| {
+            GuardianError::Other(format!("Erro ao ler dados do CID {}: {}", cid, e))
+        })?;
 
-        // Simula dados recuperados (seria feito pelo IrohBackend.cat())
-        // Em produção, isso retornaria os dados reais do IPFS
-        let simulated_data = format!("data_for_cid_{}", cid).into_bytes();
-        Ok(Bytes::from(simulated_data))
+        debug!(
+            "BatchProcessor: Conteúdo recuperado via IrohBackend - CID: {}, Size: {} bytes",
+            cid,
+            buffer.len()
+        );
+
+        Ok(Bytes::from(buffer))
     }
 
     /// Operação Pin usando IrohBackend
-    async fn simulate_pin_operation(&self, cid: String) -> Result<bool> {
-        // ***TODO: Integrar com IrohBackend.pin_add() quando disponível no contexto
-
-        // Valida formato do CID
-        if !cid.starts_with("Qm") && !cid.starts_with("bafy") {
-            return Err(GuardianError::Other(format!(
-                "CID inválido para pin: {}",
-                cid
-            )));
+    async fn pin_operation(&self, cid: String) -> Result<bool> {
+        // Chama o método pin_add do IrohBackend
+        match self.iroh_backend.pin_add(&cid).await {
+            Ok(_) => {
+                debug!(
+                    "BatchProcessor: Conteúdo fixado com sucesso via IrohBackend - CID: {}",
+                    cid
+                );
+                Ok(true)
+            }
+            Err(e) => {
+                warn!(
+                    "BatchProcessor: Erro ao fixar conteúdo via IrohBackend - CID: {}, Erro: {}",
+                    cid, e
+                );
+                // Retorna false em vez de erro para manter compatibilidade com batch
+                Ok(false)
+            }
         }
-
-        // Simula operação de pin (seria feita pelo IrohBackend.pin_add())
-        let processing_time = Duration::from_millis(1 + (cid.len() as u64 / 10));
-        tokio::time::sleep(processing_time).await;
-
-        // Em produção, isso tentaria realmente fixar o objeto no IPFS
-        // Retorna sucesso para CIDs válidos (95% taxa de sucesso simulada)
-        Ok(rand::random::<f64>() > 0.05)
     }
 
     /// Operação Pin em batch usando IrohBackend
-    async fn simulate_batch_pin_operation(&self, cids: Vec<String>) -> Result<Vec<bool>> {
-        // ***TODO: Integrar com IrohBackend para pins em batch otimizado
+    async fn batch_pin_operation(&self, cids: Vec<String>) -> Result<Vec<bool>> {
+        debug!(
+            "BatchProcessor: Processando {} operações de pin em batch",
+            cids.len()
+        );
 
-        // Validação em lote
-        for cid in &cids {
-            if !cid.starts_with("Qm") && !cid.starts_with("bafy") {
-                return Err(GuardianError::Other(format!(
-                    "CID inválido no batch: {}",
-                    cid
-                )));
-            }
-        }
+        // Executa pins em paralelo para otimização de throughput
+        let pin_futures: Vec<_> = cids
+            .iter()
+            .map(|cid| {
+                let backend = Arc::clone(&self.iroh_backend);
+                let cid_clone = cid.clone();
+                async move {
+                    match backend.pin_add(&cid_clone).await {
+                        Ok(_) => {
+                            debug!("Batch pin bem-sucedido: {}", cid_clone);
+                            true
+                        }
+                        Err(e) => {
+                            warn!("Batch pin falhou para {}: {}", cid_clone, e);
+                            false
+                        }
+                    }
+                }
+            })
+            .collect();
 
-        // Otimização: tempo de batch é menor que individual
-        let batch_time = Duration::from_millis(3 + (cids.len() as u64));
-        tokio::time::sleep(batch_time).await;
+        // Aguarda todos os pins em paralelo
+        let results = futures::future::join_all(pin_futures).await;
 
-        // Simula processamento em lote (seria feito pelo IrohBackend)
-        // Em produção, isso faria múltiplas operações pin de forma otimizada
-        let results = cids.iter().map(|_| rand::random::<f64>() > 0.05).collect();
+        let successful_pins = results.iter().filter(|&&r| r).count();
+        info!(
+            "BatchProcessor: Batch pin concluído - {}/{} bem-sucedidos",
+            successful_pins,
+            cids.len()
+        );
 
         Ok(results)
     }
 
-    /// Operação DAG Put usando hashing padrão IPFS
-    async fn simulate_dag_put_operation(&self, data: Bytes) -> Result<Cid> {
-        // ***TODO: Integrar com IrohBackend para DAG operations quando disponível
+    /// Operação DAG Put usando IrohBackend
+    async fn dag_put_operation(&self, data: Bytes) -> Result<Cid> {
+        // DAG Put usando IrohBackend com fallback para hashing
+        // Nota: IrohBackend não tem DAG operations nativas, então usamos add() + metadata
 
+        use multihash::Multihash;
         use sha2::{Digest, Sha256};
+        use std::pin::Pin;
+        use tokio::io::AsyncRead;
 
-        // Usa SHA2-256 (padrão IPFS) em vez de BLAKE3
+        // Primeiro, armazena os dados usando add() do IrohBackend
+        let cursor = std::io::Cursor::new(data.to_vec());
+        let async_read: Pin<Box<dyn AsyncRead + Send>> = Box::pin(cursor);
+
+        let add_result = self
+            .iroh_backend
+            .add(async_read)
+            .await
+            .map_err(|e| GuardianError::Other(format!("Erro no DAG put via add(): {}", e)))?;
+
+        // Gera CID DAG-CBOR compatível baseado nos dados
         let mut hasher = Sha256::new();
         hasher.update(&data);
         let digest = hasher.finalize();
+        let mh = Multihash::wrap(0x12, &digest).unwrap(); // SHA2-256
+        let dag_cid = Cid::new_v1(0x71, mh); // dag-cbor
 
-        // Cria multihash usando SHA2-256 (padrão IPFS)
-        use multihash::Multihash;
-        let mh = Multihash::wrap(0x12, &digest).unwrap(); // 0x12 = SHA2-256
+        debug!(
+            "BatchProcessor: DAG Put via IrohBackend - Original CID: {}, DAG CID: {}",
+            add_result.hash, dag_cid
+        );
 
-        // CID v1 para DAG-CBOR (formato padrão para objetos estruturados)
-        let cid = Cid::new_v1(0x71, mh); // 0x71 = dag-cbor
-
-        // Simula tempo de processamento baseado no tamanho dos dados
-        let processing_time = Duration::from_millis(4 + (data.len() as u64 / 512));
-        tokio::time::sleep(processing_time).await;
-
-        Ok(cid)
+        Ok(dag_cid)
     }
 
-    /// Operação PubSub usando SwarmManager
-    async fn simulate_pubsub_operation(&self, topic: String, data: Bytes) -> Result<bool> {
-        // ***TODO: Integrar com SwarmManager.publish() quando disponível no contexto
-
+    /// Operação PubSub usando IrohBackend
+    async fn pubsub_operation(&self, topic: String, data: Bytes) -> Result<bool> {
         // Validação do tópico
         if topic.is_empty() {
             return Err(GuardianError::Other(
                 "Tópico PubSub não pode estar vazio".to_string(),
             ));
         }
-
         if data.is_empty() {
             return Err(GuardianError::Other(
                 "Dados PubSub não podem estar vazios".to_string(),
             ));
         }
-
-        // Simula tempo de publicação baseado no tamanho dos dados
-        let processing_time = Duration::from_millis(2 + (data.len() as u64 / 1024));
-        tokio::time::sleep(processing_time).await;
-
-        // Em produção, isso publicaria via SwarmManager.publish()
-        debug!(
-            target: "batch_processor",
-            topic = %topic,
-            data_size = data.len(),
-            "Mensagem PubSub processada no batch"
-        );
-
-        Ok(true)
+        // Usando método público publish_gossip do IrohBackend
+        match self.iroh_backend.publish_gossip(&topic, &data).await {
+            Ok(_) => {
+                debug!(
+                    "BatchProcessor: Mensagem PubSub publicada via IrohBackend.publish_gossip() - Tópico: {}, Size: {} bytes",
+                    topic,
+                    data.len()
+                );
+                Ok(true)
+            }
+            Err(e) => {
+                warn!(
+                    "BatchProcessor: Erro ao publicar via IrohBackend.publish_gossip() - Tópico: {}, Erro: {}",
+                    topic, e
+                );
+                // Retorna false em vez de erro para manter compatibilidade
+                Ok(false)
+            }
+        }
     }
 
     /// Estima recursos necessários para uma operação
@@ -968,6 +1008,7 @@ impl BatchProcessor {
         let stats = Arc::clone(&self.stats);
         let processing_semaphore = Arc::clone(&self.processing_semaphore);
         let operation_history = Arc::clone(&self.operation_history);
+        let iroh_backend = Arc::clone(&self.iroh_backend);
 
         tokio::spawn(async move {
             let mut interval =
@@ -1028,6 +1069,7 @@ impl BatchProcessor {
                             let stats_clone = Arc::clone(&stats);
                             let config_clone = config.clone();
                             let history_clone = Arc::clone(&operation_history);
+                            let iroh_clone = Arc::clone(&iroh_backend);
 
                             tokio::spawn(async move {
                                 if let Err(e) = Self::process_automatic_typed_batches(
@@ -1035,6 +1077,7 @@ impl BatchProcessor {
                                     stats_clone,
                                     config_clone,
                                     history_clone,
+                                    iroh_clone,
                                 )
                                 .await
                                 {
@@ -1053,12 +1096,14 @@ impl BatchProcessor {
                             let ops_clone = Arc::clone(&pending_operations);
                             let stats_clone = Arc::clone(&stats);
                             let config_clone = config.clone();
+                            let iroh_clone = Arc::clone(&iroh_backend);
 
                             tokio::spawn(async move {
                                 if let Err(e) = Self::process_automatic_simple_batch(
                                     ops_clone,
                                     stats_clone,
                                     config_clone,
+                                    iroh_clone,
                                 )
                                 .await
                                 {
@@ -1072,12 +1117,13 @@ impl BatchProcessor {
         })
     }
 
-    /// Processa batches automáticos das filas tipadas
+    /// Processa batches automáticos das filas tipadas com IrohBackend
     async fn process_automatic_typed_batches(
         typed_queues: Arc<RwLock<TypedQueues>>,
         stats: Arc<RwLock<BatchStats>>,
         config: BatchConfig,
         _operation_history: Arc<RwLock<OperationHistory>>,
+        iroh_backend: Arc<crate::ipfs_core_api::backends::IrohBackend>,
     ) -> Result<()> {
         let mut batches_to_process = Vec::new();
 
@@ -1165,12 +1211,16 @@ impl BatchProcessor {
 
             // Processa batch baseado no tipo
             match batch_type {
-                OperationType::Add => Self::process_add_batch_static(batch).await?,
-                OperationType::Get => Self::process_get_batch_static(batch).await?,
-                OperationType::Pin => Self::process_pin_batch_static(batch).await?,
-                OperationType::DagPut => Self::process_individual_batch_static(batch).await?,
-                OperationType::PubSubPublish => Self::process_pubsub_batch_static(batch).await?,
-                _ => Self::process_individual_batch_static(batch).await?,
+                OperationType::Add => Self::process_add_batch_static(batch, &iroh_backend).await?,
+                OperationType::Get => Self::process_get_batch_static(batch, &iroh_backend).await?,
+                OperationType::Pin => Self::process_pin_batch_static(batch, &iroh_backend).await?,
+                OperationType::DagPut => {
+                    Self::process_individual_batch_static(batch, &iroh_backend).await?
+                }
+                OperationType::PubSubPublish => {
+                    Self::process_pubsub_batch_static(batch, &iroh_backend).await?
+                }
+                _ => Self::process_individual_batch_static(batch, &iroh_backend).await?,
             }
 
             // Atualiza estatísticas
@@ -1194,11 +1244,12 @@ impl BatchProcessor {
         Ok(())
     }
 
-    /// Processa batch automático simples
+    /// Processa batch automático simples com IrohBackend
     async fn process_automatic_simple_batch(
         pending_operations: Arc<Mutex<VecDeque<BatchOperation>>>,
         stats: Arc<RwLock<BatchStats>>,
         config: BatchConfig,
+        iroh_backend: Arc<crate::ipfs_core_api::backends::IrohBackend>,
     ) -> Result<()> {
         let batch = {
             let mut pending = pending_operations.lock().await;
@@ -1219,7 +1270,7 @@ impl BatchProcessor {
         );
 
         // Processa operações individualmente
-        Self::process_individual_batch_static(batch).await?;
+        Self::process_individual_batch_static(batch, &iroh_backend).await?;
 
         // Atualiza estatísticas
         let processing_time = start_time.elapsed();
@@ -1267,79 +1318,90 @@ impl BatchProcessor {
         batch
     }
 
-    /// Processa batch de Add (versão static)
-    async fn process_add_batch_static(batch: Vec<BatchOperation>) -> Result<()> {
+    /// Processa batch de Add (versão static) com IrohBackend
+    async fn process_add_batch_static(
+        batch: Vec<BatchOperation>,
+        iroh_backend: &crate::ipfs_core_api::backends::IrohBackend,
+    ) -> Result<()> {
         for operation in batch {
-            Self::process_individual_operation_static(operation).await?;
+            Self::process_individual_operation_static(operation, iroh_backend).await?;
         }
         Ok(())
     }
 
-    /// Processa batch de Get (versão static)  
-    async fn process_get_batch_static(batch: Vec<BatchOperation>) -> Result<()> {
-        // Processamento paralelo para Gets
-        let futures = batch.into_iter().map(|operation| {
-            tokio::spawn(async move { Self::process_individual_operation_static(operation).await })
-        });
-
-        let results = futures::future::join_all(futures).await;
-
-        for result in results {
-            if let Err(e) = result {
-                debug!(target: "batch_processor", error = %e, "Erro em operação Get paralela");
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Processa batch de Pin (versão static)
-    async fn process_pin_batch_static(batch: Vec<BatchOperation>) -> Result<()> {
+    /// Processa batch de Get (versão static) com IrohBackend
+    async fn process_get_batch_static(
+        batch: Vec<BatchOperation>,
+        iroh_backend: &crate::ipfs_core_api::backends::IrohBackend,
+    ) -> Result<()> {
+        // Processamento sequencial para Gets usando IrohBackend
+        // (lifetime issues impedem processamento paralelo com referências)
         for operation in batch {
-            Self::process_individual_operation_static(operation).await?;
+            Self::process_individual_operation_static(operation, iroh_backend).await?;
         }
         Ok(())
     }
 
-    /// Processa batch de PubSub (versão static)
-    async fn process_pubsub_batch_static(batch: Vec<BatchOperation>) -> Result<()> {
+    /// Processa batch de Pin (versão static) com IrohBackend
+    async fn process_pin_batch_static(
+        batch: Vec<BatchOperation>,
+        iroh_backend: &crate::ipfs_core_api::backends::IrohBackend,
+    ) -> Result<()> {
         for operation in batch {
-            Self::process_individual_operation_static(operation).await?;
+            Self::process_individual_operation_static(operation, iroh_backend).await?;
         }
         Ok(())
     }
 
-    /// Processa batch individual (versão static)
-    async fn process_individual_batch_static(batch: Vec<BatchOperation>) -> Result<()> {
+    /// Processa batch de PubSub (versão static) com IrohBackend
+    async fn process_pubsub_batch_static(
+        batch: Vec<BatchOperation>,
+        iroh_backend: &crate::ipfs_core_api::backends::IrohBackend,
+    ) -> Result<()> {
         for operation in batch {
-            Self::process_individual_operation_static(operation).await?;
+            Self::process_individual_operation_static(operation, iroh_backend).await?;
         }
         Ok(())
     }
 
-    /// Processa operação individual (versão static)
-    async fn process_individual_operation_static(operation: BatchOperation) -> Result<()> {
+    /// Processa batch individual (versão static) com IrohBackend
+    async fn process_individual_batch_static(
+        batch: Vec<BatchOperation>,
+        iroh_backend: &crate::ipfs_core_api::backends::IrohBackend,
+    ) -> Result<()> {
+        for operation in batch {
+            Self::process_individual_operation_static(operation, iroh_backend).await?;
+        }
+        Ok(())
+    }
+
+    /// Processa operação individual (versão static) com IrohBackend
+    async fn process_individual_operation_static(
+        operation: BatchOperation,
+        iroh_backend: &crate::ipfs_core_api::backends::IrohBackend,
+    ) -> Result<()> {
         let start_time = Instant::now();
 
         let result = match operation.data {
             OperationData::AddData { data, .. } => {
-                let add_result = Self::simulate_add_operation_static(data).await?;
+                let add_result = Self::add_operation_static(data, iroh_backend).await?;
                 Ok(OperationResult::AddResult(add_result))
             }
             OperationData::GetCid { cid, .. } => {
-                let get_result = Self::simulate_get_operation_static(cid).await?;
+                let get_result = Self::get_operation_static(cid, iroh_backend).await?;
                 Ok(OperationResult::GetResult(get_result))
             }
             OperationData::PinCid { cid, .. } => {
-                let pin_result = Self::simulate_pin_operation_static(cid).await?;
+                let pin_result = Self::pin_operation_static(cid, iroh_backend).await?;
                 Ok(OperationResult::PinResult(pin_result))
             }
             OperationData::DagPutData { data, .. } => {
-                let dag_result = Self::simulate_dag_put_operation_static(data).await?;
+                let dag_result = Self::dag_put_operation_static(data, iroh_backend).await?;
                 Ok(OperationResult::DagPutResult(dag_result))
             }
             OperationData::PubSubData { topic, data } => {
-                let pubsub_result = Self::simulate_pubsub_operation_static(topic, data).await?;
+                let pubsub_result =
+                    Self::pubsub_operation_static(topic, data, iroh_backend).await?;
                 Ok(OperationResult::PubSubResult(pubsub_result))
             }
             _ => Err(GuardianError::Other(
@@ -1356,69 +1418,101 @@ impl BatchProcessor {
         Ok(())
     }
 
-    /// Versões static das operações simulate
-    async fn simulate_add_operation_static(data: Bytes) -> Result<AddResponse> {
-        use sha2::{Digest, Sha256};
+    /// Versões static das operações usando IrohBackend
+    async fn add_operation_static(
+        data: Bytes,
+        iroh_backend: &crate::ipfs_core_api::backends::IrohBackend,
+    ) -> Result<AddResponse> {
+        // Add static usando IrohBackend
+        use std::pin::Pin;
+        use tokio::io::AsyncRead;
 
-        let mut hasher = Sha256::new();
-        hasher.update(&data);
-        let hash_bytes = hasher.finalize();
-        let hash = format!("Qm{}", hex::encode(&hash_bytes[..20]));
+        let cursor = std::io::Cursor::new(data.to_vec());
+        let async_read: Pin<Box<dyn AsyncRead + Send>> = Box::pin(cursor);
 
-        let processing_time = Duration::from_millis(5 + (data.len() as u64 / 1024));
-        tokio::time::sleep(processing_time).await;
+        let result = iroh_backend
+            .add(async_read)
+            .await
+            .map_err(|e| GuardianError::Other(format!("Erro no add static: {}", e)))?;
 
-        Ok(AddResponse {
-            name: format!("auto_batch_add_{}", hash),
-            hash,
-            size: data.len().to_string(),
-        })
+        debug!("Auto batch add concluído: {}", result.hash);
+        Ok(result)
     }
 
-    async fn simulate_get_operation_static(cid: String) -> Result<Bytes> {
-        if !cid.starts_with("Qm") && !cid.starts_with("bafy") {
-            return Err(GuardianError::Other(format!("CID inválido: {}", cid)));
+    async fn get_operation_static(
+        cid: String,
+        iroh_backend: &crate::ipfs_core_api::backends::IrohBackend,
+    ) -> Result<Bytes> {
+        // Get static usando IrohBackend
+        use tokio::io::AsyncReadExt;
+
+        let mut async_read = iroh_backend
+            .cat(&cid)
+            .await
+            .map_err(|e| GuardianError::Other(format!("Erro no cat static para {}: {}", cid, e)))?;
+
+        let mut buffer = Vec::new();
+        async_read
+            .read_to_end(&mut buffer)
+            .await
+            .map_err(|e| GuardianError::Other(format!("Erro ao ler dados static: {}", e)))?;
+
+        debug!("Auto batch get concluído: {} ({} bytes)", cid, buffer.len());
+        Ok(Bytes::from(buffer))
+    }
+
+    async fn pin_operation_static(
+        cid: String,
+        iroh_backend: &crate::ipfs_core_api::backends::IrohBackend,
+    ) -> Result<bool> {
+        // Pin static usando IrohBackend
+        match iroh_backend.pin_add(&cid).await {
+            Ok(_) => {
+                debug!("Auto batch pin bem-sucedido: {}", cid);
+                Ok(true)
+            }
+            Err(e) => {
+                warn!("Auto batch pin falhou para {}: {}", cid, e);
+                Ok(false)
+            }
         }
-
-        let processing_time = Duration::from_millis(3 + (cid.len() as u64));
-        tokio::time::sleep(processing_time).await;
-
-        let simulated_data = format!("auto_data_for_cid_{}", cid).into_bytes();
-        Ok(Bytes::from(simulated_data))
     }
 
-    async fn simulate_pin_operation_static(cid: String) -> Result<bool> {
-        if !cid.starts_with("Qm") && !cid.starts_with("bafy") {
-            return Err(GuardianError::Other(format!(
-                "CID inválido para pin: {}",
-                cid
-            )));
-        }
-
-        let processing_time = Duration::from_millis(1 + (cid.len() as u64 / 10));
-        tokio::time::sleep(processing_time).await;
-
-        Ok(rand::random::<f64>() > 0.05)
-    }
-
-    async fn simulate_dag_put_operation_static(data: Bytes) -> Result<Cid> {
+    async fn dag_put_operation_static(
+        data: Bytes,
+        iroh_backend: &crate::ipfs_core_api::backends::IrohBackend,
+    ) -> Result<Cid> {
+        // DAG Put static usando IrohBackend
+        use multihash::Multihash;
         use sha2::{Digest, Sha256};
+        use std::pin::Pin;
+        use tokio::io::AsyncRead;
 
+        let cursor = std::io::Cursor::new(data.to_vec());
+        let async_read: Pin<Box<dyn AsyncRead + Send>> = Box::pin(cursor);
+
+        let add_result = iroh_backend
+            .add(async_read)
+            .await
+            .map_err(|e| GuardianError::Other(format!("Erro no DAG put static: {}", e)))?;
+
+        // Gera CID DAG compatível
         let mut hasher = Sha256::new();
         hasher.update(&data);
         let digest = hasher.finalize();
-
-        use multihash::Multihash;
         let mh = Multihash::wrap(0x12, &digest).unwrap();
-        let cid = Cid::new_v1(0x71, mh);
+        let dag_cid = Cid::new_v1(0x71, mh);
 
-        let processing_time = Duration::from_millis(4 + (data.len() as u64 / 512));
-        tokio::time::sleep(processing_time).await;
-
-        Ok(cid)
+        debug!("Auto batch DAG put: {} -> {}", add_result.hash, dag_cid);
+        Ok(dag_cid)
     }
 
-    async fn simulate_pubsub_operation_static(topic: String, data: Bytes) -> Result<bool> {
+    async fn pubsub_operation_static(
+        topic: String,
+        data: Bytes,
+        iroh_backend: &crate::ipfs_core_api::backends::IrohBackend,
+    ) -> Result<bool> {
+        // PubSub static usando IrohBackend
         if topic.is_empty() {
             return Err(GuardianError::Other(
                 "Tópico PubSub não pode estar vazio".to_string(),
@@ -1431,16 +1525,24 @@ impl BatchProcessor {
             ));
         }
 
-        let processing_time = Duration::from_millis(2 + (data.len() as u64 / 1024));
-        tokio::time::sleep(processing_time).await;
-
-        debug!(target: "batch_processor",
-            topic = %topic,
-            data_size = data.len(),
-            "Mensagem PubSub processada automaticamente"
-        );
-
-        Ok(true)
+        // Usando método público publish_gossip do IrohBackend
+        match iroh_backend.publish_gossip(&topic, &data).await {
+            Ok(_) => {
+                debug!(
+                    "Auto batch PubSub via publish_gossip() bem-sucedido: {} ({} bytes)",
+                    topic,
+                    data.len()
+                );
+                Ok(true)
+            }
+            Err(e) => {
+                warn!(
+                    "Auto batch PubSub via publish_gossip() falhou para {}: {}",
+                    topic, e
+                );
+                Ok(false)
+            }
+        }
     }
 
     /// Obtém estatísticas atuais
