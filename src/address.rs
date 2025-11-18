@@ -3,15 +3,10 @@ use cid::Cid;
 use std::fmt;
 use std::str::FromStr;
 
-/// Equivalente à interface 'Address' em Go.
-///
-/// O método `String()` da interface Go é implementado em Rust através do trait `std::fmt::Display`.
 pub trait Address: fmt::Display + fmt::Debug + Send + Sync {
-    /// Equivalente à função 'GetRoot' em Go.
     /// Retorna o CID raiz do banco de dados.
     fn get_root(&self) -> Cid;
 
-    /// Equivalente à função 'GetPath' em Go.
     /// Retorna o caminho do banco de dados.
     fn get_path(&self) -> &str;
 
@@ -19,9 +14,6 @@ pub trait Address: fmt::Display + fmt::Debug + Send + Sync {
     fn equals(&self, other: &dyn Address) -> bool;
 }
 
-/// Equivalente à struct 'address' em Go.
-///
-/// Esta é a implementação concreta da trait `Address`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GuardianDBAddress {
     root: Cid,
@@ -62,10 +54,8 @@ impl GuardianDBAddress {
     }
 }
 
-/// Implementação da trait Address.
 impl Address for GuardianDBAddress {
     fn get_root(&self) -> Cid {
-        // A struct Cid em Rust implementa `Copy`, então podemos retornar diretamente.
         self.root
     }
 
@@ -78,8 +68,6 @@ impl Address for GuardianDBAddress {
     }
 }
 
-/// Equivalente à função 'String()' do tipo 'address' em Go.
-///
 /// Converte o endereço para sua representação em string, como "/GuardianDB/CID/caminho".
 impl fmt::Display for GuardianDBAddress {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -92,8 +80,6 @@ impl fmt::Display for GuardianDBAddress {
     }
 }
 
-/// Equivalente à função 'IsValid' em Go.
-///
 /// Verifica se uma dada string é um endereço GuardianDB sintaticamente válido.
 pub fn is_valid(addr: &str) -> Result<()> {
     // Verifica se a string está vazia
@@ -124,9 +110,6 @@ pub fn is_valid(addr: &str) -> Result<()> {
             "Endereço inválido: CID não pode estar vazio".to_string(),
         ));
     }
-
-    // A biblioteca `Cid::from_str` já falha para strings vazias, cobrindo as duas
-    // verificações de erro do código Go original em uma única chamada.
     Cid::from_str(cid_part).map_err(|e| {
         GuardianError::InvalidArgument(format!(
             "Endereço inválido: não foi possível decodificar o CID '{}': {}",
@@ -137,11 +120,7 @@ pub fn is_valid(addr: &str) -> Result<()> {
     Ok(())
 }
 
-/// Equivalente à função 'Parse' em Go.
-///
 /// Analisa uma string e retorna uma instância de `GuardianDBAddress` se for um endereço válido.
-/// Em Rust, é mais idiomático retornar a struct concreta em vez de um `Box<dyn Address>`
-/// para dar mais flexibilidade e melhor desempenho ao chamador.
 pub fn parse(addr: &str) -> Result<GuardianDBAddress> {
     // Primeiro, valida o endereço. Em caso de erro, retorna um erro mais descritivo.
     if is_valid(addr).is_err() {
