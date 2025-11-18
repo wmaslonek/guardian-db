@@ -1,6 +1,6 @@
 use crate::error::GuardianError;
-use crate::iface::StoreIndex;
 use crate::ipfs_log::{entry::Entry, log::Log};
+use crate::traits::StoreIndex;
 use std::collections::{HashMap, HashSet};
 use std::sync::RwLock;
 
