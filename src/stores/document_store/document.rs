@@ -1,15 +1,15 @@
 use crate::address::Address;
 use crate::data_store::Datastore;
 use crate::error::{GuardianError, Result};
-use crate::iface::{
-    CreateDocumentDBOptions, DocumentStoreGetOptions, NewStoreOptions, Store, TracerWrapper,
-};
 use crate::ipfs_core_api::client::IpfsClient;
 use crate::ipfs_log::identity::Identity;
-use crate::pubsub::event::EventBus;
+use crate::p2p::events::EventBus;
 use crate::stores::base_store::base_store::BaseStore;
 use crate::stores::document_store::index::DocumentIndex;
 use crate::stores::operation::{operation, operation::Operation};
+use crate::traits::{
+    CreateDocumentDBOptions, DocumentStoreGetOptions, NewStoreOptions, Store, TracerWrapper,
+};
 use serde_json::{Map, Value};
 use std::sync::Arc;
 use tracing::{Span, instrument, warn};
@@ -50,7 +50,7 @@ impl Store for GuardianDBDocumentStore {
         self.cached_address.as_ref()
     }
 
-    fn index(&self) -> Box<dyn crate::iface::StoreIndex<Error = GuardianError> + Send + Sync> {
+    fn index(&self) -> Box<dyn crate::traits::StoreIndex<Error = GuardianError> + Send + Sync> {
         // Usa o DocumentIndex local que foi criado especificamente para esta DocumentStore
         // Este índice mantém compatibilidade com a trait Store
         let default_opts = Arc::new(default_store_opts_for_map("_id"));
