@@ -1,6 +1,6 @@
 [package]
 name = "guardian-db"
-version = "0.10.15"
+version = "0.11.18"
 authors = ["William Maslonek <wmaslonek@icloud.com>"]
 license = "MIT OR Apache-2.0"
 edition = "2024"

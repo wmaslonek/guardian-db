@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.18] - 2025-11-18
+
 ### Changed
 - Integrated the batch processor with the Iroh backend, enabling more efficient batch operations.
 - Fully implemented the create_controller function in ac/utils.rs, improving internal component orchestration.

@@ -5,7 +5,7 @@
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 ![Rust](https://img.shields.io/badge/rust-1.89.0+-orange.svg)
-![Version](https://img.shields.io/badge/version-0.10.15-brightgreen.svg)
+![Version](https://img.shields.io/badge/version-0.11.18-brightgreen.svg)
 ![Build Status](https://img.shields.io/badge/build-passing-green.svg)
 ![Tests](https://img.shields.io/badge/tests-88%20passed-green.svg)
 ![Examples](https://img.shields.io/badge/examples-26%20demos-blue.svg)
