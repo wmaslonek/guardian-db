@@ -3,10 +3,6 @@ use crate::address::Address;
 use crate::data_store::Datastore;
 use crate::error::{GuardianError, Result};
 use crate::events::{EmitterInterface, EventEmitter};
-use crate::iface::{
-    DirectChannel, MessageExchangeHeads, MessageMarshaler, NewStoreOptions, PubSubInterface,
-    PubSubTopic, Store, StoreIndex, TracerWrapper,
-};
 use crate::ipfs_core_api::client::IpfsClient;
 use crate::ipfs_log::access_controller::{CanAppendAdditionalContext, LogEntry};
 use crate::ipfs_log::identity_provider::{GuardianDBIdentityProvider, IdentityProvider};
@@ -15,7 +11,7 @@ use crate::ipfs_log::{
     identity::Identity,
     log::{Log, LogOptions},
 };
-use crate::pubsub::event::{Emitter, EventBus};
+use crate::p2p::events::{Emitter, EventBus};
 use crate::stores::events::{
     EventLoad, EventLoadProgress, EventReady, EventReplicate, EventReplicateProgress,
     EventReplicated, EventWrite,
@@ -24,6 +20,10 @@ use crate::stores::operation::operation::Operation;
 use crate::stores::replicator::{
     replication_info::ReplicationInfo, replicator::Replicator,
     traits::ReplicationInfo as ReplicationInfoTrait,
+};
+use crate::traits::{
+    DirectChannel, MessageExchangeHeads, MessageMarshaler, NewStoreOptions, PubSubInterface,
+    PubSubTopic, Store, StoreIndex, TracerWrapper,
 };
 use cid::Cid;
 use libp2p::core::PeerId;
@@ -404,8 +404,8 @@ impl BaseStore {
     /// - Manter estado de sincronização e replicação
     /// - Otimizar performance de queries no log
     fn create_cache(address: &dyn Address) -> Result<Arc<dyn Datastore>> {
-        use crate::cache::cache::{Cache, CacheMode, Options};
         use crate::cache::level_down::LevelDownCache;
+        use crate::cache::{Cache, CacheMode, Options};
 
         // Configurações otimizadas para o cache
         let cache_options = Options {
@@ -955,7 +955,7 @@ impl BaseStore {
         if let Some(sled_cache) = self
             .cache()
             .as_any()
-            .downcast_ref::<crate::cache::cache::SledDatastore>()
+            .downcast_ref::<crate::cache::SledDatastore>()
         {
             if let Err(e) = sled_cache.close() {
                 warn!("Failed to close SledDatastore cache: {}", e);
@@ -1117,10 +1117,7 @@ impl BaseStore {
         }
 
         // Para caches que suportam flush completo, força a persistência
-        if let Some(sled_cache) = cache
-            .as_any()
-            .downcast_ref::<crate::cache::cache::SledDatastore>()
-        {
+        if let Some(sled_cache) = cache.as_any().downcast_ref::<crate::cache::SledDatastore>() {
             if let Err(e) = sled_cache.close() {
                 warn!("Failed to flush cache during reset: {}", e);
             } else {
@@ -1493,7 +1490,7 @@ impl BaseStore {
                         store.recalculate_replication_max(1000); // Máximo padrão de 1000 entradas
 
                         // Verifica se há cache que precisa ser persistido e força flush
-                        match store.cache().as_any().downcast_ref::<crate::cache::cache::SledDatastore>() {
+                        match store.cache().as_any().downcast_ref::<crate::cache::SledDatastore>() {
                             Some(sled_cache) => {
                                 if let Err(e) = sled_cache.close() {
                                     warn!("Failed to flush cache during periodic maintenance: {}", e);
@@ -2088,7 +2085,7 @@ impl BaseStore {
             .pubsub
             .as_ref()
             .as_any()
-            .downcast_ref::<std::sync::Arc<crate::pubsub::core_api::CoreApiPubSub>>()
+            .downcast_ref::<std::sync::Arc<crate::p2p::pubsub::CoreApiPubSub>>()
         {
             // Usa o método interno que funciona com &self
             debug!("Using CoreApiPubSub for topic subscription");
@@ -2097,7 +2094,7 @@ impl BaseStore {
             .pubsub
             .as_ref()
             .as_any()
-            .downcast_ref::<crate::pubsub::raw::RawPubSub>()
+            .downcast_ref::<crate::p2p::pubsub::raw::RawPubSub>()
         {
             // Cria um clone mutável temporário para RawPubSub
             debug!("Using RawPubSub for topic subscription");
@@ -2302,14 +2299,14 @@ impl BaseStore {
                         match peer_event {
                             Some(event) => {
                                 // Converte o Arc<dyn Any> para EventPubSub
-                                if let Some(pubsub_event) = event.downcast_ref::<crate::iface::EventPubSub>() {
+                                if let Some(pubsub_event) = event.downcast_ref::<crate::traits::EventPubSub>() {
                                     if let Some(store_arc) = store_weak.upgrade() {
                                         debug!(
                                             "Processing peer event: {:?}",
                                             match pubsub_event {
-                                                crate::iface::EventPubSub::Join { peer, topic } =>
+                                                crate::traits::EventPubSub::Join { peer, topic } =>
                                                     format!("Join(peer: {:?}, topic: {})", peer, topic),
-                                                crate::iface::EventPubSub::Leave { peer, topic } =>
+                                                crate::traits::EventPubSub::Leave { peer, topic } =>
                                                     format!("Leave(peer: {:?}, topic: {})", peer, topic),
                                             }
                                         );
@@ -2337,9 +2334,9 @@ impl BaseStore {
     /// Função auxiliar de 'pubsub_chan_listener'
     /// Handles a single peer join or leave event.
     /// Processa eventos com retry e tratamento robusto de erros.
-    async fn handle_peer_event(self: Arc<Self>, event: crate::iface::EventPubSub) {
+    async fn handle_peer_event(self: Arc<Self>, event: crate::traits::EventPubSub) {
         match event {
-            crate::iface::EventPubSub::Join {
+            crate::traits::EventPubSub::Join {
                 topic: _,
                 peer: peer_id,
             } => {
@@ -2390,7 +2387,7 @@ impl BaseStore {
                     }
                 });
             }
-            crate::iface::EventPubSub::Leave {
+            crate::traits::EventPubSub::Leave {
                 topic: _,
                 peer: peer_id,
             } => {
@@ -2695,7 +2692,7 @@ impl BaseStore {
         if let Some(concrete_channel) = direct_channel
             .as_ref()
             .as_any()
-            .downcast_ref::<crate::pubsub::direct_channel::DirectChannel>(
+            .downcast_ref::<crate::p2p::pubsub::direct_channel::DirectChannel>(
         ) {
             debug!("Using concrete DirectChannel implementation for communication");
 
@@ -2710,7 +2707,7 @@ impl BaseStore {
             while !connection_established && connection_attempts <= MAX_CONNECTION_RETRIES {
                 connection_attempts += 1;
 
-                match concrete_channel.connect_peer(peer).await {
+                match concrete_channel.connect_to_peer(peer).await {
                     Ok(()) => {
                         debug!(
                             "Successfully connected to peer: {:?} on attempt {}",
@@ -2769,7 +2766,7 @@ impl BaseStore {
                 peer
             );
 
-            match concrete_channel.send_to_peer(peer, payload.clone()).await {
+            match concrete_channel.send_data(peer, payload.clone()).await {
                 Ok(()) => {
                     debug!(
                         "Successfully sent {} bytes to peer: {:?}",
@@ -2800,12 +2797,12 @@ impl BaseStore {
                         tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
 
                         // Tenta reconectar antes do retry
-                        match concrete_channel.connect_peer(peer).await {
+                        match concrete_channel.connect_to_peer(peer).await {
                             Ok(()) => {
                                 debug!("Reconnection successful on retry {}", retry_attempts);
 
                                 // Tenta enviar novamente
-                                match concrete_channel.send_to_peer(peer, payload.clone()).await {
+                                match concrete_channel.send_data(peer, payload.clone()).await {
                                     Ok(()) => {
                                         debug!(
                                             "Retry {}/{} successful: sent {} bytes to peer: {:?}",
@@ -2862,7 +2859,7 @@ impl BaseStore {
         } else if let Some(channels) = direct_channel
             .as_ref()
             .as_any()
-            .downcast_ref::<crate::pubsub::one_on_one_channel::Channels>(
+            .downcast_ref::<crate::p2p::pubsub::one_on_one_channel::Channels>(
         ) {
             debug!("Using Channels implementation for communication");
 
