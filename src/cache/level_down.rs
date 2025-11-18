@@ -1,5 +1,5 @@
 use crate::address::Address;
-use crate::cache::{cache::Cache, cache::Options};
+use crate::cache::{Cache, Options};
 use crate::data_store::{Datastore, Key, Order, Query, ResultItem, Results};
 use crate::error::{GuardianError, Result};
 use sled::{Config, Db, IVec};
