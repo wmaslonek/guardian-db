@@ -1,14 +1,11 @@
 use crate::error::GuardianError;
-use crate::iface::StoreIndex;
 use crate::ipfs_log::{entry::Entry, log::Log};
 use crate::stores::operation::operation::Operation;
+use crate::traits::StoreIndex;
 use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-
-/// Em Go: kvIndex.
-/// Em Rust, `muIndex` e `index` são combinados em um único campo
-/// `RwLock<HashMap<...>>` para garantir acesso seguro entre threads.
+/// KvIndex mantém um índice de chave-valor em memória para a KvStore.
 pub struct KvIndex {
     index: Arc<RwLock<HashMap<String, Vec<u8>>>>,
 }
@@ -20,8 +17,7 @@ impl Default for KvIndex {
 }
 
 impl KvIndex {
-    /// equivalente a função NewKVIndex em go.
-    /// Em Rust, é um construtor associado à struct.
+    /// Cria uma nova instância de KvIndex.
     pub fn new() -> Self {
         KvIndex {
             index: Arc::new(RwLock::new(HashMap::new())),
@@ -29,8 +25,6 @@ impl KvIndex {
     }
 }
 
-// Em Go, `kvIndex` implementa a interface `StoreIndex`.
-// Em Rust, fazemos isso explicitamente com um bloco `impl`.
 impl StoreIndex for KvIndex {
     type Error = GuardianError;
 
@@ -63,14 +57,12 @@ impl StoreIndex for KvIndex {
         let index = self.index.read();
         Ok(index.is_empty())
     }
-
-    /// equivalente a função UpdateIndex em go
+    /// Atualiza o índice processando as entradas do log de operações (oplog).
     fn update_index(
         &mut self,
         oplog: &Log,
         _entries: &[Entry],
     ) -> std::result::Result<(), Self::Error> {
-        // Um `HashSet` é mais idiomático em Rust para rastrear chaves já processadas.
         let mut handled = HashSet::new();
 
         // Usa um "write lock" para garantir acesso exclusivo durante a atualização.
