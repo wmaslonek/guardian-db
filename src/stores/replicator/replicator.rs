@@ -1,13 +1,13 @@
 use crate::error::Result;
-use crate::iface::TracerWrapper;
 use crate::ipfs_log::{entry::Entry, log::Log};
-use crate::pubsub::event::{Emitter, EventBus};
+use crate::p2p::events::{Emitter, EventBus};
 use crate::stores::events::{EventLoad, EventLoadProgress, EventReplicated};
 use crate::stores::replicator::events::{EventLoadAdded, EventLoadEnd};
 use crate::stores::replicator::queue::{
     ProcessItem as ProcessItemTrait, ProcessQueue, ProcessQueueItem,
 };
 use crate::stores::replicator::traits::StoreInterface;
+use crate::traits::TracerWrapper;
 use cid::Cid;
 use opentelemetry::trace::{TraceContextExt, TracerProvider, noop::NoopTracerProvider};
 use std::collections::HashMap;
