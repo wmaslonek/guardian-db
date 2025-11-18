@@ -274,7 +274,7 @@ mod tests {
 
         let adapter = IpfsClientAdapter::new(client.unwrap());
         // Test that adapter is created successfully
-        assert_eq!(adapter.client.config().enable_pubsub, true);
+        assert!(adapter.client.config().enable_pubsub);
     }
 
     #[tokio::test]
