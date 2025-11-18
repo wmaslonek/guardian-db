@@ -1,5 +1,5 @@
 use crate::error::{GuardianError, Result};
-use crate::pubsub::event::{Emitter, EventBus};
+use crate::p2p::events::{Emitter, EventBus};
 use async_trait::async_trait;
 use std::any::Any;
 use std::collections::VecDeque;
