@@ -4,7 +4,7 @@
 // Gossipsub, DHT e operações IPFS para otimizações futuras
 
 use crate::error::{GuardianError, Result};
-use crate::pubsub::direct_channel::SwarmManager;
+use crate::p2p::manager::SwarmManager;
 use libp2p::{PeerId, gossipsub::TopicHash};
 use serde::{Deserialize, Serialize};
 use std::{
