@@ -12,8 +12,8 @@ use crate::access_controller::{
 };
 use crate::base_guardian::GuardianDB;
 use crate::error::{GuardianError, Result};
-use crate::iface::BaseGuardianDB;
 use crate::ipfs_core_api::config::ClientConfig;
+use crate::traits::BaseGuardianDB;
 use std::sync::Arc;
 
 #[tokio::test]
