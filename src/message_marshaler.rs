@@ -1,5 +1,5 @@
 use crate::error::GuardianError;
-use crate::iface::{MessageExchangeHeads, MessageMarshaler};
+use crate::traits::{MessageExchangeHeads, MessageMarshaler};
 use serde_json;
 
 /// Wrapper que adapta serde_json::Error para GuardianError
