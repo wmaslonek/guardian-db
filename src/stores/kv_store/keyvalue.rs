@@ -1,11 +1,11 @@
 use crate::address::Address;
 use crate::data_store::Datastore;
 use crate::error::{GuardianError, Result};
-use crate::iface::{KeyValueStore, NewStoreOptions, Store, StoreIndex};
 use crate::ipfs_log::identity::Identity;
-use crate::pubsub::event::EventBus;
+use crate::p2p::events::EventBus;
 use crate::stores::base_store::base_store::BaseStore;
 use crate::stores::operation::operation::Operation;
+use crate::traits::{KeyValueStore, NewStoreOptions, Store, StoreIndex};
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -322,7 +322,7 @@ impl Store for GuardianDBKeyValue {
         Arc::new(self.span.clone())
     }
 
-    fn tracer(&self) -> Arc<crate::iface::TracerWrapper> {
+    fn tracer(&self) -> Arc<crate::traits::TracerWrapper> {
         // Return the tracer from base_store
         self.base_store.tracer()
     }
