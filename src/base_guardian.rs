@@ -2,19 +2,19 @@ use crate::address::{Address, GuardianDBAddress};
 use crate::cache::level_down::LevelDownCache;
 use crate::db_manifest;
 use crate::error::{GuardianError, Result};
-use crate::iface::{
+use crate::ipfs_core_api::{backends::IrohBackend, client::IpfsClient, config::ClientConfig};
+use crate::ipfs_log::identity::{Identity, Signatures};
+pub use crate::ipfs_log::identity_provider::Keystore;
+use crate::keystore::SledKeystore;
+use crate::p2p::events::Emitter;
+pub use crate::p2p::events::EventBus;
+pub use crate::p2p::events::EventBus as EventBusImpl;
+use crate::traits::{
     AccessControllerConstructor, BaseGuardianDB, CreateDBOptions, DetermineAddressOptions,
     DirectChannel, DirectChannelFactory, DirectChannelOptions, EventPubSubPayload,
     MessageExchangeHeads, MessageMarshaler, PubSubInterface, Store, StoreConstructor,
     TracerWrapper,
 };
-use crate::ipfs_core_api::{backends::IrohBackend, client::IpfsClient, config::ClientConfig};
-use crate::ipfs_log::identity::{Identity, Signatures};
-pub use crate::ipfs_log::identity_provider::Keystore;
-use crate::keystore::SledKeystore;
-use crate::pubsub::event::Emitter;
-pub use crate::pubsub::event::EventBus;
-pub use crate::pubsub::event::EventBus as EventBusImpl;
 use hex;
 use libp2p::PeerId;
 use opentelemetry::global::BoxedTracer;
@@ -389,11 +389,11 @@ impl GuardianDB {
         options.identity = Some(identity.clone());
 
         // Chama o construtor principal com as opções totalmente configuradas.
-        Self::new_orbit_db(ipfs_client, identity, Some(options)).await
+        Self::new_guardian_db(ipfs_client, identity, Some(options)).await
     }
 
     /// Construtor principal para uma instância de GuardianDB.
-    pub async fn new_orbit_db(
+    pub async fn new_guardian_db(
         ipfs: IpfsClient,
         identity: Identity,
         options: Option<NewGuardianDBOptions>,
@@ -420,7 +420,10 @@ impl GuardianDB {
             let _enter = factory_span.enter();
             // Usar span de tracing para compatibilidade
             let temp_span = tracing::Span::none();
-            crate::pubsub::direct_channel::init_direct_channel_factory(temp_span, PeerId::random())
+            crate::p2p::pubsub::direct_channel::init_direct_channel_factory(
+                temp_span,
+                PeerId::random(),
+            )
         });
         let cancellation_token = CancellationToken::new();
 
@@ -929,7 +932,7 @@ impl GuardianDB {
         );
 
         // Cria o endereço do banco de dados.
-        let determine_opts = crate::iface::DetermineAddressOptions {
+        let determine_opts = crate::traits::DetermineAddressOptions {
             only_hash: None,
             replicate: None,
             access_controller:
@@ -1426,8 +1429,8 @@ impl GuardianDB {
     async fn convert_create_to_store_options(
         &self,
         options: CreateDBOptions,
-    ) -> Result<crate::iface::NewStoreOptions> {
-        use crate::iface::NewStoreOptions;
+    ) -> Result<crate::traits::NewStoreOptions> {
+        use crate::traits::NewStoreOptions;
 
         tracing::debug!("Convertendo opções para criação de store");
 
@@ -1561,7 +1564,7 @@ impl GuardianDB {
         let simple_constructor =
             Arc::new(
                 |_base_guardian: Arc<
-                    dyn crate::iface::BaseGuardianDB<Error = crate::error::GuardianError>,
+                    dyn crate::traits::BaseGuardianDB<Error = crate::error::GuardianError>,
                 >,
                  options: &crate::access_controller::manifest::CreateAccessControllerOptions,
                  _access_controller_options: Option<
@@ -1597,7 +1600,7 @@ impl GuardianDB {
             |ipfs: Arc<crate::ipfs_core_api::client::IpfsClient>,
              identity: Arc<crate::ipfs_log::identity::Identity>,
              address: Box<dyn crate::address::Address>,
-             options: crate::iface::NewStoreOptions| {
+             options: crate::traits::NewStoreOptions| {
                 Box::pin(async move {
                     use crate::stores::event_log_store::log::GuardianDBEventLogStore;
                     // Converte Box<dyn Address> para Arc<dyn Address + Send + Sync>
@@ -1610,7 +1613,7 @@ impl GuardianDB {
 
                     Ok(Box::new(store)
                         as Box<
-                            dyn crate::iface::Store<Error = crate::error::GuardianError>,
+                            dyn crate::traits::Store<Error = crate::error::GuardianError>,
                         >)
                 })
                     as Pin<
@@ -1618,7 +1621,7 @@ impl GuardianDB {
                             dyn std::future::Future<
                                     Output = crate::error::Result<
                                         Box<
-                                            dyn crate::iface::Store<
+                                            dyn crate::traits::Store<
                                                     Error = crate::error::GuardianError,
                                                 >,
                                         >,
@@ -1633,7 +1636,7 @@ impl GuardianDB {
             |ipfs: Arc<crate::ipfs_core_api::client::IpfsClient>,
              identity: Arc<crate::ipfs_log::identity::Identity>,
              address: Box<dyn crate::address::Address>,
-             options: crate::iface::NewStoreOptions| {
+             options: crate::traits::NewStoreOptions| {
                 Box::pin(async move {
                     use crate::stores::kv_store::keyvalue::GuardianDBKeyValue;
                     // Converte Box<dyn Address> para Arc<dyn Address + Send + Sync>
@@ -1646,7 +1649,7 @@ impl GuardianDB {
 
                     Ok(Box::new(store)
                         as Box<
-                            dyn crate::iface::Store<Error = crate::error::GuardianError>,
+                            dyn crate::traits::Store<Error = crate::error::GuardianError>,
                         >)
                 })
                     as Pin<
@@ -1654,7 +1657,7 @@ impl GuardianDB {
                             dyn std::future::Future<
                                     Output = crate::error::Result<
                                         Box<
-                                            dyn crate::iface::Store<
+                                            dyn crate::traits::Store<
                                                     Error = crate::error::GuardianError,
                                                 >,
                                         >,
@@ -1670,7 +1673,7 @@ impl GuardianDB {
             |ipfs: Arc<crate::ipfs_core_api::client::IpfsClient>,
              identity: Arc<crate::ipfs_log::identity::Identity>,
              address: Box<dyn crate::address::Address>,
-             options: crate::iface::NewStoreOptions| {
+             options: crate::traits::NewStoreOptions| {
                 Box::pin(async move {
                     use crate::stores::document_store::document::GuardianDBDocumentStore;
 
@@ -1684,7 +1687,7 @@ impl GuardianDB {
 
                     Ok(Box::new(store)
                         as Box<
-                            dyn crate::iface::Store<Error = crate::error::GuardianError>,
+                            dyn crate::traits::Store<Error = crate::error::GuardianError>,
                         >)
                 })
                     as Pin<
@@ -1692,7 +1695,7 @@ impl GuardianDB {
                             dyn std::future::Future<
                                     Output = crate::error::Result<
                                         Box<
-                                            dyn crate::iface::Store<
+                                            dyn crate::traits::Store<
                                                     Error = crate::error::GuardianError,
                                                 >,
                                         >,
@@ -2925,7 +2928,7 @@ pub async fn make_direct_channel(
     factory: DirectChannelFactory,
     options: &DirectChannelOptions,
 ) -> Result<Arc<dyn DirectChannel<Error = GuardianError> + Send + Sync>> {
-    let emitter = crate::pubsub::event::PayloadEmitter::new(event_bus)
+    let emitter = crate::p2p::events::PayloadEmitter::new(event_bus)
         .await
         .map_err(|e| {
             GuardianError::Other(format!(
