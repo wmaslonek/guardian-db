@@ -1,6 +1,6 @@
 use guardian_db::error::Result;
-use guardian_db::iface::EventPubSubPayload;
-use guardian_db::pubsub::event::{EventBus, PayloadEmitter};
+use guardian_db::p2p::events::{EventBus, PayloadEmitter};
+use guardian_db::traits::EventPubSubPayload;
 use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
 
