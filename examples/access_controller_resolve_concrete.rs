@@ -7,8 +7,8 @@ use guardian_db::access_controller::{
 };
 use guardian_db::base_guardian::{GuardianDB, NewGuardianDBOptions};
 use guardian_db::error::Result;
-use guardian_db::iface::BaseGuardianDB;
 use guardian_db::ipfs_core_api::config::ClientConfig;
+use guardian_db::traits::BaseGuardianDB;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{info, warn};
