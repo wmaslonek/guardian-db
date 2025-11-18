@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Integrated the batch processor with the Iroh backend, enabling more efficient batch operations.
+- Fully implemented the create_controller function in ac/utils.rs, improving internal component orchestration.
+- Refactored the former pubsub module, now renamed to p2p, including:
+
+Peer connection system with verified handshake in DirectChannel.
+Discovery beacon mechanism for automatic peer discovery.
+Connection retry logic with proper timeout management.
+Comprehensive peer identity verification during handshake.
+
+- Renamed modules for improved architectural clarity:
+src/iface.rs → traits.rs
+ipfs_log/iface.rs → traits.rs
+
+- General system improvements, including better stability, organization, and performance.
+
+### Fixed
+- Architecture improvements
+
 ## [0.10.15] - 2025-10-15
 
 ### Added
