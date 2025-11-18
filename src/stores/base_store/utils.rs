@@ -1,15 +1,13 @@
 use crate::data_store::Datastore;
 use crate::error::{GuardianError, Result};
-use crate::iface::Store;
 use crate::stores::base_store::base_store::StoreSnapshot;
+use crate::traits::Store;
 use byteorder::{BigEndian, WriteBytesExt};
 use cid::Cid;
 use std::io::Cursor;
 
 pub type CacheGuard<'a> = std::sync::MutexGuard<'a, Box<dyn Datastore + Send + Sync>>;
 
-/// Equivalente à função `SaveSnapshot` em Go.
-///
 /// A função é `async` e genérica sobre qualquer tipo `S` que implemente o trait `Store`.
 /// Ela constrói o snapshot em um buffer de bytes e o adiciona ao IPFS.
 pub async fn save_snapshot<S: Store + Send + Sync>(store: &S) -> Result<Cid> {
