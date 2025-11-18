@@ -3,9 +3,7 @@ use crate::ipfs_log::entry::Entry;
 use serde::{Deserialize, Serialize};
 use serde_json;
 
-/// Representa um documento dentro de uma operação (equivalente a `opDoc` em Go).
-/// Os atributos `#[serde(rename = "...")]` garantem que os nomes dos campos
-/// no JSON sejam os mesmos que no código Go.
+/// Representa um documento em uma operação de log.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OpDoc {
     #[serde(rename = "key")]
@@ -32,10 +30,7 @@ impl OpDoc {
     }
 }
 
-/// Representa uma operação a ser adicionada ao log (equivalente a `operation` em Go).
-/// `Option<T>` é o equivalente idiomático em Rust para ponteiros que podem ser nulos em Go.
-/// `#[serde(skip_serializing_if = "...")]` simula o comportamento de `omitempty` do Go.
-/// `#[serde(skip)]` impede que o campo `entry` seja serializado, equivalente a `json:"-"`.
+/// Representa uma operação a ser adicionada ao log.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Operation {
     #[serde(rename = "key", skip_serializing_if = "Option::is_none")]
@@ -120,7 +115,6 @@ impl Operation {
 }
 
 /// Analisa um Entry do IPFS log para extrair os dados da operação.
-/// Retorna um Result, que é a forma idiomática do Rust para lidar com erros.
 pub fn parse_operation(entry: Entry) -> Result<Operation> {
     // Desserializa o payload JSON da entry para uma Operation
     let mut op: Operation = serde_json::from_str(entry.payload()).map_err(|err| {
