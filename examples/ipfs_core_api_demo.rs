@@ -32,7 +32,7 @@ fn validate_cid(hash: &str) -> bool {
                 .all(|c| "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz".contains(c))
     } else if hash.starts_with("baf") || hash.starts_with("bae") {
         // Base32 CIDv1 - even length and valid base32 chars
-        hash.len() % 2 == 0
+        hash.len().is_multiple_of(2)
             && hash
                 .chars()
                 .all(|c| "abcdefghijklmnopqrstuvwxyz234567".contains(c))
