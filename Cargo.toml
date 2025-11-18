@@ -5,6 +5,13 @@ authors = ["William Maslonek <wmaslonek@icloud.com>"]
 license = "MIT OR Apache-2.0"
 edition = "2024"
 rust-version = "1.89.0"
+description = "A high-performance, decentralized database built on IPFS with advanced P2P networking, access control, and real-time synchronization capabilities"
+repository = "https://github.com/wmaslonek/guardian-db/"
+readme = "README.md"
+homepage = "https://www.willsearch.com.br/"
+documentation = "https://docs.rs/guardian-db"
+keywords = ["database", "p2p", "ipfs", "decentralized", "crdt"]
+categories = ["database-implementations", "network-programming", "web-programming"]
 
 [dependencies]
 async-trait = "0.1.89"
