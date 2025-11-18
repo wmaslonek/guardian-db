@@ -1,10 +1,9 @@
 use crate::error::GuardianError;
-use crate::iface::StoreIndex;
 use crate::ipfs_log::{entry::Entry, log::Log};
+use crate::traits::StoreIndex;
 use parking_lot::RwLock;
 use std::sync::Arc;
 
-/// Equivalente a struct "eventIndex" em go.
 /// `EventIndex` armazena uma cópia do log completo para queries e stream de eventos.
 ///
 /// Um EventLogStore é um log de eventos "append-only" onde todas as operações
@@ -62,8 +61,6 @@ impl EventIndex {
 }
 
 /// Implementação do trait StoreIndex para EventIndex.
-/// Agora usando a trait refatorada que resolve os problemas de compatibilidade
-/// com dados protegidos por locks.
 impl StoreIndex for EventIndex {
     type Error = GuardianError;
 
@@ -159,7 +156,7 @@ impl StoreIndex for EventIndex {
         Some(cache[start..actual_end].to_vec())
     }
 
-    /// Implementa acesso otimizado às últimas N entradas.
+    /// Acesso otimizado às últimas N entradas.
     ///
     /// Caso de uso muito comum para EventLogStore - buscar eventos recentes.
     fn get_last_entries(&self, count: usize) -> Option<Vec<Entry>> {
@@ -173,7 +170,7 @@ impl StoreIndex for EventIndex {
         Some(cache[start..].to_vec())
     }
 
-    /// Implementa busca otimizada por CID.
+    /// Busca otimizada por CID.
     ///
     /// Atualmente usa busca linear O(n), mas estrutura preparada
     /// para futuro índice secundário O(1) por CID.
@@ -191,10 +188,7 @@ impl StoreIndex for EventIndex {
     }
 }
 
-/// Equivalente a função "NewEventIndex" em go.
-/// Esta é a função fábrica que cria uma nova instância do nosso índice.
-/// A verificação `var _ iface.IndexConstructor = NewEventIndex` do Go é garantida
-/// pela assinatura desta função, que deve corresponder ao que a store espera.
+/// Esta é a função fábrica que cria uma nova instância do índice.
 pub fn new_event_index(_params: &[u8]) -> Box<dyn StoreIndex<Error = GuardianError>> {
     Box::new(EventIndex::new())
 }
