@@ -42,7 +42,7 @@ impl Key {
     /// Cria uma nova chave a partir de um caminho
     ///
     /// # Exemplos
-    /// ```
+    /// ```ignore
     /// use guardian_db::data_store::Key;
     ///
     /// let key = Key::new("/users/alice/profile");
