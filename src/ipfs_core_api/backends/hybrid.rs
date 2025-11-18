@@ -47,7 +47,7 @@ pub struct LibP2PSwarm {
     /// Lista de peers conectados
     connected_peers: Arc<RwLock<Vec<PeerInfo>>>,
     /// Referência para o SwarmManager (para DHT e descoberta)
-    swarm_manager: Option<Arc<crate::pubsub::direct_channel::SwarmManager>>,
+    swarm_manager: Option<Arc<crate::p2p::manager::SwarmManager>>,
 }
 
 impl HybridBackend {
@@ -583,7 +583,7 @@ impl IpfsBackend for HybridBackend {
 impl LibP2PSwarm {
     /// Cria um novo swarm LibP2P usando o KeySynchronizer
     async fn new(key_sync: &KeySynchronizer, _config: &ClientConfig) -> Result<Self> {
-        use crate::pubsub::direct_channel::SwarmManager;
+        use crate::p2p::manager::SwarmManager;
         use tracing::Span;
 
         debug!("Inicializando Swarm LibP2P com KeySynchronizer");
@@ -697,7 +697,7 @@ impl LibP2PSwarm {
     /// Executa conexão usando recursos existentes do SwarmManager e backend Iroh
     async fn attempt_connection(
         &self,
-        swarm_manager: &Arc<crate::pubsub::direct_channel::SwarmManager>,
+        swarm_manager: &Arc<crate::p2p::manager::SwarmManager>,
         peer: &PeerId,
         addresses: &[String],
     ) -> Result<()> {
@@ -743,7 +743,7 @@ impl LibP2PSwarm {
     /// Conecta via DirectChannel usando SwarmManager
     async fn connect_via_direct_channel(
         &self,
-        swarm_manager: &Arc<crate::pubsub::direct_channel::SwarmManager>,
+        swarm_manager: &Arc<crate::p2p::manager::SwarmManager>,
         peer: &PeerId,
     ) -> Result<()> {
         debug!("Conectando via DirectChannel para peer {}", peer);
@@ -777,7 +777,7 @@ impl LibP2PSwarm {
     /// Estabelece conexão usando recursos do SwarmManager
     async fn establish_direct_channel_connection(
         &self,
-        _swarm_manager: &Arc<crate::pubsub::direct_channel::SwarmManager>,
+        _swarm_manager: &Arc<crate::p2p::manager::SwarmManager>,
         peer: &PeerId,
     ) -> Result<()> {
         debug!("Estabelecendo conexão DirectChannel para peer {}", peer);
@@ -1258,7 +1258,7 @@ impl LibP2PSwarm {
     /// Executa busca DHT delegando para o backend Iroh
     async fn perform_dht_lookup(
         &self,
-        _swarm_manager: &Arc<crate::pubsub::direct_channel::SwarmManager>,
+        _swarm_manager: &Arc<crate::p2p::manager::SwarmManager>,
         peer: &PeerId,
     ) -> Result<Vec<String>> {
         debug!("Executando busca DHT delegando para backend Iroh concreto");
