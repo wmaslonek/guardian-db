@@ -4,9 +4,9 @@ pub mod access_controller;
 pub mod entry;
 pub mod identity;
 pub mod identity_provider;
-pub mod iface;
 pub mod lamport_clock;
 pub mod log;
+pub mod traits;
 
 #[cfg(test)]
 mod tests {
