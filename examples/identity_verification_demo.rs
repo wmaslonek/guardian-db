@@ -4,10 +4,10 @@
 //! verificação criptográfica completa das identidades dos heads recebidos.
 
 use guardian_db::error::Result;
-use guardian_db::iface::MessageExchangeHeads;
 use guardian_db::ipfs_log::entry::Entry;
 use guardian_db::ipfs_log::identity::{DefaultIdentificator, Identificator, Identity};
 use guardian_db::ipfs_log::lamport_clock::LamportClock;
+use guardian_db::traits::MessageExchangeHeads;
 use std::sync::Arc;
 
 /// Demonstra a criação e verificação de identidades criptográficas
