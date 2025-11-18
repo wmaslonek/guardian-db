@@ -255,8 +255,23 @@ mod tests {
 
     #[tokio::test]
     async fn test_adapter_creation() {
-        let adapter = IpfsClientAdapter::default().await;
-        assert!(adapter.is_ok());
+        let unique_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        
+        let mut config = crate::ipfs_core_api::ClientConfig::development();
+        config.data_store_path = Some(std::path::PathBuf::from(format!("./tmp/ipfs_test_{}", unique_id)));
+        
+        let client = crate::ipfs_core_api::IpfsClient::new(config).await;
+        if let Err(ref e) = client {
+            eprintln!("Client creation failed: {}", e);
+        }
+        assert!(client.is_ok(), "Failed to create IPFS client");
+        
+        let adapter = IpfsClientAdapter::new(client.unwrap());
+        // Test that adapter is created successfully
+        assert_eq!(adapter.client.config().enable_pubsub, true);
     }
 
     #[tokio::test]
