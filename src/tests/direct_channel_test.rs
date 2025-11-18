@@ -1,6 +1,6 @@
 use crate::error::GuardianError;
-use crate::iface::{self, EventPubSubPayload};
-use crate::pubsub::direct_channel::init_direct_channel_factory;
+use crate::p2p::pubsub::direct_channel::init_direct_channel_factory;
+use crate::traits::{self, EventPubSubPayload};
 use libp2p::SwarmBuilder;
 use libp2p::ping;
 use std::sync::Arc;
@@ -14,7 +14,7 @@ struct MpscEmitter {
 }
 
 #[async_trait::async_trait]
-impl iface::DirectChannelEmitter for MpscEmitter {
+impl traits::DirectChannelEmitter for MpscEmitter {
     type Error = GuardianError;
 
     async fn emit(&self, event: EventPubSubPayload) -> Result<(), Self::Error> {
