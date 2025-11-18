@@ -1,5 +1,6 @@
 use guardian_db::error::{GuardianError, Result};
-use guardian_db::pubsub::direct_channel::{SwarmManager, create_test_peer_id};
+use guardian_db::p2p::manager::SwarmManager;
+use guardian_db::p2p::pubsub::direct_channel::create_test_peer_id;
 use libp2p::{Multiaddr, PeerId, gossipsub::TopicHash, identity::Keypair};
 use std::{
     collections::HashMap,
@@ -171,7 +172,7 @@ pub async fn collect_transport_metrics(
         metrics["connection_success_rate"]
     );
 
-    // Em produção real seria integrado com sistemas de monitoramento:
+    // Em produção seria integrado com sistemas de monitoramento:
     // prometheus::register_gauge!("transport_active_connections", "Number of active connections");
     // prometheus::register_histogram!("transport_message_latency", "Message processing latency");
     // prometheus::register_counter!("transport_bytes_total", "Total bytes transferred");
