@@ -17,11 +17,6 @@ pub enum Event {
     Reset(EventReset),
 }
 
-// -----------------------------------------------------------------------------
-// As traduções das structs de eventos e suas funções `New...`
-// -----------------------------------------------------------------------------
-
-/// equivalente a EventReplicate em go
 #[derive(Clone)]
 pub struct EventReplicate {
     pub address: Arc<dyn Address + Send + Sync>,
@@ -29,7 +24,6 @@ pub struct EventReplicate {
 }
 
 impl EventReplicate {
-    /// equivalente a NewEventReplicate em go
     pub fn new(address: Arc<dyn Address + Send + Sync>, hash: Cid) -> Self {
         Self { address, hash }
     }
@@ -51,7 +45,6 @@ impl PartialEq for EventReplicate {
 }
 
 /// Um evento contendo o progresso atual da replicação.
-/// equivalente a EventReplicateProgress em go
 #[derive(Clone)]
 pub struct EventReplicateProgress {
     pub max: i32,
@@ -84,7 +77,6 @@ impl PartialEq for EventReplicateProgress {
 }
 
 impl EventReplicateProgress {
-    /// equivalente a NewEventReplicateProgress em go
     pub fn new(
         addr: Arc<dyn Address + Send + Sync>,
         h: Cid,
@@ -103,12 +95,11 @@ impl EventReplicateProgress {
 }
 
 /// Um evento enviado quando os dados foram replicados.
-/// equivalente a EventReplicated em go
 #[derive(Clone)]
 pub struct EventReplicated {
     pub address: Arc<dyn Address + Send + Sync>,
-    pub log_length: usize, // `usize` é o tipo idiomático para tamanhos e contagens
-    pub entries: Vec<Entry>, // `[]Type` em Go torna-se `Vec<Type>` em Rust
+    pub log_length: usize,
+    pub entries: Vec<Entry>,
 }
 
 impl std::fmt::Debug for EventReplicated {
@@ -130,7 +121,6 @@ impl PartialEq for EventReplicated {
 }
 
 impl EventReplicated {
-    /// equivalente a NewEventReplicated em go
     pub fn new(
         addr: Arc<dyn Address + Send + Sync>,
         entries: Vec<Entry>,
@@ -145,7 +135,6 @@ impl EventReplicated {
 }
 
 /// Um evento enviado quando os dados foram carregados.
-/// equivalente a EventLoad em go
 #[derive(Clone)]
 pub struct EventLoad {
     pub address: Arc<dyn Address + Send + Sync>,
@@ -168,7 +157,6 @@ impl PartialEq for EventLoad {
 }
 
 impl EventLoad {
-    /// equivalente a NewEventLoad em go
     pub fn new(addr: Arc<dyn Address + Send + Sync>, heads: Vec<Entry>) -> Self {
         Self {
             address: addr,
@@ -177,7 +165,6 @@ impl EventLoad {
     }
 }
 
-/// equivalente a EventLoadProgress em go
 #[derive(Clone)]
 pub struct EventLoadProgress {
     pub address: Arc<dyn Address + Send + Sync>,
@@ -210,7 +197,6 @@ impl PartialEq for EventLoadProgress {
 }
 
 impl EventLoadProgress {
-    /// equivalente a NewEventLoadProgress em go
     pub fn new(
         addr: Arc<dyn Address + Send + Sync>,
         h: Cid,
@@ -229,7 +215,6 @@ impl EventLoadProgress {
 }
 
 /// Um evento enviado quando a store está pronta.
-/// equivalente a EventReady em go
 #[derive(Clone)]
 pub struct EventReady {
     pub address: Arc<dyn Address + Send + Sync>,
@@ -252,7 +237,6 @@ impl PartialEq for EventReady {
 }
 
 impl EventReady {
-    /// equivalente a NewEventReady em go
     pub fn new(addr: Arc<dyn Address + Send + Sync>, heads: Vec<Entry>) -> Self {
         Self {
             address: addr,
@@ -262,7 +246,6 @@ impl EventReady {
 }
 
 /// Um evento enviado quando algo foi escrito.
-/// equivalente a EventWrite em go
 #[derive(Clone)]
 pub struct EventWrite {
     pub address: Arc<dyn Address + Send + Sync>,
@@ -289,7 +272,6 @@ impl PartialEq for EventWrite {
 }
 
 impl EventWrite {
-    /// equivalente a NewEventWrite em go
     pub fn new(addr: Arc<dyn Address + Send + Sync>, e: Entry, heads: Vec<Entry>) -> Self {
         Self {
             address: addr,
@@ -300,21 +282,18 @@ impl EventWrite {
 }
 
 /// Um evento enviado quando um novo peer é descoberto no canal pubsub.
-/// equivalente a EventNewPeer em go
 #[derive(Debug, Clone, PartialEq)]
 pub struct EventNewPeer {
     pub peer: PeerId,
 }
 
 impl EventNewPeer {
-    /// equivalente a NewEventNewPeer em go
     pub fn new(p: PeerId) -> Self {
         Self { peer: p }
     }
 }
 
 /// Um evento enviado quando a store é resetada.
-/// equivalente a EventReset em go
 #[derive(Debug, Clone)]
 pub struct EventReset {
     pub address: Arc<dyn Address + Send + Sync>,
@@ -328,7 +307,6 @@ impl PartialEq for EventReset {
 }
 
 impl EventReset {
-    /// equivalente a NewEventReset em go
     pub fn new(address: Arc<dyn Address + Send + Sync>, timestamp: u64) -> Self {
         Self { address, timestamp }
     }
