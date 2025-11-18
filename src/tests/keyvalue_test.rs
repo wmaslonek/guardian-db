@@ -1,5 +1,5 @@
-use crate::iface::StoreIndex;
 use crate::stores::kv_store::keyvalue::KeyValueIndex;
+use crate::traits::StoreIndex;
 
 #[cfg(test)]
 #[test]
