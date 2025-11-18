@@ -1,11 +1,11 @@
 use crate::data_store::Datastore;
 use crate::error::{GuardianError, Result};
-use crate::iface::{self, EventLogStore, Store, StreamOptions};
 use crate::ipfs_core_api::client::IpfsClient;
 use crate::ipfs_log::{entry::Entry, identity::Identity};
-use crate::pubsub::event::EventBus;
+use crate::p2p::events::EventBus;
 use crate::stores::base_store::base_store::BaseStore;
 use crate::stores::operation::{operation, operation::Operation};
+use crate::traits::{self, EventLogStore, Store, StreamOptions};
 use crate::{address::Address, stores::event_log_store::index::new_event_index};
 use cid::Cid;
 use std::sync::Arc;
@@ -60,7 +60,7 @@ impl Store for GuardianDBEventLogStore {
         Store::address(self.basestore.as_ref())
     }
 
-    fn index(&self) -> Box<dyn crate::iface::StoreIndex<Error = GuardianError> + Send + Sync> {
+    fn index(&self) -> Box<dyn crate::traits::StoreIndex<Error = GuardianError> + Send + Sync> {
         self.basestore.index()
     }
 
@@ -137,7 +137,7 @@ impl Store for GuardianDBEventLogStore {
         Arc::new(self.span.clone())
     }
 
-    fn tracer(&self) -> Arc<crate::iface::TracerWrapper> {
+    fn tracer(&self) -> Arc<crate::traits::TracerWrapper> {
         self.basestore.tracer()
     }
 
@@ -184,7 +184,7 @@ impl GuardianDBEventLogStore {
         ipfs_client: Arc<IpfsClient>,
         identity: Arc<Identity>,
         addr: Arc<dyn Address + Send + Sync>,
-        mut options: iface::NewStoreOptions,
+        mut options: traits::NewStoreOptions,
     ) -> Result<Self> {
         // Validação básica dos parâmetros - verifica se os componentes essenciais existem
         if addr.to_string().is_empty() {
@@ -471,7 +471,7 @@ impl GuardianDBEventLogStore {
     /// - **get_entries_range()**: O(k) onde k = tamanho do range
     fn optimized_index_query(
         &self,
-        index: &dyn crate::iface::StoreIndex<Error = GuardianError>,
+        index: &dyn crate::traits::StoreIndex<Error = GuardianError>,
         options: &StreamOptions,
     ) -> Option<Vec<Entry>> {
         // Verifica se o índice suporta queries otimizadas com Entry completas
