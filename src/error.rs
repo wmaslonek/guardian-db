@@ -110,3 +110,21 @@ impl From<&str> for GuardianError {
 
 /// Alias para Result com GuardianError
 pub type Result<T> = std::result::Result<T, GuardianError>;
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use std::io::Error;
+	
+	#[test]
+	fn test_from_impl_for_errors() {
+		let _b: GuardianError = GuardianError::from(String::from("test string"));
+		let _c: GuardianError = GuardianError::from("test string");
+		let _i: GuardianError = GuardianError::from(Error::other("test string"));
+		let io_err: Error = Error::other("test string");
+		let _d: GuardianError = GuardianError::from(cid::Error::from(io_err));
+		let _s: GuardianError = GuardianError::from(serde_json::Error::io(Error::other("test string")));
+		let _a: GuardianError = GuardianError::from(serde_cbor::Error::from(Error::other("test string")));
+		let _x: GuardianError = GuardianError::from(Box::<dyn std::error::Error + Send + Sync>::from("test string"));
+	}
+}
