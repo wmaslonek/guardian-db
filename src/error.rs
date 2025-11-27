@@ -117,12 +117,16 @@ mod tests {
 	use std::io::Error;
 	
 	#[test]
-	fn test_from_impl_for_errors() {
-		let _b: GuardianError = GuardianError::from(String::from("test string"));
+	fn test_conversion_into_guardian_error() {
+		let test_string = String::from("test string");
+		let guardian_error: GuardianError = test_string.into();
+		assert!(matches!(guardian_error, GuardianError::Other(_)));
+		
 		let _c: GuardianError = GuardianError::from("test string");
 		let _i: GuardianError = GuardianError::from(Error::other("test string"));
 		let io_err: Error = Error::other("test string");
-		let _d: GuardianError = GuardianError::from(cid::Error::from(io_err));
+		let _ge: GuardianError = cid::Error::from(io_err).into();
+		// let _d: GuardianError = GuardianError::from(cid::Error::from(io_err));
 		let _s: GuardianError = GuardianError::from(serde_json::Error::io(Error::other("test string")));
 		let _a: GuardianError = GuardianError::from(serde_cbor::Error::from(Error::other("test string")));
 		let _x: GuardianError = GuardianError::from(Box::<dyn std::error::Error + Send + Sync>::from("test string"));
