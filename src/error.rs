@@ -122,8 +122,16 @@ mod tests {
 		let guardian_error: GuardianError = test_string.into();
 		assert!(matches!(guardian_error, GuardianError::Other(_)));
 		
-		let _c: GuardianError = GuardianError::from("test string");
-		let _i: GuardianError = GuardianError::from(Error::other("test string"));
+		let test_string = "test string";
+		let guardian_error: GuardianError = test_string.into();
+		assert!(matches!(guardian_error, GuardianError::Other(_)));
+		// let _c: GuardianError = GuardianError::from("test string");
+
+		let io_error: Error = Error::other(test_string);
+		let guardian_error: GuardianError = io_error.into();
+		assert!(matches!(guardian_error, GuardianError::Io(_)));
+		// let _i: GuardianError = GuardianError::from(Error::other("test string"));
+
 		let io_err: Error = Error::other("test string");
 		let _ge: GuardianError = cid::Error::from(io_err).into();
 		// let _d: GuardianError = GuardianError::from(cid::Error::from(io_err));
