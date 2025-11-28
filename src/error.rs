@@ -118,25 +118,34 @@ mod tests {
 	
 	#[test]
 	fn test_conversion_into_guardian_error() {
-		let test_string = String::from("test string");
+		let test_string 				  = String::from("test string");
 		let guardian_error: GuardianError = test_string.into();
 		assert!(matches!(guardian_error, GuardianError::Other(_)));
 		
-		let test_string = "test string";
+		let test_string 				  = "test string";
 		let guardian_error: GuardianError = test_string.into();
 		assert!(matches!(guardian_error, GuardianError::Other(_)));
-		// let _c: GuardianError = GuardianError::from("test string");
 
-		let io_error: Error = Error::other(test_string);
+		let io_error: Error 			  = Error::other(test_string);
 		let guardian_error: GuardianError = io_error.into();
 		assert!(matches!(guardian_error, GuardianError::Io(_)));
-		// let _i: GuardianError = GuardianError::from(Error::other("test string"));
 
-		let io_err: Error = Error::other("test string");
-		let _ge: GuardianError = cid::Error::from(io_err).into();
-		// let _d: GuardianError = GuardianError::from(cid::Error::from(io_err));
-		let _s: GuardianError = GuardianError::from(serde_json::Error::io(Error::other("test string")));
-		let _a: GuardianError = GuardianError::from(serde_cbor::Error::from(Error::other("test string")));
-		let _x: GuardianError = GuardianError::from(Box::<dyn std::error::Error + Send + Sync>::from("test string"));
+		let io_error: Error 			  = Error::other(test_string);
+		let guardian_error: GuardianError = cid::Error::from(io_error).into();
+		assert!(matches!(guardian_error, GuardianError::Cid(_)));
+
+		let io_error: Error 			  = Error::other(test_string);
+		let serde_json_error 			  = serde_json::Error::io(io_error);
+		let guardian_error: GuardianError = serde_json_error.into();
+		assert!(matches!(guardian_error, GuardianError::Json(_)));
+
+		let io_error: Error 			  = Error::other(test_string);
+		let serde_cbor_error 			  = serde_cbor::Error::from(io_error);
+		let guardian_error: GuardianError = serde_cbor_error.into();
+		assert!(matches!(guardian_error, GuardianError::Cbor(_)));
+
+		let boxed_error = Box::<dyn std::error::Error + Send + Sync>::from(test_string);
+		let guardian_error: GuardianError = GuardianError::from(boxed_error);
+		assert!(matches!(guardian_error, GuardianError::Other(_)));
 	}
 }
