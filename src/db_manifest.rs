@@ -1,5 +1,5 @@
-use crate::error::{GuardianError, Result};
-use cid::Cid;
+use crate::guardian::error::{GuardianError, Result};
+use iroh_blobs::Hash;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -15,15 +15,15 @@ pub struct Manifest {
     pub access_controller: String,
 }
 
-/// Cria um novo manifesto de banco de dados e o salva no IPFS.
+/// Cria um novo manifesto de banco de dados e o salva no Iroh.
 pub async fn create_db_manifest(
-    ipfs: &crate::ipfs_core_api::client::IpfsClient,
+    client: &crate::p2p::network::client::IrohClient,
     name: &str,
     db_type: &str,
     access_controller_address: &str,
-) -> Result<Cid> {
+) -> Result<Hash> {
     let access_controller_path = {
-        let mut p = PathBuf::from("/ipfs");
+        let mut p = PathBuf::from("/iroh");
         // evita que um endereço com "/" inicial apague o prefixo
         p.push(access_controller_address.trim_start_matches('/'));
         p
@@ -46,41 +46,42 @@ pub async fn create_db_manifest(
         ))
     })?;
 
-    // Adiciona os dados ao IPFS
-    let response = ipfs
-        .add(std::io::Cursor::new(cbor_data))
+    // Adiciona os dados ao Iroh
+    let response = client
+        .add_bytes(cbor_data)
         .await
-        .map_err(|e| GuardianError::Other(format!("Erro ao adicionar manifesto no IPFS: {}", e)))?;
+        .map_err(|e| GuardianError::Other(format!("Erro ao adicionar manifesto: {}", e)))?;
 
-    // Converte o hash retornado para CID
-    let cid: Cid = response
-        .hash
-        .parse()
-        .map_err(|e| GuardianError::Other(format!("Erro ao converter hash para CID: {}", e)))?;
+    // Converte o hash string (hex) para Hash
+    let hash_bytes = hex::decode(&response.hash)
+        .map_err(|e| GuardianError::Other(format!("Erro ao decodificar hash: {}", e)))?;
 
-    Ok(cid)
+    if hash_bytes.len() != 32 {
+        return Err(GuardianError::Other(format!(
+            "Hash inválido: esperado 32 bytes, encontrado {}",
+            hash_bytes.len()
+        )));
+    }
+
+    let mut hash_array = [0u8; 32];
+    hash_array.copy_from_slice(&hash_bytes);
+
+    Ok(Hash::from_bytes(hash_array))
 }
 
-/// Lê um manifesto de banco de dados do IPFS a partir de um CID
+/// Lê um manifesto de banco de dados do Iroh a partir de um Hash
 pub async fn read_db_manifest(
-    ipfs: &crate::ipfs_core_api::client::IpfsClient,
-    manifest_cid: &Cid,
+    client: &crate::p2p::network::client::IrohClient,
+    manifest_hash: &Hash,
 ) -> Result<Manifest> {
-    // Busca os dados do manifesto no IPFS usando cat
-    let mut stream = ipfs.cat(&manifest_cid.to_string()).await.map_err(|e| {
-        GuardianError::Other(format!(
-            "Não foi possível buscar o manifesto no IPFS: {}",
-            e
-        ))
-    })?;
+    // Converte Hash para string hex
+    let hash_str = hex::encode(manifest_hash.as_bytes());
 
-    // Lê todos os dados do stream
-    let mut data = Vec::new();
-    use tokio::io::AsyncReadExt;
-    stream
-        .read_to_end(&mut data)
+    // Busca os dados do manifesto no Iroh usando cat_bytes
+    let data = client
+        .cat_bytes(&hash_str)
         .await
-        .map_err(|e| GuardianError::Other(format!("Erro ao ler dados do manifesto: {}", e)))?;
+        .map_err(|e| GuardianError::Other(format!("Não foi possível buscar o manifesto: {}", e)))?;
 
     // Desserializa os dados CBOR para a struct Manifest
     let manifest: Manifest = serde_cbor::from_slice(&data).map_err(|e| {
