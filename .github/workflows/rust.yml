@@ -68,7 +68,7 @@ jobs:
       run: cargo build --verbose --all-features
 
     - name: Run tests
-      run: cargo test --verbose --all-features
+      run: cargo test --verbose --all-features -- --test-threads=1
 
     - name: Build examples
       run: cargo build --examples --all-features
@@ -124,14 +124,14 @@ jobs:
         cargo install cargo-llvm-cov
 
     - name: Generate code coverage (LCOV for Codecov)
-      run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+      run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info -- --test-threads=1
 
     - name: Generate code coverage (XML for other tools)
       run: |
         # Generate XML coverage report using tarpaulin
-        cargo tarpaulin --all-features --workspace --out Xml --output-dir ./coverage/
+        cargo tarpaulin --all-features --workspace --out Xml --output-dir ./coverage/ -- --test-threads=1
         # Also generate HTML for artifacts
-        cargo tarpaulin --all-features --workspace --out Html --output-dir ./coverage/
+        cargo tarpaulin --all-features --workspace --out Html --output-dir ./coverage/ -- --test-threads=1
 
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v4
