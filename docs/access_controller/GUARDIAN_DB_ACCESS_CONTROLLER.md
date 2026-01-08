@@ -1,3 +1,8 @@
+    // ╔════════════════════════════════════════════════════════════════════════════════╗
+    // ║                          ⚠ OUTDATED DOCUMENTATION                             ║
+    // ╚════════════════════════════════════════════════════════════════════════════════╝
+
+
 # GuardianDBAccessController
 
 ## Overview
@@ -571,7 +576,7 @@ use guardian_db::{
 };
 
 // Initialize GuardianDB
-let ipfs = IpfsClient::development().await?;
+let ipfs = IrohClient::development().await?;
 let db = GuardianDB::new(ipfs, None).await?;
 
 // Create manifest parameters
