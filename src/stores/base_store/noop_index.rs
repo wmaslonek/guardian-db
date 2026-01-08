@@ -1,5 +1,5 @@
-use crate::error::GuardianError;
-use crate::ipfs_log::{entry::Entry, log::Log};
+use crate::guardian::error::GuardianError;
+use crate::log::{Log, entry::Entry};
 use crate::traits::StoreIndex;
 
 pub struct NoopIndex;
