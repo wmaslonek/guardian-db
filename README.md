@@ -13,136 +13,172 @@
 
 ---
 
-**GuardianDB: The Rust Implementation of OrbitDB. A peer-to-peer database for the Decentralized Web.**
+**GuardianDB: High-performance, local-first decentralized database built on Rust and Iroh**
 
 </div>
 
-GuardianDB is a complete rewrite of OrbitDB in Rust, designed to overcome the limitations of previous implementations while providing superior performance, safety, and functionality.
+GuardianDB is a decentralized database designed for applications that require transparent peer-to-peer synchronization, offline-first operation, and extreme performance. It leverages the power of the Iroh stack to offer a robust alternative to centralized cloud databases.
 
-## What is GuardianDB?
+## Evolution: Beyond OrbitDB
 
 <div align="left">
 <img align="right" src="docs/guardian-github-2.png" height="96px"/>
 
-GuardianDB is a high-performance, decentralized peer-to-peer database built with native Rust and IPFS. It provides distributed data storage without centralized servers, using CRDTs (Conflict-free Replicated Data Types) for automatic conflict resolution and eventual consistency. Think of GuardianDB as having a "MongoDB" or "CouchDB", but completely decentralized, running on a native IPFS network where each participant maintains their own data while seamlessly sharing updates.
+GuardianDB's development began as a Rust implementation of OrbitDB. However, as we sought better performance on mobile and edge devices, the limitations of the legacy stack (IPFS, CIDs, generic libp2p DHTs) became evident.
+
+*We moved away from IPFS completely.*
+
+GuardianDB is no longer "OrbitDB in Rust". It is a distinct and modernized database. We removed the legacy OrbitDB architecture, IPFS, CIDs, and generic libp2p networking in favor of Iroh, a next-generation P2P protocol.
 
 </div>
 
-## Performance & Technical Specifications
+### What makes GuardianDB different now?
 
-### Native Performance Metrics
-- **Discovery Speed**: 2-5x faster than basic implementations with intelligent caching
-- **Storage Backend**: Sled-based high-performance embedded database  
-- **Network Stack**: Native libp2p with Gossipsub, DHT, and mDNS
-- **Throughput**: 600+ discoveries/second in parallel operations
-- **Cache Efficiency**: >85% hit ratio for frequently accessed data
-- **Startup Time**: <2 seconds for full node initialization
-- **Memory Usage**: Optimized for both resource-constrained and server environments
+**No Global DHT:** We use direct and encrypted connections via Iroh's Magicsock.<br>
+**No Garbage Collection pauses:** We replaced heavy JSON serialization with zero-copy binary formats.<br>
+**Speed:** Exclusive use of BLAKE3 hashing and QUIC transport protocol.
 
-### Technical Architecture
-- **Backend**: Native Iroh IPFS node (v0.92.0) - no external dependencies
-- **Networking**: libp2p with multi-transport support (TCP, QUIC, WebSocket)
-- **Discovery**: Multi-method peer finding (Kademlia DHT + mDNS + Bootstrap)
-- **PubSub**: Production Gossipsub with flood protection and peer scoring
-- **Storage**: Pluggable datastore with Sled default (RocksDB-style performance)
-- **Async Runtime**: Full Tokio integration with structured concurrency
-- **Observability**: Complete OpenTelemetry tracing with distributed context
+## ⚡Powered by Iroh
+
+GuardianDB is built on top of Iroh, leveraging state-of-the-art protocols to handle the heavy lifting of networking and data reconciliation. Understanding GuardianDB means understanding these core concepts:
+
+**Magicsock & NAT Traversal:** Built on technology adapted from Tailscale, instead of traditional addressing, we use Iroh's Magicsock. It automatically handles NAT traversal, hole punching, and roaming. A device can switch from Wi-Fi to 5G without breaking the connection, creating a direct and encrypted QUIC tunnel between peers.
+
+**Iroh Endpoint (Node):** The Endpoint binds to a single UDP socket and manages all peer connections. It utilizes QUIC's native stream multiplexing and ALPN (Application-Layer Protocol Negotiation) to route traffic. This architecture allows *Blobs* (data transfer), *Docs* (state sync), and *Gossip* (real-time signals) to share the same encrypted connection simultaneously.
+
+**EndpointID ((NodeID)Ed25519):** Security is not an afterthought. Each peer is identified by a cryptographic public key. No PeerIDs or multiaddrs, identity is the address.
+
+**Willow Protocol:** GuardianDB uses Iroh's Willow protocol for data synchronization. Willow enables efficient and bandwidth-economical synchronization by treating data as a three-dimensional space: Entry, Author and Namespace.
+
+**Range-Based Reconciliation:** Instead of exchanging complete file lists to discover what's missing, Willow uses 3D range-based reconciliation. It identifies and transfers only the missing data differences between two peers in milliseconds, even with millions of records.
+
+**Epidemic Broadcast Trees:** For real-time updates (like *"User is typing..."*), we use iroh-gossip. The hybrid Epidemic Broadcast Trees algorithm combines the robustness of random (epidemic) gossip with the efficiency of multicast trees, ensuring messages reach all peers with minimal latency and low bandwidth redundancy.
+
+## Architecture Comparison
+
+### Terminology Shift
+
+If you're coming from IPFS/OrbitDB, here are the GuardianDB/Iroh concept differences:
+
+| Concept | Legacy (IPFS / OrbitDB) | GuardianDB (Iroh) | Benefit |
+|--------|-------------------------|-------------------|-----------|
+| Identity | PeerID (Multihash) | NodeID (Ed25519 Key) | Faster verification, smaller keys (32 bytes) |
+| Content ID | CID (SHA-256 + Codecs) | Hash (BLAKE3) | Extreme hashing performance, simplified references. |
+| Network | Libp2p Swarm (TCP/WS) | Iroh Endpoint (QUIC) | Native encryption, lower latency, better mobile roaming. |
+| Discovery | DHT Kademlia (Global) | Relay / Direct | Private and segmented discovery. No leakage to public DHTs. |
+| Data Format | IPLD DAG (JSON) | Binary (Postcard / Bao) | Zero-copy serialization, storage reduction over 50%. |
+
+### Stack Comparison: Libp2p/IPFS vs Iroh
+
+| Feature | Libp2p + IPFS (OrbitDB) | Iroh (GuardianDB) |
+|-------|---------------|-------------------|
+| Philosophy | Modular "Lego" blocks. Extremely flexible, but complex to tune. | Vertical integration. Opinionated, optimized for performance and ease of use. |
+| Transport | Negotiates transport (TCP, WS, QUIC, etc). | QUIC only. Optimized for unstable networks. |
+| Storage | Blockstore | Blobs |
+| Synchronization | Bitswap (block-by-block exchange). | Willow (range-based reconciliation). |
+
+## Internal Architecture and Roadmap
+
+GuardianDB orchestrates three main Iroh primitives to deliver a complete database experience:
+
+**1. Iroh-Blobs:** The lowest layer. Stores raw data (images, logs, binary payloads) addressed by BLAKE3 hashes.<br>
+**2. Iroh-Docs:** The mutable layer. Manages key-value storage and synchronization using Last-Write-Wins (LWW) conflict resolution.<br>
+**3. Iroh-Gossip:** The ephemeral layer. Handles transient messages and signals between peers.
+
+### ⚠️Migration in Progress: Pure Iroh
+We are currently in the final stages of a major architectural shift:
+
+**KV Store and Document Store:** Are being migrated to run exclusively on Iroh-Docs. This moves CRDT logic to the protocol layer, enabling instant synchronization using Willow's range-based reconciliation.<br>
+**Event Log Store (Chat/Feed):** We kept the original ipfs-log logic (DAG structure) for strict ordering, but completely refactored the engine:
+
+**No IPFS:** Disconnected from IPFS Blockstore.<br>
+**No JSON:** We replaced JSON with binary serialization (Postcard).<br>
+**No CIDs:** All linking logic was migrated to 32-byte BLAKE3 hashes.
+
+This hybrid approach gives us the best of both worlds: Iroh's speed for key-value data and the auditability of a causal log for transaction history.
 
 <details>
 <summary>
-Architecture
+Current Architecture
 </summary>
 <br />
 
 ```
-GuardianDB v0.10.x
-├── Core Database Interface
-│   ├── GuardianDB (guardian.rs)        # Main database API
-│   └── BaseGuardianDB (base_guardian.rs) # Core implementation
+GuardianDB v0.14.0
+├── Core Database
+│   ├── GuardianDB (guardian/mod.rs)         # Main database API facade
+│   ├── BaseGuardianDB (guardian/core.rs)    # Core implementation
+│   ├── Error Handling (guardian/error.rs)   # Error types
+│   └── Serializer (guardian/serializer.rs)  # Data serialization
 │
-├── Store Implementations
+├── Store Implementations (stores/)
 │   ├── EventLogStore                   # Immutable append-only logs
 │   ├── KeyValueStore                   # Distributed key-value pairs  
 │   ├── DocumentStore                   # JSON documents with queries
-│   └── BaseStore                       # Common store functionality
+│   ├── BaseStore                       # Common store functionality
+│   └── Operations                      # Store operations & parsing
 │
-├── Native IPFS Core API
-│   ├── IpfsClient (client.rs)          # Unified IPFS client interface
-│   ├── Backends/
-│   │   ├── IrohBackend                 # Native Rust IPFS (iroh 0.92.0)
-│   │   ├── IrohPubsub                  # Gossipsub integration
-│   │   └── Backend Selection           # Multi-backend support
-│   ├── Config (config.rs)             # IPFS configuration 
-│   └── Compatibility (compat.rs)       # Legacy API support
+├── Networking Layer (p2p/)
+│   ├── IrohClient (network/client.rs)  # Native Iroh IPFS Client
+│   ├── Network Core (network/core/)    # IrohBackend
+│   │   ├── BatchProcessor              # Batch operation handling
+│   │   ├── Blobs                       # Blob storage management
+│   │   ├── ConnectionPool              # Connection pooling
+│   │   ├── Docs                        # Document replication (Willow Protocol)
+│   │   ├── Gossip                      # Gossipsub protocol
+│   │   ├── KeySynchronizer             # Key distribution
+│   │   ├── NetworkingMetrics           # Network telemetry
+│   │   └── OptimizedCache              # Performance caching
+│   ├── Messaging (messaging/)
+│   │   ├── DirectChannel               # Peer-to-peer messaging
+│   │   └── OneOnOneChannel             # Direct peer communication
+│   ├── EventBus                        # Type-safe event system
+│   └── Config (network/config.rs)      # Network configuration
 │
-├── Advanced PubSub System
-│   ├── DirectChannel                  # Peer-to-peer messaging
-│   │   ├── SwarmManager              # libp2p Swarm integration
-│   │   ├── GossipsubInterface        # Production-ready Gossipsub
-│   │   └── Multi-method Discovery    # DHT + mDNS + Bootstrap
-│   ├── EventBus                      # Type-safe event system
-│   └── Raw PubSub                    # Low-level messaging
+├── Access Control Layer (access_control/)
+│   ├── GuardianDBAccessController (acl_guardian.rs)   # Signature-based ACL
+│   ├── IrohAccessController (acl_iroh.rs)             # Iroh-based ACL
+│   ├── SimpleAccessController (acl_simple.rs)         # Open access (dev)
+│   ├── Manifest (manifest.rs)                         # ACL configuration
+│   └── Traits (traits.rs)                             # ACL traits
 │
-├── Access Control Layer
-│   ├── GuardianDBAccessController    # Custom AC with signatures
-│   ├── IPFSAccessController          # IPFS-based access control
-│   └── SimpleAccessController        # Open access (development)
+├── CRDT Log System (log/)
+│   ├── Entry (entry.rs)                            # CRDT log entries
+│   ├── Identity (identity.rs)                      # Peer identity
+│   ├── IdentityProvider (identity_provider.rs)     # Identity management
+│   ├── LamportClock (lamport_clock.rs)             # Distributed time ordering
+│   ├── AccessControl (access_control.rs)           # Log-level ACL
+│   └── Traits (traits.rs)                          # Log traits
 │
-├── Data Layer
-│   ├── Cache (Sled-based)            # High-performance local storage
-│   ├── Keystore                      # Ed25519 cryptographic keys  
-│   ├── DataStore                     # Pluggable storage interface
-│   └── Message Marshaling           # Efficient serialization
+├── Data & Storage Layer
+│   ├── Cache (cache/)
+│   │   └── LevelDown (level_down.rs)             # Sled-based storage
+│   ├── DataStore (data_store.rs)                 # Pluggable storage interface
+│   ├── Keystore (keystore.rs)                    # Ed25519 cryptographic keys
+│   ├── MessageMarshaler (message_marshaler.rs)   # Message Serialization
+│   ├── DBManifest (db_manifest.rs)               # Database configuration
+│   └── Address (address.rs)                      # Address resolution
 │
-├── IPFS Log System
-│   ├── Log Entries                   # CRDT log entries
-│   ├── Identity Management           # Peer identity & verification
-│   ├── Lamport Clocks               # Distributed time ordering
-│   └── Replication                   # Automatic data sync
+├── Reactive Systems
+│   ├── ReactiveSynchronizer (reactive_synchronizer.rs)   # State sync
+│   └── Events (events.rs)                                # Event emission system
 │
-└── Observability & Monitoring
-    ├── Tracing Integration           # Distributed tracing (completed)
-    ├── Performance Metrics           # Real-time performance data
-    └── Health Checks                 # System health monitoring
+└── Core Traits & Types
+    └── Traits (traits.rs)    # Common traits & types
 ```
 </details>
-
-### Why GuardianDB is Superior?
-
-**Compared to Original OrbitDB (JavaScript):**
-- **Memory Safety**: Zero memory vulnerabilities thanks to Rust's ownership system
-- **Superior Performance**: Elimination of V8 overhead and garbage collector
-- **Type Safety**: Compile-time error prevention vs JavaScript runtime errors
-- **Native Binary**: Standalone executables without Node.js runtime dependencies
-- **True Concurrency**: Fearless concurrency with Tokio async runtime
-
-**Compared to OrbitDB (GO):**
-- **Zero-Cost Abstractions**: High-level abstractions without performance overhead
-- **Ownership System**: Deterministic memory management vs Go's garbage collector
-- **LLVM Optimization**: Compilation to highly optimized machine code
-- **Safe Concurrency**: Thread-safe by design vs potential goroutine data races
-- **Predictable Performance**: No GC pauses, consistent latency
-
-### Core Rust Advantages
-
-- **Type Safety**: Compile-time guarantees prevent runtime errors
-- **High Performance**: Native Rust IPFS (Iroh) + zero-cost abstractions
-- **Memory Safety**: Ownership system prevents leaks and use-after-free  
-- **True P2P**: Multi-method peer discovery with DHT, mDNS, and Bootstrap
-- **Native IPFS**: Embedded Iroh node with advanced caching and optimization
-- **Advanced PubSub**: Production-ready Gossipsub with flood protection
-- **Observability**: Complete tracing integration for monitoring and debugging
-- **Zero Dependencies**: Standalone binaries with embedded networking stack
 
 ### Current Implementation Status
 
 **Networking & Discovery:**
-<ul> ✔️ Native Iroh IPFS backend with embedded node </ul>
-<ul> ✔️ Multi-backend architecture (Iroh + future extensibility) </ul>
-<ul> ✔️ Advanced peer discovery (DHT + mDNS + Bootstrap + Relay) </ul>
-<ul> ✔️ Production Gossipsub with anti-spam and rate limiting </ul>
-<ul> ✔️ SwarmManager with connection pooling and optimization </ul>
-<ul> ✔️ Real-time performance metrics and health monitoring </ul>
+<ul> ✔️ Native Iroh Embedded Node (Endpoint) with QUIC transport </ul>
+<ul> ✔️ Iroh Blobs for content-addressed storage </ul>
+<ul> ✔️ Iroh Gossip with Epidemic Broadcast Trees </ul>
+<ul> ✔️ Iroh Docs for Willow Protocol document replication </ul>
+<ul> ✔️ Optimized Connection Pool with circuit breaking and load balancing </ul>
+<ul> ✔️ Real-time Networking Metrics Collector with performance tracking </ul>
+<ul> ✔️ EpidemicPubSub for native distributed messaging </ul>
+<ul> ✔️ Key Synchronizer for distributed key consistency </ul>
 
 **Data Stores & Operations:**
 <ul> ✔️ EventLogStore (immutable append-only logs) </ul>
@@ -151,13 +187,6 @@ GuardianDB v0.10.x
 <ul> ✔️ BaseStore (common functionality and CRDT operations) </ul>
 <ul> ✔️ Multi-level caching with Sled backend </ul>
 <ul> ✔️ Cryptographic access control with Ed25519 signatures </ul>
-
-**Developer Experience:**
-<ul> ✔️ 20+ comprehensive examples and demos </ul>
-<ul> ✔️ Complete tracing integration for observability </ul>
-<ul> ✔️ Type-safe event system with tokio channels </ul>
-<ul> ✔️ Extensive test suite (78 passing tests) </ul>
-<ul> ✔️ Clear error handling and documentation </ul>
 
 ## Store Types
 
@@ -168,36 +197,42 @@ Event Log Store
 <br />
 
 ```rust
-use guardian_db::{GuardianDB, NewGuardianDBOptions};
-use guardian_db::ipfs_core_api::IpfsClient;
+use guardian_db::{GuardianDB, NewGuardianDBOptions, CreateDBOptions};
+use guardian_db::p2p::network::client::IrohClient;
+use guardian_db::traits::{EventLogStore, Store};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Create development IPFS client (uses Iroh backend)
-    let ipfs = IpfsClient::development().await?;
+    // Create development Iroh Client and database
+    let client = IrohClient::development().await?;
 
     // Create GuardianDB instance
     let options = NewGuardianDBOptions {
         directory: Some("./guardian_data".to_string()),
         ..Default::default()
     };
-    let db = GuardianDB::new(ipfs, Some(options)).await?;
+    let db = GuardianDB::new(client, Some(options)).await?;
 
-    // Create an event log
-    let log = db.log("my-event-log", None).await?;
+    // Create an event log with options
+    let log_options = CreateDBOptions {
+        create: Some(true),
+        store_type: Some("eventlog".to_string()),
+        ..Default::default()
+    };
+    let log = db.log("my-event-log", Some(log_options)).await?;
 
-    // Add events to the log
+    // Add events to the log (append-only, immutable)
     log.add("Hello, GuardianDB!".as_bytes().to_vec()).await?;
     log.add("This is a decentralized database".as_bytes().to_vec()).await?;
-    log.add("Built with Rust and IPFS".as_bytes().to_vec()).await?;
+    log.add("Built with Rust and Iroh".as_bytes().to_vec()).await?;
 
-    // Get all entries
-    let entries = log.all().await?;
-    println!("Total entries: {}", entries.len());
+    // List all operations in the log
+    let operations = log.list(None).await?;
+    println!("Total entries: {}", operations.len());
 
-    // Iterate over entries
-    for (i, entry) in entries.iter().enumerate() {
-        println!("Entry {}: {:?}", i + 1, String::from_utf8_lossy(entry.payload()));
+    // Iterate over operations
+    for (i, op) in operations.iter().enumerate() {
+        println!("Entry {}: {:?}", i + 1, String::from_utf8_lossy(op.value()));
     }
 
     Ok(())
@@ -213,23 +248,30 @@ Key-Value Store
 
 ```rust
 use guardian_db::{GuardianDB, NewGuardianDBOptions, CreateDBOptions};
-use guardian_db::ipfs_core_api::IpfsClient;
+use guardian_db::p2p::network::client::IrohClient;
+use guardian_db::traits::KeyValueStore;
 
 #[tokio::main] 
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize IPFS client and database
-    let ipfs = IpfsClient::development().await?;
-    let db = GuardianDB::new(ipfs, None).await?;
+    // Initialize Iroh Client and database
+    let client = IrohClient::development().await?;
+    
+    let options = NewGuardianDBOptions {
+        directory: Some("./guardian_data".to_string()),
+        ..Default::default()
+    };
+    
+    let db = GuardianDB::new(client, Some(options)).await?;
 
-    // Create a key-value store
-    let mut kv = db.key_value("my-kv-store", None).await?;
+    // Create a key-value store with CRDT semantics
+    let kv = db.key_value("my-kv-store", None).await?;
 
-    // CRUD operations
+    // CRUD operations - all operations are automatically replicated
     kv.put("app_name", "GuardianDB".as_bytes().to_vec()).await?;
-    kv.put("version", "0.9.13".as_bytes().to_vec()).await?;
+    kv.put("version", "0.14.0".as_bytes().to_vec()).await?;
     kv.put("language", "Rust".as_bytes().to_vec()).await?;
 
-    // Get values
+    // Get values - queries the local CRDT index
     if let Some(name_bytes) = kv.get("app_name").await? {
         let name = String::from_utf8(name_bytes)?;
         println!("App: {}", name);
@@ -240,13 +282,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Version: {}", version);
     }
 
-    // List all keys
-    let all_keys = kv.all().await?;
-    println!("All keys: {:?}", all_keys);
+    // List all key-value pairs
+    let all_pairs = kv.all();
+    println!("Total entries: {}", all_pairs.len());
+    for (key, value) in all_pairs.iter() {
+        let value_str = String::from_utf8_lossy(value);
+        println!("  {}: {}", key, value_str);
+    }
 
-    // Delete a key
-    kv.del("version").await?;
-    println!("After deletion: {:?}", kv.all().await?);
+    // Delete a key - creates a DEL operation in the distributed log
+    kv.delete("version").await?;
+    println!("After deletion: {} keys remaining", kv.all().len());
 
     Ok(())
 }
@@ -260,114 +306,73 @@ Document Store
 <br />
 
 ```rust
-use guardian_db::{GuardianDB, NewGuardianDBOptions};
-use guardian_db::ipfs_core_api::IpfsClient;
+use guardian_db::{GuardianDB, NewGuardianDBOptions, CreateDBOptions};
+use guardian_db::p2p::network::client::IrohClient;
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize database
-    let ipfs = IpfsClient::development().await?;
-    let db = GuardianDB::new(ipfs, None).await?;
+    // Initialize Iroh Client and database
+    let client = IrohClient::development().await?;
+    
+    let options = NewGuardianDBOptions {
+        directory: Some("./guardian_data".to_string()),
+        ..Default::default()
+    };
+    
+    let db = GuardianDB::new(client, Some(options)).await?;
 
-    // Create a document store
-    let mut docs = db.docs("my-document-store", None).await?;
+    // Create a document store with options
+    let doc_options = CreateDBOptions {
+        create: Some(true),
+        store_type: Some("document".to_string()),
+        ..Default::default()
+    };
+    
+    let mut docs = db.docs("my-document-store", Some(doc_options)).await?;
 
-    // Add JSON documents
+    // Add JSON documents (requires _id field)
     let project_doc = json!({
         "_id": "guardian-db",
         "name": "GuardianDB", 
         "type": "database",
-        "version": "0.9.13",
+        "version": "0.14.0",
         "language": "Rust",
-        "features": ["decentralized", "peer-to-peer", "CRDT", "IPFS"]
+        "features": ["decentralized", "peer-to-peer", "CRDT", "Iroh"]
     });
 
     let network_doc = json!({
-        "_id": "libp2p-network",
-        "name": "LibP2P Network",
+        "_id": "iroh-network",
+        "name": "Iroh Network",
         "type": "networking",
-        "version": "0.56.0", 
-        "protocols": ["gossipsub", "kad-dht", "mdns"]
+        "version": "0.92.0", 
+        "protocols": ["gossip", "docs", "blobs"]
     });
 
     // Store documents
     docs.put(project_doc).await?;
     docs.put(network_doc).await?;
 
-    // Query documents by type
+    // Query documents by type using closure filter
     let database_docs = docs.query(|doc| {
         Ok(doc.get("type").and_then(|v| v.as_str()) == Some("database"))
     })?;
 
     println!("Found {} database documents", database_docs.len());
     
-    // Get specific document
+    // Get specific document by ID
     let guardian_docs = docs.get("guardian-db", None).await?;
     println!("GuardianDB doc: {:?}", guardian_docs);
 
-    Ok(())
-}
-```
-</details>
+    // Delete a document
+    docs.delete("iroh-network").await?;
 
-<details>
-<summary>
-Event System & PubSub
-</summary>
-<br />
-
-```rust
-use guardian_db::events::EventBus;
-use guardian_db::pubsub::direct_channel::{DirectChannel, create_libp2p_swarm_interface};
-use serde::{Serialize, Deserialize};
-use tracing::info;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct DatabaseEvent {
-    action: String,
-    store_name: String,
-    timestamp: u64,
-}
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize tracing
-    tracing_subscriber::fmt().init();
-
-    // Create type-safe event bus
-    let event_bus = EventBus::new();
-    
-    // Create event emitter and subscriber
-    let emitter = event_bus.emitter::<DatabaseEvent>().await?;
-    let mut receiver = event_bus.subscribe::<DatabaseEvent>().await?;
-
-    // Spawn event listener task
-    let listener_handle = tokio::spawn(async move {
-        while let Ok(event) = receiver.recv().await {
-            info!("Event received: {} on {}", event.action, event.store_name);
-        }
-    });
-
-    // Emit some events
-    emitter.emit(DatabaseEvent {
-        action: "store_created".to_string(),
-        store_name: "my-documents".to_string(),
-        timestamp: chrono::Utc::now().timestamp() as u64,
-    }).await?;
-
-    emitter.emit(DatabaseEvent {
-        action: "data_added".to_string(), 
-        store_name: "my-documents".to_string(),
-        timestamp: chrono::Utc::now().timestamp() as u64,
-    }).await?;
-
-    // Create peer-to-peer communication channel
-    let span = tracing::info_span!("direct_channel");
-    let interface = create_libp2p_swarm_interface(span).await?;
-    
-    // The interface provides peer-to-peer messaging capabilities
-    info!("P2P interface initialized with Gossipsub");
+    // Put multiple documents in batch
+    let batch_docs = vec![
+        json!({"_id": "doc1", "name": "Document 1"}),
+        json!({"_id": "doc2", "name": "Document 2"}),
+    ];
+    docs.put_batch(batch_docs).await?;
 
     Ok(())
 }
@@ -376,68 +381,61 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 <details>
 <summary>
-Native IPFS Core API
+Native Iroh Backend with QUIC transport
 </summary>
 <br />
 
 ```rust
-use guardian_db::ipfs_core_api::{IpfsClient, ClientConfig};
-use std::io::Cursor;
+use guardian_db::p2p::network::client::IrohClient;
+use guardian_db::p2p::network::config::ClientConfig;
 use tokio::io::AsyncReadExt;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Quick development setup (uses Iroh backend)
-    let client = IpfsClient::development().await?;
-    println!("✓ IPFS client initialized with native Iroh backend");
+    // Quick development setup (Native Iroh with QUIC transport)
+    let client = IrohClient::development().await?;
+    println!("✓ Iroh Client initialized with native QUIC backend");
 
-    // Advanced configuration with multiple backends
+    // Advanced configuration with native Iroh
     let config = ClientConfig {
-        backend_type: "iroh".to_string(),           // Native Rust IPFS
-        enable_pubsub: true,                        // Gossipsub support
-        enable_swarm: true,                         // libp2p networking
-        data_store_path: Some("./ipfs_data".into()),
-        listening_addrs: vec![
-            "/ip4/127.0.0.1/tcp/0".to_string(),     // Local IPv4
-            "/ip6/::1/tcp/0".to_string(),           // Local IPv6
-        ],
-        bootstrap_peers: vec![
-            // Connect to IPFS bootstrap nodes
-            "/dnsaddr/bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN".to_string(),
-        ],
-        enable_mdns: true,                          // Local peer discovery
-        enable_kad: true,                           // DHT support
-        enable_relay: false,                        // Relay functionality
-        ..Default::default()
+        enable_pubsub: true,                        // iroh-gossip support
+        data_store_path: Some("./iroh_data".into()),
+        port: 4001,                                 // Iroh endpoint port (0 = random)
+        enable_discovery_n0: true,                  // Discovery via n0.computer (Pkarr/DNS)
+        enable_discovery_mdns: true,                // Local mDNS discovery
+        known_peers: vec![],                        // NodeIds of known peers
+        network: Default::default(),                // Network tuning (timeout, buffer, etc.)
+        storage: Default::default(),                // iroh-blobs storage config
+        gossip: Default::default(),                 // iroh-gossip config
     };
 
-    let ipfs = IpfsClient::new(config).await?;
-    println!("✓ Advanced IPFS client configured");
+    let client = IrohClient::new(config).await?;
+    println!("✓ Advanced Iroh Client configured");
 
-    // Add data to IPFS network
-    let data = "Hello from GuardianDB! This is stored on IPFS.";
-    let cursor = Cursor::new(data.as_bytes().to_vec());
-    let add_response = ipfs.add(cursor).await?;
+    // Add data using native Iroh backend (BLAKE3 hashing)
+    let data = "Hello from GuardianDB! This is stored with Iroh.";
+    let add_response = client.add_bytes(data.as_bytes().to_vec()).await?;
 
-    println!("Added to IPFS: {}", add_response.hash);
+    println!("Added to Iroh: {}", add_response.hash);
     println!("Size: {} bytes", add_response.size);
 
-    // Retrieve data from IPFS
-    let mut stream = ipfs.cat(&add_response.hash).await?;
+    // Retrieve data from Iroh (with smart caching)
+    let mut stream = client.backend().cat(&add_response.hash).await?;
     let mut buffer = Vec::new();
     stream.read_to_end(&mut buffer).await?;
 
     let retrieved_text = String::from_utf8(buffer)?;
     println!("Retrieved: {}", retrieved_text);
 
-    // Pin the content (keep it available)
-    ipfs.pin_add(&add_response.hash, None).await?;
-    println!("Content pinned to local node");
+    // Pin the content (persistent tags prevent GC)
+    client.backend().pin_add(&add_response.hash).await?;
+    println!("Content pinned with persistent tag");
 
-    // Get node info
-    let node_id = ipfs.id().await?;
-    println!("Node ID: {}", node_id.id);
-    println!("Addresses: {:?}", node_id.addresses);
+    // Get node info (Iroh NodeId)
+    let node_info = client.id().await?;
+    println!("Node ID: {}", node_info.id);
+    println!("Protocol Version: {}", node_info.protocol_version);
+    println!("Agent Version: {}", node_info.agent_version);
 
     Ok(())
 }
@@ -453,8 +451,8 @@ Basic Configuration
 <br />
 
 ```rust
-use guardian_db::{GuardianDB, NewGuardianDBOptions};
-use guardian_db::ipfs_core_api::IpfsClient;
+use guardian_db::guardian::core::{GuardianDB, NewGuardianDBOptions};
+use guardian_db::p2p::network::config::ClientConfig;
 use tracing::{info, Level};
 
 #[tokio::main]
@@ -464,18 +462,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_max_level(Level::INFO)
         .init();
 
-    // Configure IPFS client with native Iroh backend
-    let ipfs = IpfsClient::development().await?;
-    info!("IPFS client initialized");
+    // Configure Iroh client with native backend
+    let config = ClientConfig::default();
+    info!("Iroh Client config prepared");
     
     // Configure GuardianDB
     let options = NewGuardianDBOptions {
-        directory: Some("./guardian_data".to_string()),
-        cache_size: Some(1000),                     // Cache 1000 entries
+        directory: Some("./guardian_data".into()),
         ..Default::default()
     };
     
-    let db = GuardianDB::new(ipfs, Some(options)).await?;
+    let db = GuardianDB::new(Some(config), Some(options)).await?;
     info!("GuardianDB initialized successfully");
 
     // Database is ready for use
@@ -496,11 +493,10 @@ Advanced Configuration
 <br />
 
 ```rust
-use guardian_db::{
-    GuardianDB, NewGuardianDBOptions, CreateDBOptions,
-    ipfs_core_api::{IpfsClient, ClientConfig},
-};
+use guardian_db::guardian::core::{GuardianDB, NewGuardianDBOptions};
+use guardian_db::p2p::network::config::{ClientConfig, NetworkConfig, StorageConfig, GossipConfig};
 use tracing::{info, Level};
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -509,105 +505,58 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_max_level(Level::DEBUG)
         .init();
 
-    // Production IPFS configuration with Iroh backend
-    let ipfs_config = ClientConfig {
-        backend_type: "iroh".to_string(),           // Native Rust IPFS
-        enable_pubsub: true,                        // Gossipsub messaging
-        enable_swarm: true,                         // P2P networking
-        enable_mdns: true,                          // Local discovery
-        enable_kad: true,                           // DHT routing
-        enable_relay: true,                         // NAT traversal
-        data_store_path: Some("./production_ipfs".into()),
+    // Production Iroh configuration with native backend
+    let config = ClientConfig {
+        enable_pubsub: true,                        // iroh-gossip support
+        data_store_path: Some("./production_iroh".into()),
+        port: 4001,                                 // Fixed port for production
+        enable_discovery_n0: true,                  // Discovery via n0.computer (Pkarr/DNS)
+        enable_discovery_mdns: true,                // Local mDNS discovery
+        known_peers: vec![],                        // Add known NodeIds here
         
         // Network configuration
-        listening_addrs: vec![
-            "/ip4/0.0.0.0/tcp/4001".to_string(),    // Public IPv4
-            "/ip6/::/tcp/4001".to_string(),         // Public IPv6
-            "/ip4/127.0.0.1/tcp/5001".to_string(),  // Local API
-        ],
+        network: NetworkConfig {
+            connection_timeout: Duration::from_secs(60),
+            max_peers_per_session: 1000,
+            io_buffer_size: 128 * 1024,             // 128KB
+            keepalive_interval: Duration::from_secs(120),
+        },
         
-        // Bootstrap to public IPFS network
-        bootstrap_peers: vec![
-            "/dnsaddr/bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN".to_string(),
-            "/dnsaddr/bootstrap.libp2p.io/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa".to_string(),
-        ],
+        // Storage configuration (iroh-blobs)
+        storage: StorageConfig {
+            enable_memory_cache: true,
+            max_cache_size: 1024 * 1024 * 1024,     // 1GB cache
+            max_blob_size: 100 * 1024 * 1024,       // 100MB per blob
+            enable_gc: true,
+            gc_interval: Duration::from_secs(1800), // 30 minutes
+        },
         
-        // Performance tuning
-        connection_idle_timeout: Some(30),          // 30 second timeout
-        max_connections: Some(100),                 // Max peer connections
-        
-        ..Default::default()
+        // Gossip configuration (iroh-gossip)
+        gossip: GossipConfig {
+            max_message_size: 10 * 1024 * 1024,     // 10MB
+            message_buffer_size: 10000,
+            operation_timeout: Duration::from_secs(60),
+            heartbeat_interval: Duration::from_millis(500),
+            max_topics: 1000,
+        },
     };
 
-    let ipfs = IpfsClient::new(ipfs_config).await?;
-    info!("Production IPFS client initialized");
+    info!("Production Iroh Client configured");
 
     // Advanced GuardianDB configuration
     let db_options = NewGuardianDBOptions {
-        directory: Some("./production_guardian".to_string()),
-        cache_size: Some(10000),                    // Large cache for production
+        directory: Some("./production_guardian".into()),
         ..Default::default()
     };
 
-    let db = GuardianDB::new(ipfs, Some(db_options)).await?;
+    let db = GuardianDB::new(Some(config), Some(db_options)).await?;
     info!("GuardianDB configured for production use");
 
-    // Create stores with custom options
-    let log_options = CreateDBOptions {
-        create: Some(true),
-        store_type: Some("eventlog".to_string()),
-        ..Default::default()
-    };
-
-    let event_log = db.log("production-events", Some(log_options)).await?;
-    info!("Production event log created");
+    // Database is ready for use with advanced configuration
+    info!("Advanced configuration applied successfully");
 
     Ok(())
 }
-```
-</details>
-
-<details>
-<summary>
-Available Examples (20 Demos)
-</summary>
-<br />
-Run the comprehensive example suite to explore GuardianDB features:
-
-```bash
-# Core functionality
-cargo run --example ipfs_core_api_demo
-cargo run --example event_bus_usage
-cargo run --example constructor_functionality_demo
-
-# Store implementations  
-cargo run --example fsstore_persistence_demo
-cargo run --example simple_fsstore_test
-
-# Advanced networking & discovery
-cargo run --example advanced_discovery_demo
-cargo run --example direct_channel_transport_demo
-cargo run --example dht_discovery_demo
-cargo run --example simple_dht_demo
-cargo run --example iroh_gossipsub_integration_demo
-
-# Performance & optimization
-cargo run --example performance_optimization_demo
-cargo run --example networking_metrics_demo
-cargo run --example hybrid_backend_demo
-
-# Production features
-cargo run --example production_integration_demo
-cargo run --example access_control_verification_demo
-cargo run --example identity_verification_demo
-
-# Advanced examples
-cargo run --example p2p_endpoint_demo
-cargo run --example key_synchronization_demo
-cargo run --example iroh_node_functionality_test
-
-# With debug logging
-RUST_LOG=debug cargo run --example advanced_discovery_demo
 ```
 </details>
 
@@ -615,7 +564,7 @@ RUST_LOG=debug cargo run --example advanced_discovery_demo
 
 ### Prerequisites
 
-- Rust 1.89+ (edition 2024)
+- Rust 1.90+ (edition 2024)
 - Git
 
 ### Build
@@ -633,28 +582,40 @@ Tests
 <br />
 
 ```bash
-# Run all unit tests (78 passing tests)
+# Run all tests (776 passing tests)
+cargo test
+
+# Run only unit tests (in src/)
 cargo test --lib
 
-# Run all tests including integration tests  
-cargo test -- --include-ignored
+# Run only integration tests (in tests/)
+cargo test --test '*'
 
-# Run specific test modules
-cargo test events::tests                   # Event system tests
-cargo test ipfs_core_api::client::tests    # IPFS client tests
-cargo test stores::base_store::tests       # Store implementation tests
-cargo test access_controller::tests        # Access control tests
+# Run specific test files
+cargo test --test integration_lifecycle        # Lifecycle tests
+cargo test --test integration_replication      # P2P replication tests
+cargo test --test integration_access_control   # Access control tests
+cargo test --test integration_persistence      # Persistence tests
+cargo test --test test_determinism             # Determinism tests
+
+# Run specific unit test modules
+cargo test guardian_core_test               # Core GuardianDB tests
+cargo test event_log_store_test             # Event log store tests
+cargo test kv_store_test                    # Key-value store tests
+cargo test document_store_test              # Document store tests
+cargo test iroh_backend_test                # Iroh backend tests
+cargo test connection_pool_test             # Connection pool tests
+cargo test networking_metrics_test          # Networking metrics tests
+cargo test access_control                   # Access control tests
 
 # Run with detailed output
 RUST_LOG=debug cargo test -- --nocapture
 
-# Test specific functionality
-cargo test test_event_log_store
-cargo test test_document_store_operations
-cargo test test_key_value_operations
+# Run with single thread (for P2P tests)
+cargo test --test integration_replication -- --test-threads=1
 
-# Performance tests
-cargo test --release performance_tests
+# Run tests in release mode (faster)
+cargo test --release
 ```
 </details>
 
@@ -690,11 +651,12 @@ cargo audit                    # Security audit
 <div align="left">
 <img align="right" src="docs/guardian-github-1.png" height="96px"/>
 
-GuardianDB is an open-source project welcoming contributions and discussions from developers interested in decentralized systems, IPFS, and Rust programming.
+GuardianDB is an open-source project welcoming contributions and discussions from developers interested in decentralized systems, Iroh, and Rust programming.
 
 If you are excited about the project, don't hesitate to join our
 [Discord](https://discord.gg/Ezzk8PnGR5)! We try to be as welcoming as possible to everybody from
-any background. You can ask your questions and share what you built with the community!
+any background. You can ask your questions and share what you built with the community! 
+Follow updates on [Twitter](https://x.com/willsearch_) and [LinkedIn](https://www.linkedin.com/company/willsearch/)!
 
 **Get Involved:**
 - **Issues**: Report bugs and request features on [GitHub Issues](https://github.com/wmaslonek/guardian-db/issues)
@@ -717,17 +679,15 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution instructions.
 
 ## License
 
-GuardianDB is distributed under the terms of the MIT license.
-See [LICENSE-MIT](./LICENSE-MIT) for details. Opening a pull
+GuardianDB is dual-licensed under the terms of both the MIT license and the Apache License 2.0.
+
+See [LICENSE-MIT](./LICENSE-MIT) and [LICENSE-APACHE](./LICENSE-APACHE) for details. Opening a pull
 request is assumed to signal agreement with these licensing terms.
 
 ## Acknowledgments
 
-- **[OrbitDB](https://github.com/orbitdb/orbit-db)** - Original JavaScript implementation and design inspiration
-- **[go-orbit-db](https://github.com/berty/go-orbit-db)** - Go implementation reference and architecture insights
-- **[ipfs-log-rs](https://github.com/eqlabs/ipfs-log-rs)** - CRDT log implementation foundation
-- **[Iroh](https://github.com/n0-computer/iroh)** - Native Rust IPFS implementation (v0.92.0)
-- **[libp2p](https://libp2p.io/)** - Peer-to-peer networking protocols (v0.56.0)
+- **[ipfs-log-rs](https://github.com/eqlabs/ipfs-log-rs)** - CRDT Log implementation foundation
+- **[Iroh](https://github.com/n0-computer/iroh)** - QUIC-based P2P data synchronization
 
 This project incorporates and builds upon code from [ipfs-log-rs](https://github.com/eqlabs/ipfs-log-rs),
 licensed under the MIT License © EQLabs. Significant enhancements and optimizations have been added
@@ -735,13 +695,7 @@ for production use in decentralized applications.
 
 ## Useful Links
 
-- **[Original OrbitDB](https://orbitdb.org/)** - JavaScript implementation
-- **[OrbitDB Golang](https://berty.tech/docs/go-orbit-db/)** - Go implementation
-- **[Iroh Documentation](https://www.iroh.computer/)** - Native IPFS for Rust  
-- **[libp2p Rust](https://github.com/libp2p/rust-libp2p)** - P2P networking
-### Project Resources
-- **[Example Code](examples/)** - 20+ comprehensive demos
-- **[Architecture Docs](docs/)** - Design and implementation details
+- **[Iroh Documentation](https://www.iroh.computer/)** - QUIC-based P2P data synchronization
 
 ---
 
