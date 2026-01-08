@@ -1,14 +1,16 @@
+    // ╔════════════════════════════════════════════════════════════════════════════════╗
+    // ║                                ⚠ DEPRECATED                                   ║
+    // ╚════════════════════════════════════════════════════════════════════════════════╝
+
+
 // Benchmarks para avaliar performance da integração Iroh + LibP2P Gossipsub
 //
 // Mede throughput, latência e uso de recursos
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use guardian_db::ipfs_core_api::{
-    backends::{IpfsBackend, IrohBackend},
-    config::ClientConfig,
-};
+use guardian_db::p2p::network::{config::ClientConfig, core::IrohBackend};
 use std::{hint::black_box, sync::Arc};
-use tempdir::TempDir;
+use tempfile::TempDir;
 use tokio::runtime::Runtime;
 
 fn benchmark_iroh_operations(c: &mut Criterion) {
@@ -16,11 +18,10 @@ fn benchmark_iroh_operations(c: &mut Criterion) {
 
     // Setup do backend
     let backend = rt.block_on(async {
-        let temp_dir = TempDir::new("bench_data").unwrap();
+        let temp_dir = TempDir::new().unwrap();
         let config = ClientConfig {
             data_store_path: Some(temp_dir.path().to_path_buf()),
             enable_pubsub: true,
-            enable_swarm: true,
             ..Default::default()
         };
         (Arc::new(IrohBackend::new(&config).await.unwrap()), temp_dir)
@@ -76,11 +77,10 @@ fn benchmark_concurrent_operations(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
 
     let backend = rt.block_on(async {
-        let temp_dir = TempDir::new("bench_concurrent").unwrap();
+        let temp_dir = TempDir::new().unwrap();
         let config = ClientConfig {
             data_store_path: Some(temp_dir.path().to_path_buf()),
             enable_pubsub: true,
-            enable_swarm: true,
             ..Default::default()
         };
         (Arc::new(IrohBackend::new(&config).await.unwrap()), temp_dir)
@@ -112,11 +112,10 @@ fn benchmark_cache_performance(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
 
     let backend = rt.block_on(async {
-        let temp_dir = TempDir::new("bench_cache").unwrap();
+        let temp_dir = TempDir::new().unwrap();
         let config = ClientConfig {
             data_store_path: Some(temp_dir.path().to_path_buf()),
             enable_pubsub: true,
-            enable_swarm: true,
             ..Default::default()
         };
         (Arc::new(IrohBackend::new(&config).await.unwrap()), temp_dir)
