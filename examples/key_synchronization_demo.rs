@@ -3,14 +3,14 @@
 /// Este exemplo mostra como o Guardian DB garante consistência
 /// criptográfica através de sincronização robusta de chaves entre peers.
 use guardian_db::{
-    error::Result,
-    ipfs_core_api::{
-        backends::{IpfsBackend, IrohBackend, key_synchronizer::KeySynchronizer},
+    guardian::error::Result,
+    p2p::network::{
         config::ClientConfig,
+        core::{IrohBackend, key_synchronizer::KeySynchronizer},
     },
 };
 use std::{sync::Arc, time::Duration};
-use tempdir::TempDir;
+use tempfile::TempDir;
 use tokio::time::sleep;
 use tracing::{info, warn};
 
@@ -64,7 +64,7 @@ async fn create_multiple_peers(count: usize) -> Result<Vec<PeerSetup>> {
     for i in 0..count {
         // Criar diretório completamente único com PID do processo para evitar conflitos
         let process_id = std::process::id();
-        let unique_suffix = format!(
+        let _unique_suffix = format!(
             "peer_{}_{}_{}_{}",
             i,
             process_id,
@@ -75,8 +75,8 @@ async fn create_multiple_peers(count: usize) -> Result<Vec<PeerSetup>> {
             uuid::Uuid::new_v4().simple()
         );
 
-        let temp_dir = TempDir::new(&unique_suffix)
-            .map_err(|e| guardian_db::error::GuardianError::Other(e.to_string()))?;
+        let temp_dir = TempDir::new()
+            .map_err(|e| guardian_db::guardian::error::GuardianError::Other(e.to_string()))?;
 
         // Criar subdiretórios completamente separados
         let backend_dir = temp_dir.path().join(format!("backend_{}", i));
@@ -84,16 +84,14 @@ async fn create_multiple_peers(count: usize) -> Result<Vec<PeerSetup>> {
         let data_dir = temp_dir.path().join(format!("data_{}", i));
 
         std::fs::create_dir_all(&backend_dir)
-            .map_err(|e| guardian_db::error::GuardianError::Other(e.to_string()))?;
+            .map_err(|e| guardian_db::guardian::error::GuardianError::Other(e.to_string()))?;
         std::fs::create_dir_all(&keystore_dir)
-            .map_err(|e| guardian_db::error::GuardianError::Other(e.to_string()))?;
+            .map_err(|e| guardian_db::guardian::error::GuardianError::Other(e.to_string()))?;
         std::fs::create_dir_all(&data_dir)
-            .map_err(|e| guardian_db::error::GuardianError::Other(e.to_string()))?;
-
+            .map_err(|e| guardian_db::guardian::error::GuardianError::Other(e.to_string()))?;
         let config = ClientConfig {
             data_store_path: Some(data_dir),
             enable_pubsub: true,
-            enable_swarm: true,
             ..Default::default()
         };
 
@@ -104,7 +102,7 @@ async fn create_multiple_peers(count: usize) -> Result<Vec<PeerSetup>> {
 
         let peer_setup = PeerSetup {
             id: i,
-            peer_id: format!("peer_{}", i), // Usar ID simples no lugar do peer_id do sync
+            node_id: format!("peer_{}", i), // Usar ID simples no lugar do node_id do sync
             backend,
             synchronizer: None, // Removido - usar o interno do IrohBackend
             _temp_dir: temp_dir,
@@ -112,7 +110,7 @@ async fn create_multiple_peers(count: usize) -> Result<Vec<PeerSetup>> {
 
         info!(
             "✓ Peer {} criado com sucesso - ID: {}",
-            i, peer_setup.peer_id
+            i, peer_setup.node_id
         );
         peers.push(peer_setup);
 
@@ -134,7 +132,7 @@ async fn setup_peer_trust(peers: &[PeerSetup]) -> Result<()> {
     // Por enquanto, simplesmente log que os peers foram configurados
     // O KeySynchronizer interno do IrohBackend gerenciará a confiança
     for peer in peers {
-        info!("  - Peer {} configurado", peer.peer_id);
+        info!("  - Peer {} configurado", peer.node_id);
     }
 
     info!("✓ Confiança mútua estabelecida entre todos os peers");
@@ -220,7 +218,7 @@ async fn demonstrate_dynamic_network(peers: &[PeerSetup]) -> Result<()> {
 
     // Criar novo peer "dinâmico" com identificação única
     let process_id = std::process::id();
-    let unique_suffix = format!(
+    let _unique_suffix = format!(
         "dynamic_peer_{}_{}_{}",
         process_id,
         std::time::SystemTime::now()
@@ -230,8 +228,8 @@ async fn demonstrate_dynamic_network(peers: &[PeerSetup]) -> Result<()> {
         uuid::Uuid::new_v4().simple()
     );
 
-    let temp_dir = TempDir::new(&unique_suffix)
-        .map_err(|e| guardian_db::error::GuardianError::Other(e.to_string()))?;
+    let temp_dir = TempDir::new()
+        .map_err(|e| guardian_db::guardian::error::GuardianError::Other(e.to_string()))?;
 
     // Criar diretórios completamente separados
     let backend_dir = temp_dir.path().join("backend_dynamic");
@@ -239,16 +237,14 @@ async fn demonstrate_dynamic_network(peers: &[PeerSetup]) -> Result<()> {
     let data_dir = temp_dir.path().join("data_dynamic");
 
     std::fs::create_dir_all(&backend_dir)
-        .map_err(|e| guardian_db::error::GuardianError::Other(e.to_string()))?;
+        .map_err(|e| guardian_db::guardian::error::GuardianError::Other(e.to_string()))?;
     std::fs::create_dir_all(&keystore_dir)
-        .map_err(|e| guardian_db::error::GuardianError::Other(e.to_string()))?;
+        .map_err(|e| guardian_db::guardian::error::GuardianError::Other(e.to_string()))?;
     std::fs::create_dir_all(&data_dir)
-        .map_err(|e| guardian_db::error::GuardianError::Other(e.to_string()))?;
-
+        .map_err(|e| guardian_db::guardian::error::GuardianError::Other(e.to_string()))?;
     let config = ClientConfig {
         data_store_path: Some(data_dir),
         enable_pubsub: true,
-        enable_swarm: true,
         ..Default::default()
     };
 
@@ -315,7 +311,7 @@ async fn demonstrate_security_features(peers: &[PeerSetup]) -> Result<()> {
     pinned_stream
         .read_to_end(&mut retrieved_data)
         .await
-        .map_err(|e| guardian_db::error::GuardianError::Other(e.to_string()))?;
+        .map_err(|e| guardian_db::guardian::error::GuardianError::Other(e.to_string()))?;
 
     if retrieved_data == valid_data {
         info!("✓ Integridade dos dados verificada com sucesso");
@@ -332,7 +328,7 @@ async fn generate_final_report(peers: &[PeerSetup]) -> Result<()> {
 
     for (i, peer) in peers.iter().enumerate() {
         println!("\nRELATÓRIO PEER {}:", i);
-        println!("ID do Peer: {}", peer.peer_id);
+        println!("ID do Peer: {}", peer.node_id);
         println!("Backend: Iroh com KeySynchronizer integrado");
         println!("Status: Operacional");
 
@@ -367,7 +363,7 @@ async fn generate_final_report(peers: &[PeerSetup]) -> Result<()> {
 struct PeerSetup {
     #[allow(dead_code)]
     id: usize,
-    peer_id: String,
+    node_id: String,
     backend: Arc<IrohBackend>,
     #[allow(dead_code)]
     synchronizer: Option<Arc<KeySynchronizer>>, // Agora opcional - usar o interno do IrohBackend
@@ -383,7 +379,7 @@ mod tests {
         let peers = create_multiple_peers(2).await.unwrap();
 
         // Verificar que os peers foram criados com IDs diferentes
-        assert_ne!(peers[0].peer_id, peers[1].peer_id);
+        assert_ne!(peers[0].node_id, peers[1].node_id);
 
         // Testar sincronização básica
         demonstrate_basic_sync(&peers).await.unwrap();
