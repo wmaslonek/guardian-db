@@ -190,8 +190,8 @@ pub enum GuardianError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
     
-    #[error("IPFS error: {0}")]
-    Ipfs(String),
+    #[error("Iroh error: {0}")]
+    Iroh(String),
 }
 
 // Prefer Result<T> over unwrap/expect
