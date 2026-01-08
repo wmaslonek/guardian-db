@@ -1,160 +1,120 @@
-use crate::stores::replicator::traits::ReplicationInfo as ReplicationInfoTrait;
-use tokio::sync::RwLock;
+use serde::{Deserialize, Serialize};
 
-// Struct interna para conter os dados protegidos pelo Lock.
-#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
-struct InfoState {
-    progress: usize,
-    max: usize,
-}
-
-/// Implementação thread-safe da interface `ReplicationInfo`.
-/// Utiliza um `RwLock` para garantir acesso seguro de múltiplas threads.
-///
-/// Esta implementação fornece:
-/// - Acesso thread-safe através de `RwLock`
-/// - Operações atômicas para get/set de progresso e máximo
-/// - Métodos de conveniência para operações comuns
-#[derive(Default, Debug)]
+/// Representa o estado de replicação de uma store
+/// Mantido para compatibilidade, mas a replicação é feita pelo Iroh
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplicationInfo {
-    state: RwLock<InfoState>,
+    /// Número de entradas já replicadas
+    progress: usize,
+    /// Número máximo de entradas a serem replicadas
+    max: usize,
+    /// Flag indicando se está em processo de sincronização
+    buffered: usize,
+    /// Flag indicando se está aguardando sincronização
+    queued: usize,
 }
 
-// Note: Clone implementation creates a new instance with default values
-// For preserving current values, use clone_with_values() or get_progress_and_max() + with_values()
-impl Clone for ReplicationInfo {
-    fn clone(&self) -> Self {
-        Self::default()
+impl Default for ReplicationInfo {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 impl ReplicationInfo {
-    /// Cria um clone que preserva os valores atuais.
-    /// Esta é uma operação assíncrona pois precisa ler o estado atual.
-    pub async fn clone_with_values(&self) -> Self {
-        let state = self.state.read().await;
-        Self::with_values(state.progress, state.max)
-    }
-}
-
-impl ReplicationInfo {
-    /// Cria uma nova instância de ReplicationInfo.
+    /// Cria uma nova instância com valores padrão
     pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Cria uma nova instância com valores iniciais.
-    pub fn with_values(progress: usize, max: usize) -> Self {
         Self {
-            state: RwLock::new(InfoState { progress, max }),
+            progress: 0,
+            max: 0,
+            buffered: 0,
+            queued: 0,
         }
     }
 
-    /// Incrementa o progresso em 1.
-    /// Conveniência para operações de incremento simples.
-    pub async fn increment_progress(&self) {
-        let mut state = self.state.write().await;
-        state.progress = state.progress.saturating_add(1);
+    /// Retorna o progresso atual (0-100)
+    pub async fn get_progress(&self) -> usize {
+        self.progress
     }
 
-    /// Incrementa o progresso por um valor específico.
-    /// Usa saturating_add para evitar overflow.
-    pub async fn increment_progress_by(&self, amount: usize) {
-        let mut state = self.state.write().await;
-        state.progress = state.progress.saturating_add(amount);
+    /// Retorna o valor máximo
+    pub async fn get_max(&self) -> usize {
+        self.max
     }
 
-    /// Retorna se a replicação está completa (progress >= max).
-    pub async fn is_complete(&self) -> bool {
-        let state = self.state.read().await;
-        state.max > 0 && state.progress >= state.max
+    /// Retorna o progresso e o máximo simultaneamente
+    pub async fn get_progress_and_max(&self) -> (usize, usize) {
+        (self.progress, self.max)
     }
 
-    /// Retorna o percentual de progresso (0.0 a 1.0).
-    /// Retorna 0.0 se max for 0.
-    pub async fn progress_ratio(&self) -> f64 {
-        let state = self.state.read().await;
-        if state.max == 0 {
+    /// Retorna o número de entradas em buffer
+    pub async fn get_buffered(&self) -> usize {
+        self.buffered
+    }
+
+    /// Retorna o número de entradas na fila
+    pub async fn get_queued(&self) -> usize {
+        self.queued
+    }
+
+    /// Atualiza o progresso
+    pub async fn inc_progress(&mut self, amount: usize) {
+        self.progress += amount;
+    }
+
+    /// Define o valor máximo
+    pub async fn set_max(&mut self, value: usize) {
+        self.max = value;
+    }
+
+    /// Incrementa o buffer
+    pub async fn inc_buffered(&mut self) {
+        self.buffered += 1;
+    }
+
+    /// Decrementa o buffer
+    pub async fn dec_buffered(&mut self) {
+        if self.buffered > 0 {
+            self.buffered -= 1;
+        }
+    }
+
+    /// Incrementa a fila
+    pub async fn inc_queued(&mut self) {
+        self.queued += 1;
+    }
+
+    /// Decrementa a fila
+    pub async fn dec_queued(&mut self) {
+        if self.queued > 0 {
+            self.queued -= 1;
+        }
+    }
+
+    /// Reseta todos os contadores
+    pub async fn reset(&mut self) {
+        self.progress = 0;
+        self.max = 0;
+        self.buffered = 0;
+        self.queued = 0;
+    }
+
+    /// Define o progresso
+    pub async fn set_progress(&mut self, value: usize) {
+        self.progress = value;
+    }
+
+    /// Define progresso e máximo simultaneamente
+    pub async fn set_progress_and_max(&mut self, progress: usize, max: usize) {
+        self.progress = progress;
+        self.max = max;
+    }
+
+    /// Calcula a porcentagem de progresso (0-100)
+    pub async fn progress_percentage(&self) -> f64 {
+        if self.max == 0 {
             0.0
         } else {
-            state.progress as f64 / state.max as f64
+            (self.progress as f64 / self.max as f64) * 100.0
         }
-    }
-
-    /// Retorna o percentual de progresso (0 a 100).
-    /// Retorna 0 se max for 0.
-    pub async fn progress_percentage(&self) -> u8 {
-        let ratio = self.progress_ratio().await;
-        (ratio * 100.0).min(100.0) as u8
-    }
-
-    /// Obtém tanto o progresso quanto o máximo em uma única operação.
-    /// Mais eficiente que chamadas separadas quando ambos os valores são necessários.
-    pub async fn get_progress_and_max(&self) -> (usize, usize) {
-        let state = self.state.read().await;
-        (state.progress, state.max)
-    }
-
-    /// Define tanto o progresso quanto o máximo em uma única operação atômica.
-    /// Mais eficiente que chamadas separadas.
-    pub async fn set_progress_and_max(&self, progress: usize, max: usize) {
-        let mut state = self.state.write().await;
-        state.progress = progress;
-        state.max = max;
-    }
-
-    /// Aplica um incremento ao máximo, usado quando novos itens são descobertos.
-    pub async fn increment_max(&self, amount: usize) {
-        let mut state = self.state.write().await;
-        state.max = state.max.saturating_add(amount);
-    }
-
-    /// Retorna uma representação em string do progresso atual.
-    pub async fn to_string(&self) -> String {
-        let state = self.state.read().await;
-        format!(
-            "{}/{} ({}%)",
-            state.progress,
-            state.max,
-            if state.max > 0 {
-                (state.progress * 100 / state.max).min(100)
-            } else {
-                0
-            }
-        )
-    }
-
-    /// Verifica se os valores são válidos (progress <= max).
-    pub async fn is_valid(&self) -> bool {
-        let state = self.state.read().await;
-        state.progress <= state.max
-    }
-}
-
-impl ReplicationInfoTrait for ReplicationInfo {
-    async fn get_progress(&self) -> usize {
-        let state = self.state.read().await;
-        state.progress
-    }
-
-    async fn get_max(&self) -> usize {
-        let state = self.state.read().await;
-        state.max
-    }
-
-    async fn set_progress(&self, i: usize) {
-        let mut state = self.state.write().await;
-        state.progress = i;
-    }
-
-    async fn set_max(&self, i: usize) {
-        let mut state = self.state.write().await;
-        state.max = i;
-    }
-
-    async fn reset(&self) {
-        let mut state = self.state.write().await;
-        state.progress = 0;
-        state.max = 0;
     }
 }
