@@ -1,6 +1,6 @@
 use crate::address::Address;
 use crate::data_store::Datastore;
-use crate::error::{GuardianError, Result};
+use crate::guardian::error::{GuardianError, Result};
 use sled::{Config, Db};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
