@@ -4,7 +4,7 @@ This directory contains GitHub Actions workflows for the Guardian-DB project.
 
 ## Workflows
 
-### 🔨 [`rust.yml`](./rust.yml) - Main CI Pipeline
+### [`rust.yml`](./rust.yml) - Main CI Pipeline
 **Triggers:** Push/PR to main/develop branches
 - **Test Suite**: Runs on stable, beta, and nightly Rust
 - **Code Quality**: Format checking and Clippy linting
@@ -18,13 +18,13 @@ This directory contains GitHub Actions workflows for the Guardian-DB project.
 - Security audit with `cargo-audit`
 - Code coverage with `cargo-llvm-cov`
 
-### ⚡ [`check.yml`](./check.yml) - Quick Compilation Check
+### [`check.yml`](./check.yml) - Quick Compilation Check
 **Triggers:** Push to feature branches, PRs affecting source code
 - Fast compilation check
 - Multiple feature flag combinations
 - Minimal resource usage
 
-### 🚀 [`release.yml`](./release.yml) - Release Automation
+### [`release.yml`](./release.yml) - Release Automation
 **Triggers:** Git tags starting with `v*`
 - Multi-platform testing (Ubuntu, Windows, macOS)
 - Automatic GitHub release creation
