@@ -592,13 +592,13 @@ impl crate::traits::Store for KeyValueStoreAdapter {
                         && let Ok(parent_entry) = crate::guardian::serializer::deserialize::<
                             crate::log::entry::Entry,
                         >(&data)
-                        {
-                            let log_guard = op_log.read();
-                            if !log_guard.has(parent_entry.hash()) {
-                                drop(log_guard);
-                                queue.push(parent_entry);
-                            }
+                    {
+                        let log_guard = op_log.read();
+                        if !log_guard.has(parent_entry.hash()) {
+                            drop(log_guard);
+                            queue.push(parent_entry);
                         }
+                    }
                 }
             }
 
@@ -640,24 +640,23 @@ impl crate::traits::Store for KeyValueStoreAdapter {
                 if let Ok(data) = client.cat_bytes(&next_hash_str).await
                     && let Ok(parent_entry) =
                         crate::guardian::serializer::deserialize::<crate::log::entry::Entry>(&data)
-                    {
-                        // Verifica se já temos esta entrada
-                        let should_add = {
-                            let log_guard = op_log.read();
-                            !log_guard.has(parent_entry.hash())
-                        };
+                {
+                    // Verifica se já temos esta entrada
+                    let should_add = {
+                        let log_guard = op_log.read();
+                        !log_guard.has(parent_entry.hash())
+                    };
 
-                        if should_add {
-                            // Adiciona entrada ao log usando try_write
-                            if let Some(mut log_guard) = op_log.try_write() {
-                                let entry_bytes =
-                                    crate::guardian::serializer::serialize(&parent_entry)
-                                        .unwrap_or_default();
-                                log_guard.append(&String::from_utf8_lossy(&entry_bytes), None);
-                                loaded_count += 1;
-                            }
+                    if should_add {
+                        // Adiciona entrada ao log usando try_write
+                        if let Some(mut log_guard) = op_log.try_write() {
+                            let entry_bytes = crate::guardian::serializer::serialize(&parent_entry)
+                                .unwrap_or_default();
+                            log_guard.append(&String::from_utf8_lossy(&entry_bytes), None);
+                            loaded_count += 1;
                         }
                     }
+                }
             }
         }
     }
@@ -674,27 +673,27 @@ impl crate::traits::Store for KeyValueStoreAdapter {
             && let Ok(snapshot) = crate::guardian::serializer::deserialize::<
                 Vec<crate::log::entry::Entry>,
             >(&snapshot_data)
-            {
-                // Carrega todas as entradas do snapshot
-                let mut log_guard = op_log.write();
-                for entry in &snapshot {
-                    if !log_guard.has(entry.hash()) {
-                        let entry_bytes =
-                            crate::guardian::serializer::serialize(entry).unwrap_or_default();
-                        log_guard.append(&String::from_utf8_lossy(&entry_bytes), None);
-                    }
+        {
+            // Carrega todas as entradas do snapshot
+            let mut log_guard = op_log.write();
+            for entry in &snapshot {
+                if !log_guard.has(entry.hash()) {
+                    let entry_bytes =
+                        crate::guardian::serializer::serialize(entry).unwrap_or_default();
+                    log_guard.append(&String::from_utf8_lossy(&entry_bytes), None);
                 }
-
-                drop(log_guard);
-
-                // Log do sucesso do carregamento
-                tracing::info!(
-                    "Successfully loaded {} entries from snapshot",
-                    snapshot.len()
-                );
-
-                return Ok(());
             }
+
+            drop(log_guard);
+
+            // Log do sucesso do carregamento
+            tracing::info!(
+                "Successfully loaded {} entries from snapshot",
+                snapshot.len()
+            );
+
+            return Ok(());
+        }
 
         // Se não há snapshot, retornar OK (não é erro)
         Ok(())

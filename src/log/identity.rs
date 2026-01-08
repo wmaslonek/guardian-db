@@ -106,9 +106,10 @@ impl Identity {
         // Tenta decodificar a chave pública do formato hex para ed25519
         if let Ok(key_bytes) = hex::decode(&self.pub_key)
             && key_bytes.len() == 32
-                && let Ok(bytes_array) = key_bytes.as_slice().try_into() {
-                    return VerifyingKey::from_bytes(bytes_array).ok();
-                }
+            && let Ok(bytes_array) = key_bytes.as_slice().try_into()
+        {
+            return VerifyingKey::from_bytes(bytes_array).ok();
+        }
         None
     }
 }

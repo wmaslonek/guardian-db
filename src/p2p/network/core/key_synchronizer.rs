@@ -211,11 +211,12 @@ impl KeySynchronizer {
 
         // Tentar carregar keypair existente
         if let Some(data) = keystore.get(MAIN_KEYPAIR_KEY).await?
-            && data.len() == 32 {
-                debug!("Carregando keypair principal existente");
-                return SigningKey::try_from(&data[..32])
-                    .map_err(|e| GuardianError::Other(format!("Erro ao carregar keypair: {}", e)));
-            }
+            && data.len() == 32
+        {
+            debug!("Carregando keypair principal existente");
+            return SigningKey::try_from(&data[..32])
+                .map_err(|e| GuardianError::Other(format!("Erro ao carregar keypair: {}", e)));
+        }
 
         // Gerar novo keypair
         let signing_key = SigningKey::generate(&mut OsRng);

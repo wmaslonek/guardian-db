@@ -244,9 +244,10 @@ impl SyncObserver {
         let event = SyncEvent::Started { address, total };
 
         if let Ok(emitter) = self.event_bus.emitter::<SyncEvent>().await
-            && let Err(e) = emitter.emit(event) {
-                warn!("Failed to emit SyncEvent::Started: {}", e);
-            }
+            && let Err(e) = emitter.emit(event)
+        {
+            warn!("Failed to emit SyncEvent::Started: {}", e);
+        }
     }
 
     /// Emite evento de progresso
@@ -268,9 +269,10 @@ impl SyncObserver {
         };
 
         if let Ok(emitter) = self.event_bus.emitter::<SyncEvent>().await
-            && let Err(e) = emitter.emit(event) {
-                warn!("Failed to emit SyncEvent::Progress: {}", e);
-            }
+            && let Err(e) = emitter.emit(event)
+        {
+            warn!("Failed to emit SyncEvent::Progress: {}", e);
+        }
     }
 
     /// Emite evento de replicação completa
@@ -284,9 +286,10 @@ impl SyncObserver {
         let event = SyncEvent::Replicated { address, hash };
 
         if let Ok(emitter) = self.event_bus.emitter::<SyncEvent>().await
-            && let Err(e) = emitter.emit(event) {
-                warn!("Failed to emit SyncEvent::Replicated: {}", e);
-            }
+            && let Err(e) = emitter.emit(event)
+        {
+            warn!("Failed to emit SyncEvent::Replicated: {}", e);
+        }
     }
 
     /// Emite evento de store pronta
@@ -300,9 +303,10 @@ impl SyncObserver {
         let event = SyncEvent::Ready { address, heads };
 
         if let Ok(emitter) = self.event_bus.emitter::<SyncEvent>().await
-            && let Err(e) = emitter.emit(event) {
-                warn!("Failed to emit SyncEvent::Ready: {}", e);
-            }
+            && let Err(e) = emitter.emit(event)
+        {
+            warn!("Failed to emit SyncEvent::Ready: {}", e);
+        }
     }
 
     /// Emite evento de erro
@@ -316,9 +320,10 @@ impl SyncObserver {
         let event = SyncEvent::Error { address, error };
 
         if let Ok(emitter) = self.event_bus.emitter::<SyncEvent>().await
-            && let Err(e) = emitter.emit(event) {
-                warn!("Failed to emit SyncEvent::Error: {}", e);
-            }
+            && let Err(e) = emitter.emit(event)
+        {
+            warn!("Failed to emit SyncEvent::Error: {}", e);
+        }
     }
 }
 

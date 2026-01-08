@@ -41,9 +41,11 @@ async fn test_eventlog_lifecycle() {
         .expect("Failed to create log");
 
     // Adicionar entries
-    let entries_data = [b"First event".to_vec(),
+    let entries_data = [
+        b"First event".to_vec(),
         b"Second event".to_vec(),
-        b"Third event".to_vec()];
+        b"Third event".to_vec(),
+    ];
 
     for (i, data) in entries_data.iter().enumerate() {
         log.add(data.clone())

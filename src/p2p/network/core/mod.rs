@@ -2010,62 +2010,63 @@ impl IrohBackend {
             loop {
                 let endpoint_lock = endpoint_arc.read().await;
                 if let Some(endpoint) = endpoint_lock.as_ref()
-                    && let Some(discovery) = endpoint.discovery() {
-                        debug!("Executando ciclo de discovery via subscribe()");
+                    && let Some(discovery) = endpoint.discovery()
+                {
+                    debug!("Executando ciclo de discovery via subscribe()");
 
-                        // Obtém stream de descoberta passiva
-                        if let Some(mut stream) = discovery.subscribe() {
-                            use futures::StreamExt;
+                    // Obtém stream de descoberta passiva
+                    if let Some(mut stream) = discovery.subscribe() {
+                        use futures::StreamExt;
 
-                            // Processa eventos por um período antes de resubscrever
-                            let cycle_start = Instant::now();
-                            while let Some(event) = stream.next().await {
-                                match event {
-                                    iroh::discovery::DiscoveryEvent::Discovered(item) => {
-                                        // DiscoveryItem derefs para NodeData, tem método node_id()
-                                        let node_id = item.node_id();
-                                        let peer_info = DiscoveredPeerInfo {
-                                            node_id,
-                                            addresses: item
-                                                .direct_addresses() // via Deref<Target=NodeData>
-                                                .iter()
-                                                .map(|addr| format!("{}", addr))
-                                                .collect(),
-                                            last_seen: Instant::now(),
-                                            latency: None,
-                                            protocols: vec![
-                                                "iroh/blobs/0.92.0".to_string(),
-                                                "iroh/gossip/0.92.0".to_string(),
-                                            ],
-                                        };
+                        // Processa eventos por um período antes de resubscrever
+                        let cycle_start = Instant::now();
+                        while let Some(event) = stream.next().await {
+                            match event {
+                                iroh::discovery::DiscoveryEvent::Discovered(item) => {
+                                    // DiscoveryItem derefs para NodeData, tem método node_id()
+                                    let node_id = item.node_id();
+                                    let peer_info = DiscoveredPeerInfo {
+                                        node_id,
+                                        addresses: item
+                                            .direct_addresses() // via Deref<Target=NodeData>
+                                            .iter()
+                                            .map(|addr| format!("{}", addr))
+                                            .collect(),
+                                        last_seen: Instant::now(),
+                                        latency: None,
+                                        protocols: vec![
+                                            "iroh/blobs/0.92.0".to_string(),
+                                            "iroh/gossip/0.92.0".to_string(),
+                                        ],
+                                    };
 
-                                        // Atualiza cache
-                                        let mut cache = discovery_cache.write().await;
-                                        cache.peers.insert(peer_info.node_id, peer_info);
-                                        cache.last_update = Some(Instant::now());
-                                        drop(cache);
+                                    // Atualiza cache
+                                    let mut cache = discovery_cache.write().await;
+                                    cache.peers.insert(peer_info.node_id, peer_info);
+                                    cache.last_update = Some(Instant::now());
+                                    drop(cache);
 
-                                        debug!("Peer descoberto via subscribe(): {}", node_id);
-                                    }
-                                    iroh::discovery::DiscoveryEvent::Expired(node_id) => {
-                                        debug!("Peer expirado: {}", node_id);
-                                        // Opcionalmente remove do cache ou marca como inativo
-                                    }
+                                    debug!("Peer descoberto via subscribe(): {}", node_id);
                                 }
-
-                                // Após interval, resubscribe para pegar novos eventos
-                                if cycle_start.elapsed() >= interval {
-                                    debug!("Ciclo de discovery completo, resubscrevendo...");
-                                    break;
+                                iroh::discovery::DiscoveryEvent::Expired(node_id) => {
+                                    debug!("Peer expirado: {}", node_id);
+                                    // Opcionalmente remove do cache ou marca como inativo
                                 }
                             }
-                        } else {
-                            debug!("Discovery não suporta subscribe(), aguardando...");
-                            drop(endpoint_lock);
-                            tokio::time::sleep(interval * 2).await;
-                            continue;
+
+                            // Após interval, resubscribe para pegar novos eventos
+                            if cycle_start.elapsed() >= interval {
+                                debug!("Ciclo de discovery completo, resubscrevendo...");
+                                break;
+                            }
                         }
+                    } else {
+                        debug!("Discovery não suporta subscribe(), aguardando...");
+                        drop(endpoint_lock);
+                        tokio::time::sleep(interval * 2).await;
+                        continue;
                     }
+                }
 
                 drop(endpoint_lock);
                 tokio::time::sleep(interval).await;

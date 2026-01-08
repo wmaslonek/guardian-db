@@ -143,9 +143,10 @@ impl ClientConfig {
 
         // Valida caminho de armazenamento se fornecido
         if let Some(path) = &self.data_store_path
-            && path.as_os_str().is_empty() {
-                return Err("Caminho de armazenamento não pode estar vazio".to_string());
-            }
+            && path.as_os_str().is_empty()
+        {
+            return Err("Caminho de armazenamento não pode estar vazio".to_string());
+        }
 
         // Valida configurações de storage
         if self.storage.max_cache_size == 0 {

@@ -122,9 +122,10 @@ impl StoreIndex for DocumentIndex {
                         "PUT" => {
                             // Para PUT, adiciona/atualiza a chave com o valor
                             if let Some(key) = operation.key()
-                                && !operation.value().is_empty() {
-                                    index.insert(key.clone(), operation.value().to_vec());
-                                }
+                                && !operation.value().is_empty()
+                            {
+                                index.insert(key.clone(), operation.value().to_vec());
+                            }
                         }
                         "DEL" => {
                             // Para DEL, remove a chave do índice
