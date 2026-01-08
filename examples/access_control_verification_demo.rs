@@ -1,7 +1,7 @@
 use guardian_db::{
-    access_controller::{simple::SimpleAccessController, traits::AccessController},
-    error::Result,
-    ipfs_log::{
+    access_control::{acl_simple::SimpleAccessController, traits::AccessController},
+    guardian::error::Result,
+    log::{
         entry::Entry,
         identity::{Identity, Signatures},
     },
@@ -25,11 +25,9 @@ async fn main() -> Result<()> {
         .init();
 
     let _span = info_span!("access_control_demo").entered();
-    println!("=== Demonstração de Sistema de Verificação de Permissões ===");
     info!("=== Demonstração de Sistema de Verificação de Permissões ===");
 
     // ETAPA 1: Criação de identidades de teste
-    println!("ETAPA 1: Criando identidades de teste");
     info!("ETAPA 1: Criando identidades de teste");
 
     let authorized_identity = create_test_identity("authorized_user", "auth_public_key_123");
@@ -172,9 +170,9 @@ async fn main() -> Result<()> {
         authorized_heads = malformed_results.len(),
         expected = 0,
         status = if malformed_results.is_empty() {
-            "✅ CORRETO"
+            "✓ CORRETO"
         } else {
-            "❌ ERRO"
+            "✗ ERRO"
         },
         "Resultados com identidade malformada"
     );
@@ -212,7 +210,7 @@ fn create_test_identity(id: &str, pub_key: &str) -> Identity {
 
 /// Cria um head de teste com identidade opcional
 fn create_test_head(hash: &str, identity: Option<Identity>) -> Entry {
-    use guardian_db::ipfs_log::{entry::EntryOrHash, lamport_clock::LamportClock};
+    use guardian_db::log::{entry::EntryOrHash, lamport_clock::LamportClock};
 
     let clock = LamportClock::new("test_peer").set_time(1);
     let next: Vec<EntryOrHash> = Vec::new(); // Empty for test
@@ -224,7 +222,7 @@ fn create_test_head(hash: &str, identity: Option<Identity>) -> Entry {
     Entry::new(
         entry_identity,
         "test_log",
-        &format!("payload_for_{}", hash),
+        format!("payload_for_{}", hash).as_bytes(),
         &next,
         Some(clock),
     )
