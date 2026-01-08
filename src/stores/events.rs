@@ -1,7 +1,7 @@
 use crate::address::Address;
-use crate::ipfs_log::entry::Entry;
-use cid::Cid;
-use libp2p::core::PeerId;
+use crate::log::entry::Entry;
+use iroh::NodeId;
+use iroh_blobs::Hash;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -20,11 +20,11 @@ pub enum Event {
 #[derive(Clone)]
 pub struct EventReplicate {
     pub address: Arc<dyn Address + Send + Sync>,
-    pub hash: Cid,
+    pub hash: Hash,
 }
 
 impl EventReplicate {
-    pub fn new(address: Arc<dyn Address + Send + Sync>, hash: Cid) -> Self {
+    pub fn new(address: Arc<dyn Address + Send + Sync>, hash: Hash) -> Self {
         Self { address, hash }
     }
 }
@@ -50,7 +50,7 @@ pub struct EventReplicateProgress {
     pub max: i32,
     pub progress: i32,
     pub address: Arc<dyn Address + Send + Sync>,
-    pub hash: Cid,
+    pub hash: Hash,
     pub entry: Entry,
 }
 
@@ -79,7 +79,7 @@ impl PartialEq for EventReplicateProgress {
 impl EventReplicateProgress {
     pub fn new(
         addr: Arc<dyn Address + Send + Sync>,
-        h: Cid,
+        h: Hash,
         e: Entry,
         max: i32,
         progress: i32,
@@ -168,7 +168,7 @@ impl EventLoad {
 #[derive(Clone)]
 pub struct EventLoadProgress {
     pub address: Arc<dyn Address + Send + Sync>,
-    pub hash: Cid,
+    pub hash: Hash,
     pub entry: Entry,
     pub progress: i32,
     pub max: i32,
@@ -199,7 +199,7 @@ impl PartialEq for EventLoadProgress {
 impl EventLoadProgress {
     pub fn new(
         addr: Arc<dyn Address + Send + Sync>,
-        h: Cid,
+        h: Hash,
         e: Entry,
         progress: i32,
         max: i32,
@@ -284,11 +284,11 @@ impl EventWrite {
 /// Um evento enviado quando um novo peer é descoberto no canal pubsub.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EventNewPeer {
-    pub peer: PeerId,
+    pub peer: NodeId,
 }
 
 impl EventNewPeer {
-    pub fn new(p: PeerId) -> Self {
+    pub fn new(p: NodeId) -> Self {
         Self { peer: p }
     }
 }
