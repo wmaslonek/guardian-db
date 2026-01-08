@@ -1,3 +1,8 @@
+    // ╔════════════════════════════════════════════════════════════════════════════════╗
+    // ║                          ⚠ OUTDATED DOCUMENTATION                             ║
+    // ╚════════════════════════════════════════════════════════════════════════════════╝
+
+
 # Access Controller Manifest System
 
 ## Overview
@@ -214,7 +219,7 @@ Creates a manifest and stores it in IPFS, returning its CID.
 
 ```rust
 pub async fn create(
-    ipfs: Arc<IpfsClient>,
+    ipfs: Arc<IrohClient>,
     controller_type: String,
     params: &CreateAccessControllerOptions,
 ) -> Result<Cid>
@@ -239,9 +244,9 @@ pub async fn create(
 
 **Example:**
 ```rust
-use guardian_db::ipfs_core_api::IpfsClient;
+use guardian_db::ipfs_core_api::IrohClient;
 
-let ipfs = Arc::new(IpfsClient::development().await?);
+let ipfs = Arc::new(IrohClient::development().await?);
 let mut params = CreateAccessControllerOptions::new_empty();
 params.set_type("ipfs".to_string());
 params.set_name("my-ac".to_string());
@@ -258,7 +263,7 @@ Loads a manifest from IPFS using its CID.
 
 ```rust
 pub async fn resolve(
-    ipfs: Arc<IpfsClient>,
+    ipfs: Arc<IrohClient>,
     manifest_address: &str,
     params: &CreateAccessControllerOptions,
 ) -> Result<Manifest>
@@ -501,13 +506,13 @@ assert_eq!(decoded.get_type(), "simple");
 
 ```rust
 use guardian_db::{
-    ipfs_core_api::IpfsClient,
+    ipfs_core_api::IrohClient,
     access_controller::manifest::*,
 };
 use std::sync::Arc;
 
 // 1. Initialize IPFS
-let ipfs = Arc::new(IpfsClient::development().await?);
+let ipfs = Arc::new(IrohClient::development().await?);
 
 // 2. Create configuration
 let mut params = CreateAccessControllerOptions::new_empty();
@@ -797,7 +802,7 @@ fn test_cid_serialization_deserialization() {
 ```rust
 #[tokio::test]
 async fn test_manifest_lifecycle() {
-    let ipfs = Arc::new(IpfsClient::development().await.unwrap());
+    let ipfs = Arc::new(IrohClient::development().await.unwrap());
     
     // Create
     let mut params = CreateAccessControllerOptions::new_empty();
