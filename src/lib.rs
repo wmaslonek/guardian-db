@@ -1,17 +1,15 @@
-pub mod access_controller;
+pub mod access_control;
 pub mod address;
-pub mod base_guardian;
 pub mod cache;
 pub mod data_store;
 pub mod db_manifest;
-pub mod error;
 pub mod events;
 pub mod guardian;
-pub mod ipfs_core_api;
-pub mod ipfs_log;
 pub mod keystore;
+pub mod log;
 pub mod message_marshaler;
 pub mod p2p;
+pub mod reactive_synchronizer;
 pub mod stores;
 pub mod traits;
 
