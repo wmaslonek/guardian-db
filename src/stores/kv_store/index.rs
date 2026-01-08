@@ -1,6 +1,6 @@
-use crate::error::GuardianError;
-use crate::ipfs_log::{entry::Entry, log::Log};
-use crate::stores::operation::operation::Operation;
+use crate::guardian::error::GuardianError;
+use crate::log::{Log, entry::Entry};
+use crate::stores::operation::Operation;
 use crate::traits::StoreIndex;
 use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
@@ -71,9 +71,9 @@ impl StoreIndex for KvIndex {
         // Itera sobre as entradas do log em ordem reversa para processar
         // as operações mais recentes primeiro.
         for entry in oplog.values().iter().rev() {
-            // Since payload is a String, not Option<String>, we check if it's not empty
+            // Payload agora é Vec<u8>, verificamos se não está vazio
             if !entry.payload.is_empty() {
-                match serde_json::from_str::<Operation>(&entry.payload) {
+                match crate::guardian::serializer::deserialize::<Operation>(&entry.payload) {
                     Ok(op_result) => {
                         // Pula entradas sem chave.
                         let key = match op_result.key() {
