@@ -1,13 +1,12 @@
-use crate::error::{GuardianError, Result};
+use crate::guardian::error::{GuardianError, Result};
+use crate::log::identity_provider::Keystore as KeystoreInterface;
 use async_trait::async_trait;
-use libp2p_identity::Keypair;
+use iroh::SecretKey;
 use sled::Db;
 use std::sync::Arc;
 
-use crate::ipfs_log::identity_provider::Keystore as KeystoreInterface;
-
 /// Implementação de Keystore que usa sled como backend de persistência
-/// e é compatível com a interface do ipfs_log
+/// e é compatível com a interface do 'log' interno.
 #[derive(Clone, Debug)]
 pub struct SledKeystore {
     db: Db,
@@ -33,22 +32,25 @@ impl SledKeystore {
         Self::new(None)
     }
 
-    /// Armazena um Keypair libp2p com codificação protobuf
-    pub async fn put_keypair(&self, key: &str, keypair: &Keypair) -> Result<()> {
-        let encoded = keypair
-            .to_protobuf_encoding()
-            .map_err(|e| GuardianError::Other(format!("Erro ao codificar keypair: {}", e)))?;
+    /// Armazena uma SecretKey do Iroh como bytes
+    pub async fn put_keypair(&self, key: &str, secret_key: &SecretKey) -> Result<()> {
+        let encoded = secret_key.to_bytes();
         self.put(key, &encoded).await
     }
 
-    /// Recupera um Keypair libp2p decodificando de protobuf
-    pub async fn get_keypair(&self, key: &str) -> Result<Option<Keypair>> {
+    /// Recupera uma SecretKey do Iroh de bytes
+    pub async fn get_keypair(&self, key: &str) -> Result<Option<SecretKey>> {
         match self.get(key).await? {
             Some(bytes) => {
-                let keypair = Keypair::from_protobuf_encoding(&bytes).map_err(|e| {
-                    GuardianError::Other(format!("Erro ao decodificar keypair: {}", e))
+                if bytes.len() != 32 {
+                    return Err(GuardianError::Other(
+                        "Tamanho inválido de chave secreta".to_string(),
+                    ));
+                }
+                let secret_key = SecretKey::try_from(&bytes[..32]).map_err(|e| {
+                    GuardianError::Other(format!("Erro ao decodificar secret key: {}", e))
                 })?;
-                Ok(Some(keypair))
+                Ok(Some(secret_key))
             }
             None => Ok(None),
         }
@@ -151,26 +153,25 @@ mod tests {
 
     #[tokio::test]
     async fn test_keypair_storage() {
+        use rand_core::OsRng;
+
         let keystore = SledKeystore::temporary().unwrap();
         let key_name = "test_keypair";
 
-        // Generate a keypair
-        let original_keypair = Keypair::generate_ed25519();
+        // Generate a secret key
+        let original_secret = SecretKey::generate(OsRng);
 
         // Store it
         keystore
-            .put_keypair(key_name, &original_keypair)
+            .put_keypair(key_name, &original_secret)
             .await
             .unwrap();
 
         // Retrieve it
-        let retrieved_keypair = keystore.get_keypair(key_name).await.unwrap().unwrap();
+        let retrieved_secret = keystore.get_keypair(key_name).await.unwrap().unwrap();
 
-        // Compare public keys (private keys can't be compared directly)
-        assert_eq!(
-            original_keypair.public().encode_protobuf(),
-            retrieved_keypair.public().encode_protobuf()
-        );
+        // Compare public keys
+        assert_eq!(original_secret.public(), retrieved_secret.public());
     }
 
     #[tokio::test]
