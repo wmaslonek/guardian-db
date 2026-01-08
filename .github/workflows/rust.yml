@@ -25,7 +25,7 @@ jobs:
       matrix:
         rust:
           - stable
-          - 1.89.0  # Minimum supported Rust version
+          - 1.90.0
     continue-on-error: false
 
     steps:
