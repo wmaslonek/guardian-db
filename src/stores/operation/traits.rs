@@ -1,4 +1,4 @@
-use crate::ipfs_log::entry::Entry;
+use crate::log::entry::Entry;
 
 pub trait OpDoc {
     fn get_key(&self) -> &str;
@@ -16,7 +16,7 @@ pub trait Operation {
     /// Retorna o payload (dados) da operação.
     fn get_value(&self) -> &[u8];
 
-    /// Obtém a Entry do log IPFS subjacente.
+    /// Obtém a Entry do Log subjacente.
     fn get_entry(&self) -> &Entry;
 
     /// Obtém a lista de documentos.
