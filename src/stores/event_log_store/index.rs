@@ -1,5 +1,5 @@
-use crate::error::GuardianError;
-use crate::ipfs_log::{entry::Entry, log::Log};
+use crate::guardian::error::GuardianError;
+use crate::log::{Log, entry::Entry};
 use crate::traits::StoreIndex;
 use parking_lot::RwLock;
 use std::sync::Arc;
@@ -81,8 +81,8 @@ impl StoreIndex for EventIndex {
         if let Ok(index) = key.parse::<usize>() {
             let cache = self.entries_cache.read();
             if let Some(entry) = cache.get(index) {
-                // Retorna o payload da entrada como bytes
-                Ok(Some(entry.payload().as_bytes().to_vec()))
+                // Payload já é Vec<u8>, pode retornar diretamente
+                Ok(Some(entry.payload().to_vec()))
             } else {
                 Ok(None)
             }
@@ -170,16 +170,15 @@ impl StoreIndex for EventIndex {
         Some(cache[start..].to_vec())
     }
 
-    /// Busca otimizada por CID.
+    /// Busca otimizada por Hash.
     ///
     /// Atualmente usa busca linear O(n), mas estrutura preparada
-    /// para futuro índice secundário O(1) por CID.
-    fn get_entry_by_cid(&self, cid: &cid::Cid) -> Option<Entry> {
+    /// para futuro índice secundário O(1) por Hash.
+    fn get_entry_by_hash(&self, hash: &iroh_blobs::Hash) -> Option<Entry> {
         let cache = self.entries_cache.read();
-        let cid_str = cid.to_string();
 
-        // Busca linear por enquanto - futuro: HashMap<CID, Entry>
-        cache.iter().find(|entry| entry.hash() == cid_str).cloned()
+        // Busca linear por enquanto - futuro: HashMap<Hash, Entry>
+        cache.iter().find(|entry| entry.hash() == hash).cloned()
     }
 
     /// EventIndex suporta queries otimizadas com Entry completas.
@@ -196,7 +195,7 @@ pub fn new_event_index(_params: &[u8]) -> Box<dyn StoreIndex<Error = GuardianErr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ipfs_log::{
+    use crate::log::{
         entry::Entry,
         identity::{Identity, Signatures},
     };
@@ -217,10 +216,10 @@ mod tests {
         // Create a simple test entry using the correct signature
         Entry::new(
             identity,
-            "test_log", // log_id
-            payload,    // data
-            &[],        // next (EntryOrHash slice)
-            None,       // clock
+            "test_log",         // log_id
+            payload.as_bytes(), // data
+            &[],                // next (EntryOrHash slice)
+            None,               // clock
         )
     }
 
@@ -263,12 +262,12 @@ mod tests {
 
         let entry_at_1 = index.get_entry_at(1);
         assert!(entry_at_1.is_some());
-        assert_eq!(entry_at_1.unwrap().payload(), "test2");
+        assert_eq!(entry_at_1.unwrap().payload(), b"test2");
 
         let last_2 = index.get_last_entries(2);
         assert_eq!(last_2.len(), 2);
-        assert_eq!(last_2[0].payload(), "test2");
-        assert_eq!(last_2[1].payload(), "test3");
+        assert_eq!(last_2[0].payload(), b"test2");
+        assert_eq!(last_2[1].payload(), b"test3");
     }
 
     #[test]
