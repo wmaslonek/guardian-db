@@ -1,7 +1,7 @@
 use crate::address::Address;
 use crate::cache::{Cache, Options};
 use crate::data_store::{Datastore, Key, Order, Query, ResultItem, Results};
-use crate::error::{GuardianError, Result};
+use crate::guardian::error::{GuardianError, Result};
 use sled::{Config, Db, IVec};
 use std::{
     collections::HashMap,
@@ -408,29 +408,26 @@ mod tests {
     // Mock Address implementation for testing
     #[derive(Debug)]
     struct MockAddress {
-        root: cid::Cid,
+        root: iroh_blobs::Hash,
         path: String,
     }
 
     impl MockAddress {
         fn new(root_str: &str, path: &str) -> Self {
-            // Create a CID from the root string for more meaningful testing
-            // Para teste, vamos usar um CID que represente o root_str
-            let cid = if root_str == "root" {
-                // Usa um CID específico para "root" que será reconhecível
-                cid::Cid::default()
-            } else {
-                cid::Cid::default()
-            };
+            // Create a Hash from the root string for more meaningful testing
+            // Para teste, vamos usar um Hash baseado no root_str
+            use blake3;
+            let hash_bytes: [u8; 32] = blake3::hash(root_str.as_bytes()).into();
+            let hash = iroh_blobs::Hash::from(hash_bytes);
             Self {
-                root: cid,
+                root: hash,
                 path: path.to_string(),
             }
         }
     }
 
     impl Address for MockAddress {
-        fn get_root(&self) -> cid::Cid {
+        fn get_root(&self) -> iroh_blobs::Hash {
             self.root
         }
 
@@ -445,7 +442,7 @@ mod tests {
 
     impl fmt::Display for MockAddress {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(f, "{}/{}", self.root, self.path)
+            write!(f, "{}/{}", hex::encode(self.root.as_bytes()), self.path)
         }
     }
 
@@ -511,13 +508,12 @@ mod tests {
 
         // Debug: vamos ver o que está sendo gerado
         println!("Generated key: {}", key);
-        println!("Root CID: {}", mock_address.get_root());
+        println!("Root Hash: {}", mock_address.get_root());
         println!("Path: {}", mock_address.get_path());
 
         // The exact format depends on the platform path separator
         assert!(key.contains("cache"));
         assert!(key.contains("path"));
-        // O problema é que o CID default não contém "root", então vamos ajustar o teste
         assert!(key.contains(&mock_address.get_root().to_string()));
     }
 
