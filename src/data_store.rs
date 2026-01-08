@@ -1,4 +1,4 @@
-use crate::error::Result as DbResult;
+use crate::guardian::error::Result as DbResult;
 use std::fmt::{Display, Formatter, Result as FmtResult};
 
 /// Trait principal para operações de datastore
