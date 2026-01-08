@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-01-08
+
 ### Added
 - **Access Control Integration Test Suite**: Comprehensive test suite with 15 integration tests in `tests/integration_access_control.rs`
   - All 15 tests passing with complete coverage of access control system
