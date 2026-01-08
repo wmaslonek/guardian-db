@@ -1,20 +1,17 @@
-use crate::access_controller::{
+use crate::access_control::{
     manifest::ManifestParams, traits::AccessController, traits::Option as AccessControllerOption,
 };
 use crate::address::Address;
 use crate::data_store::Datastore;
-use crate::error::GuardianError;
 use crate::events::{self, EmitterInterface};
-use crate::ipfs_core_api::client::IpfsClient;
-use crate::ipfs_log::{entry::Entry, identity::Identity, log::Log};
-use crate::p2p::events::EventBus;
-use crate::stores::{
-    operation::operation::Operation,
-    replicator::{replication_info::ReplicationInfo, replicator::Replicator},
-};
-use cid::Cid;
+use crate::guardian::error::GuardianError;
+use crate::log::{Log, entry::Entry, identity::Identity};
+use crate::p2p::EventBus;
+use crate::p2p::network::client::IrohClient;
+use crate::stores::{operation::Operation, replicator::replication_info::ReplicationInfo};
 use futures::stream::Stream;
-use libp2p::core::PeerId;
+use iroh::NodeId;
+use iroh_blobs::Hash;
 use opentelemetry::global::{BoxedSpan, BoxedTracer};
 use opentelemetry::trace::{Tracer, noop::NoopTracer};
 use parking_lot::RwLock;
@@ -38,8 +35,8 @@ type CleanupCallback = Box<
     dyn FnOnce() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> + Send + Sync,
 >;
 
-// Re-export from the canonical location to avoid duplication
-pub use crate::stores::replicator::traits::SortFn;
+// Definição local de SortFn (movida do replicator)
+pub type SortFn = fn(&Entry, &Entry) -> std::cmp::Ordering;
 
 // Type aliases para melhorar legibilidade de assinaturas complexas
 /// Alias para documentos dinâmicos thread-safe
@@ -293,7 +290,7 @@ pub struct CreateDBOptions {
     pub access_controller_address: Option<String>,
     pub access_controller: Option<Box<dyn ManifestParams>>,
     pub replicate: Option<bool>,
-    pub keystore: Option<Arc<dyn crate::ipfs_log::identity_provider::Keystore>>,
+    pub keystore: Option<Arc<dyn crate::log::identity_provider::Keystore>>,
     pub cache: Option<Arc<dyn Datastore>>,
     pub identity: Option<Identity>,
     pub sort_fn: Option<SortFn>,
@@ -332,7 +329,7 @@ impl Clone for CreateDBOptions {
 // Usando Arc<dyn Fn> em vez de Box<dyn Fn> para permitir clonagem
 pub type StoreConstructor = Arc<
     dyn Fn(
-            Arc<IpfsClient>,
+            Arc<IrohClient>,
             Arc<Identity>,
             Box<dyn Address>,
             NewStoreOptions,
@@ -364,7 +361,7 @@ pub struct CreateDocumentDBOptions {
 pub struct DetermineAddressOptions {
     pub only_hash: Option<bool>,
     pub replicate: Option<bool>,
-    pub access_controller: crate::access_controller::manifest::CreateAccessControllerOptions,
+    pub access_controller: crate::access_control::manifest::CreateAccessControllerOptions,
 }
 
 #[async_trait::async_trait]
@@ -372,8 +369,8 @@ pub trait BaseGuardianDB: Send + Sync {
     /// Define um tipo de erro associado para flexibilidade na implementação.
     type Error: Error + Send + Sync + 'static;
 
-    /// Retorna a instância da API do IPFS.
-    fn ipfs(&self) -> Arc<IpfsClient>;
+    /// Retorna o Client do GuardianDB.
+    fn client(&self) -> Arc<IrohClient>;
 
     /// Retorna a identidade utilizada pelo GuardianDB.
     fn identity(&self) -> Arc<Identity>;
@@ -517,17 +514,17 @@ impl<
 
 #[derive(Default, Debug, Clone)]
 pub struct StreamOptions {
-    /// "Greater Than": Retorna entradas que são posteriores à CID fornecida.
-    pub gt: Option<Cid>,
+    /// "Greater Than": Retorna entradas que são posteriores ao Hash fornecido.
+    pub gt: Option<Hash>,
 
-    /// "Greater Than or Equal": Retorna entradas que são a CID fornecida ou posteriores.
-    pub gte: Option<Cid>,
+    /// "Greater Than or Equal": Retorna entradas que são o Hash fornecido ou posteriores.
+    pub gte: Option<Hash>,
 
-    /// "Less Than": Retorna entradas que são anteriores à CID fornecida.
-    pub lt: Option<Cid>,
+    /// "Less Than": Retorna entradas que são anteriores ao Hash fornecido.
+    pub lt: Option<Hash>,
 
-    /// "Less Than or Equal": Retorna entradas que são a CID fornecida ou anteriores.
-    pub lte: Option<Cid>,
+    /// "Less Than or Equal": Retorna entradas que são o Hash fornecido ou anteriores.
+    pub lte: Option<Hash>,
 
     /// Limita o número de entradas a serem retornadas.
     pub amount: Option<i32>,
@@ -562,33 +559,30 @@ pub trait Store: Send + Sync {
     /// Retorna o status atual da replicação.
     fn replication_status(&self) -> ReplicationInfo;
 
-    /// Retorna o replicador responsável pela sincronização de dados.
-    fn replicator(&self) -> Option<Arc<Replicator>>;
-
     /// Retorna o cache da store.
     fn cache(&self) -> Arc<dyn Datastore>;
 
     /// Remove todo o conteúdo local da store.
-    async fn drop(&mut self) -> Result<(), Self::Error>;
+    async fn drop(&self) -> Result<(), Self::Error>;
 
     /// Carrega as `amount` entradas mais recentes da rede.
-    async fn load(&mut self, amount: usize) -> Result<(), Self::Error>;
+    async fn load(&self, amount: usize) -> Result<(), Self::Error>;
 
     /// Sincroniza a store com uma lista de `heads` (entradas mais recentes) de outro par.
-    async fn sync(&mut self, heads: Vec<Entry>) -> Result<(), Self::Error>;
+    async fn sync(&self, heads: Vec<Entry>) -> Result<(), Self::Error>;
 
     /// Carrega mais entradas a partir de um conjunto de CIDs conhecidos.
-    async fn load_more_from(&mut self, amount: u64, entries: Vec<Entry>);
+    async fn load_more_from(&self, amount: u64, entries: Vec<Entry>);
 
     /// Carrega o conteúdo da store a partir de um snapshot.
-    async fn load_from_snapshot(&mut self) -> Result<(), Self::Error>;
+    async fn load_from_snapshot(&self) -> Result<(), Self::Error>;
 
     /// Retorna o log de operações (OpLog) subjacente.
     /// Modificado para retornar Arc para evitar problemas de lifetime
     fn op_log(&self) -> Arc<RwLock<Log>>;
 
-    /// Retorna a instância da API do IPFS.
-    fn ipfs(&self) -> Arc<IpfsClient>;
+    /// Retorna o Client do GuardianDB.
+    fn client(&self) -> Arc<IrohClient>;
 
     /// Retorna o nome do banco de dados.
     fn db_name(&self) -> &str;
@@ -601,7 +595,7 @@ pub trait Store: Send + Sync {
 
     /// Adiciona uma nova operação à store.
     async fn add_operation(
-        &mut self,
+        &self,
         op: Operation,
         on_progress_callback: Option<ProgressCallback>,
     ) -> Result<Entry, Self::Error>;
@@ -636,17 +630,17 @@ pub trait EventLogStore: Store {
     ///
     /// # Retorna
     /// A operação ADD criada, contendo metadados do evento adicionado
-    async fn add(&mut self, data: Vec<u8>) -> Result<Operation, Self::Error>;
+    async fn add(&self, data: Vec<u8>) -> Result<Operation, Self::Error>;
 
-    /// Obtém uma entrada específica do log pelo seu CID.
+    /// Obtém uma entrada específica do log pelo seu Hash.
     /// Permite acesso direto a qualquer entrada histórica.
     ///
     /// # Argumentos
-    /// * `cid` - O Content Identifier da entrada desejada
+    /// * `hash` - O Hash da entrada desejada
     ///
     /// # Retorna
-    /// A operação correspondente ao CID, ou erro se não encontrada
-    async fn get(&self, cid: Cid) -> Result<Operation, Self::Error>;
+    /// A operação correspondente ao Hash, ou erro se não encontrada
+    async fn get(&self, hash: &Hash) -> Result<Operation, Self::Error>;
 
     /// Retorna um stream de operações, com opções de filtro.
     /// Em Rust, em vez de passar um canal, é idiomático retornar um `Stream`.
@@ -692,7 +686,7 @@ pub trait KeyValueStore: Store {
     ///
     /// # Retorna
     /// A operação PUT criada, ou erro se a operação falhar
-    async fn put(&mut self, key: &str, value: Vec<u8>) -> Result<Operation, Self::Error>;
+    async fn put(&self, key: &str, value: Vec<u8>) -> Result<Operation, Self::Error>;
 
     /// Remove uma chave e seu valor associado.
     /// Cria uma nova operação DEL no log distribuído que será replicada.
@@ -702,7 +696,7 @@ pub trait KeyValueStore: Store {
     ///
     /// # Retorna
     /// A operação DEL criada, ou erro se a chave não existir ou operação falhar
-    async fn delete(&mut self, key: &str) -> Result<Operation, Self::Error>;
+    async fn delete(&self, key: &str) -> Result<Operation, Self::Error>;
 
     /// Obtém o valor associado a uma chave.
     /// Consulta o índice local para o estado mais recente.
@@ -737,19 +731,19 @@ pub struct DocumentStoreQueryOptions {
 pub trait DocumentStore: Store {
     /// Armazena um único documento.
     /// O documento deve implementar as traits Send + Sync para thread safety.
-    async fn put(&mut self, document: Document) -> Result<Operation, Self::Error>;
+    async fn put(&self, document: Document) -> Result<Operation, Self::Error>;
 
     /// Deleta um documento pela sua chave.
     /// Retorna a operação de deleção que foi aplicada ao log.
-    async fn delete(&mut self, key: &str) -> Result<Operation, Self::Error>;
+    async fn delete(&self, key: &str) -> Result<Operation, Self::Error>;
 
     /// Adiciona múltiplos documentos em operações separadas e retorna a última.
     /// Cada documento é processado individualmente, criando uma entrada separada no log.
-    async fn put_batch(&mut self, values: Vec<Document>) -> Result<Operation, Self::Error>;
+    async fn put_batch(&self, values: Vec<Document>) -> Result<Operation, Self::Error>;
 
     /// Adiciona múltiplos documentos em uma única operação e a retorna.
     /// Todos os documentos são incluídos em uma única entrada do log.
-    async fn put_all(&mut self, values: Vec<Document>) -> Result<Operation, Self::Error>;
+    async fn put_all(&self, values: Vec<Document>) -> Result<Operation, Self::Error>;
 
     /// Recupera documentos por uma chave, com opções de busca.
     /// Suporta busca case-insensitive e correspondências parciais baseadas nas opções.
@@ -844,19 +838,19 @@ pub trait StoreIndex: Send + Sync {
         None
     }
 
-    /// Retorna uma Entry específica por CID (se suportado pelo índice).
+    /// Retorna uma Entry específica por Hash (se suportado pelo índice).
     ///
-    /// Permite busca O(1) ou O(log n) por CID ao invés de busca linear.
+    /// Permite busca O(1) ou O(log n) por Hash ao invés de busca linear.
     ///
     /// # Argumentos
     ///
-    /// * `cid` - Content Identifier da entrada desejada
+    /// * `hash` - Hash da entrada desejada
     ///
     /// # Retorna
     ///
     /// `Some(Entry)` se encontrada e suportada
     /// `None` se não encontrada ou não suportada
-    fn get_entry_by_cid(&self, _cid: &Cid) -> Option<Entry> {
+    fn get_entry_by_hash(&self, _hash: &Hash) -> Option<Entry> {
         // ***Implementação padrão retorna None
         None
     }
@@ -892,8 +886,8 @@ pub struct NewStoreOptions {
     pub sort_fn: Option<SortFn>,
 
     // === NETWORKING & P2P ===
-    /// Identificador único do peer na rede P2P
-    pub peer_id: PeerId,
+    /// Identificador único do peer na rede P2P (usando NodeId do Iroh)
+    pub node_id: NodeId,
 
     /// Interface PubSub para comunicação distribuída
     pub pubsub: Option<Arc<dyn PubSubInterface<Error = GuardianError>>>,
@@ -943,7 +937,7 @@ pub struct NewStoreOptions {
 
 impl Default for NewStoreOptions {
     fn default() -> Self {
-        let peer_id = PeerId::random();
+        let node_id = NodeId::from_bytes(&[0u8; 32]).unwrap();
 
         Self {
             event_bus: None,
@@ -951,7 +945,7 @@ impl Default for NewStoreOptions {
             access_controller: None,
             directory: String::new(),
             sort_fn: None,
-            peer_id,
+            node_id,
             pubsub: None,
             direct_channel: None,
             message_marshaler: None,
@@ -981,10 +975,10 @@ pub trait DirectChannel: Send + Sync + std::any::Any {
     type Error: Error + Send + Sync + 'static;
 
     /// Espera até que a conexão com o outro par seja estabelecida.
-    async fn connect(&mut self, peer: PeerId) -> Result<(), Self::Error>;
+    async fn connect(&mut self, peer: NodeId) -> Result<(), Self::Error>;
 
     /// Envia dados para o outro par.
-    async fn send(&mut self, peer: PeerId, data: Vec<u8>) -> Result<(), Self::Error>;
+    async fn send(&mut self, peer: NodeId, data: Vec<u8>) -> Result<(), Self::Error>;
 
     /// Fecha a conexão.
     async fn close(&mut self) -> Result<(), Self::Error>;
@@ -1002,7 +996,7 @@ pub trait DirectChannel: Send + Sync + std::any::Any {
 #[derive(Debug, Clone)]
 pub struct EventPubSubPayload {
     pub payload: Vec<u8>,
-    pub peer: PeerId,
+    pub peer: NodeId,
 }
 
 /// Uma trait usada para emitir eventos recebidos de um `DirectChannel`.
@@ -1044,9 +1038,9 @@ pub type IndexConstructor =
 /// (`Entry`) são escritas na store. É um tipo de função assíncrona.
 pub type OnWritePrototype = Box<
     dyn Fn(
-            Cid,
+            Hash,
             Entry,
-            Vec<Cid>,
+            Vec<Hash>,
         )
             -> Pin<Box<dyn Future<Output = Result<(), Box<dyn Error + Send + Sync>>> + Send>>
         + Send
@@ -1063,7 +1057,7 @@ pub struct EventPubSubMessage {
 pub type AccessControllerConstructor = Arc<
     dyn Fn(
             Arc<dyn BaseGuardianDB<Error = GuardianError>>,
-            &crate::access_controller::manifest::CreateAccessControllerOptions,
+            &crate::access_control::manifest::CreateAccessControllerOptions,
             Option<Vec<AccessControllerOption>>,
         )
             -> Pin<Box<dyn Future<Output = Result<Arc<dyn AccessController>, GuardianError>> + Send>>
@@ -1079,8 +1073,8 @@ pub trait PubSubTopic: Send + Sync {
     /// Publica uma nova mensagem no tópico.
     async fn publish(&self, message: Vec<u8>) -> Result<(), Self::Error>;
 
-    /// Lista os pares (peers) conectados a este tópico.
-    async fn peers(&self) -> Result<Vec<PeerId>, Self::Error>;
+    /// Lista os pares (peers) conectados a este tópico usando NodeId do Iroh.
+    async fn peers(&self) -> Result<Vec<iroh::NodeId>, Self::Error>;
 
     /// Observa os pares que entram e saem do tópico.
     async fn watch_peers(
@@ -1103,7 +1097,7 @@ pub trait PubSubInterface: Send + Sync + std::any::Any {
 
     /// Inscreve-se em um tópico.
     async fn topic_subscribe(
-        &mut self,
+        &self,
         topic: &str,
     ) -> Result<Arc<dyn PubSubTopic<Error = GuardianError>>, Self::Error>;
 
@@ -1127,6 +1121,6 @@ pub struct PubSubSubscriptionOptions {
 /// em um tópico do canal Pub/Sub.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EventPubSub {
-    Join { topic: String, peer: PeerId },
-    Leave { topic: String, peer: PeerId },
+    Join { topic: String, peer: NodeId },
+    Leave { topic: String, peer: NodeId },
 }
