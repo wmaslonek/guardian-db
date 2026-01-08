@@ -3,10 +3,10 @@
 //! Este exemplo mostra como a função `handle_event_exchange_heads` inclui
 //! verificação criptográfica completa das identidades dos heads recebidos.
 
-use guardian_db::error::Result;
-use guardian_db::ipfs_log::entry::Entry;
-use guardian_db::ipfs_log::identity::{DefaultIdentificator, Identificator, Identity};
-use guardian_db::ipfs_log::lamport_clock::LamportClock;
+use guardian_db::guardian::error::Result;
+use guardian_db::log::entry::Entry;
+use guardian_db::log::identity::{DefaultIdentificator, Identificator, Identity};
+use guardian_db::log::lamport_clock::LamportClock;
 use guardian_db::traits::MessageExchangeHeads;
 use std::sync::Arc;
 
@@ -83,11 +83,11 @@ async fn main() -> Result<()> {
     // 5. Capacidades implementadas
     println!("\n5. Capacidades de Verificação Implementadas:");
     println!("✓ Validação de estrutura da identidade");
-    println!("✓ Decodificação de chaves públicas secp256k1");
-    println!("✓ Verificação de assinaturas ECDSA");
+    println!("✓ Decodificação de chaves públicas Ed25519");
+    println!("✓ Verificação de assinaturas Ed25519");
     println!("✓ Validação de assinatura de ID");
     println!("✓ Validação de assinatura de chave pública");
-    println!("✓ Compatibilidade com libp2p");
+    println!("✓ Compatibilidade com Iroh (Blake3 + Ed25519)");
     println!("✓ Integração com sistema de logging");
 
     println!("\nVerificação criptográfica completa!");
@@ -102,44 +102,63 @@ fn create_test_entries_with_identities(identities: Vec<Identity>) -> Vec<Entry> 
     identities
         .into_iter()
         .enumerate()
-        .map(|(i, identity)| Entry {
-            hash: format!("hash_entry_{}", i),
-            id: format!("log_id_{}", i),
-            payload: format!("test_payload_{}", i),
-            next: vec![],
-            v: 1,
-            clock: LamportClock::new(identity.id()),
-            identity: Some(Arc::new(identity)),
+        .map(|(i, identity)| {
+            // Cria um hash fake mas válido usando o index
+            let mut hash_bytes = [0u8; 32];
+            hash_bytes[0] = i as u8;
+            let hash = iroh_blobs::Hash::from(hash_bytes);
+
+            Entry {
+                hash,
+                id: format!("log_id_{}", i),
+                payload: format!("test_payload_{}", i).into_bytes(),
+                next: vec![],
+                v: 1,
+                clock: LamportClock::new(identity.id()),
+                identity: Some(Arc::new(identity)),
+            }
         })
         .collect()
 }
 
-/// Demonstra a verificação de uma identidade (versão simplificada)
+/// Demonstra a verificação de uma identidade (versão simplificada usando Ed25519)
 fn verify_identity_demo(identity: &Identity) -> Result<()> {
+    use ed25519_dalek::VerifyingKey;
     use hex;
-    use secp256k1;
 
     // Validação básica
     if identity.id().is_empty() || identity.pub_key().is_empty() {
-        return Err(guardian_db::error::GuardianError::Store(
+        return Err(guardian_db::guardian::error::GuardianError::Store(
             "Identity missing required fields".to_string(),
         ));
     }
 
-    // Validação da chave pública
+    // Validação da chave pública Ed25519
     let pub_key_bytes = hex::decode(identity.pub_key()).map_err(|e| {
-        guardian_db::error::GuardianError::Store(format!("Invalid hex public key: {}", e))
+        guardian_db::guardian::error::GuardianError::Store(format!("Invalid hex public key: {}", e))
     })?;
 
-    let _secp = secp256k1::Secp256k1::new();
-    let _public_key = secp256k1::PublicKey::from_slice(&pub_key_bytes).map_err(|e| {
-        guardian_db::error::GuardianError::Store(format!("Invalid secp256k1 public key: {}", e))
+    if pub_key_bytes.len() != 32 {
+        return Err(guardian_db::guardian::error::GuardianError::Store(format!(
+            "Invalid Ed25519 public key length: expected 32 bytes, got {}",
+            pub_key_bytes.len()
+        )));
+    }
+
+    let mut pk_array = [0u8; 32];
+    pk_array.copy_from_slice(&pub_key_bytes);
+
+    let _public_key = VerifyingKey::from_bytes(&pk_array).map_err(|e| {
+        guardian_db::guardian::error::GuardianError::Store(format!(
+            "Invalid Ed25519 public key: {}",
+            e
+        ))
     })?;
 
     // Verificação das assinaturas
     let signatures = identity.signatures();
     if signatures.id().is_empty() || signatures.pub_key().is_empty() {
-        return Err(guardian_db::error::GuardianError::Store(
+        return Err(guardian_db::guardian::error::GuardianError::Store(
             "Identity missing signatures".to_string(),
         ));
     }
