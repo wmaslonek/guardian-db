@@ -3,14 +3,11 @@
 // Mostra como as métricas orientam decisões de otimização
 
 use guardian_db::{
-    error::Result,
-    ipfs_core_api::{
-        backends::{IpfsBackend, IrohBackend},
-        config::ClientConfig,
-    },
+    guardian::error::Result,
+    p2p::network::{config::ClientConfig, core::IrohBackend},
 };
 use std::{sync::Arc, time::Duration};
-use tempdir::TempDir;
+use tempfile::TempDir;
 use tokio::time::sleep;
 use tracing::info;
 
@@ -23,17 +20,16 @@ async fn main() -> Result<()> {
     info!("Demonstração: Métricas Avançadas Orientando Otimizações");
 
     // === SETUP ===
-    let temp_dir = TempDir::new("metrics_demo_data")
-        .map_err(|e| guardian_db::error::GuardianError::Other(e.to_string()))?;
+    let temp_dir = TempDir::new()
+        .map_err(|e| guardian_db::guardian::error::GuardianError::Other(e.to_string()))?;
 
-    let config = ClientConfig {
+    let client_config = ClientConfig {
         data_store_path: Some(temp_dir.path().to_path_buf()),
         enable_pubsub: true,
-        enable_swarm: true,
         ..Default::default()
     };
 
-    let backend = Arc::new(IrohBackend::new(&config).await?);
+    let backend = Arc::new(IrohBackend::new(&client_config).await?);
     sleep(Duration::from_secs(2)).await;
 
     // === CENÁRIO 1: BASELINE - SISTEMA NOVO ===
@@ -101,7 +97,7 @@ async fn main() -> Result<()> {
 
     tokio::fs::write("metrics_export.json", export_data)
         .await
-        .map_err(|e| guardian_db::error::GuardianError::Other(e.to_string()))?;
+        .map_err(|e| guardian_db::guardian::error::GuardianError::Other(e.to_string()))?;
 
     info!("Métricas exportadas para metrics_export.json");
 
@@ -112,7 +108,7 @@ async fn main() -> Result<()> {
 
 /// Simula uma carga de trabalho típica para gerar métricas realistas
 async fn simulate_typical_workload(backend: &Arc<IrohBackend>) -> Result<()> {
-    info!("Simulando operações IPFS variadas...");
+    info!("Simulando operações Iroh variadas...");
 
     // Diferentes tamanhos de dados
     let datasets = vec![
@@ -131,7 +127,7 @@ async fn simulate_typical_workload(backend: &Arc<IrohBackend>) -> Result<()> {
         let mut retrieved = Vec::new();
         tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut retrieved)
             .await
-            .map_err(|e| guardian_db::error::GuardianError::Other(e.to_string()))?;
+            .map_err(|e| guardian_db::guardian::error::GuardianError::Other(e.to_string()))?;
 
         info!("Processado dataset {}: {} bytes", name, data_len);
 
@@ -170,7 +166,7 @@ async fn analyze_performance(backend: &Arc<IrohBackend>) -> Result<String> {
     // Análise de conectividade
     if peers.len() < 3 {
         recommendations.push(format!(
-            "⚠️ POUCOS PEERS: {}\n   > Implementar discovery protocol customizado\n   > Adicionar bootstrap nodes",
+            "⚠ POUCOS PEERS: {}\n   > Implementar discovery protocol customizado\n   > Adicionar bootstrap nodes",
             peers.len()
         ));
     }
@@ -181,7 +177,7 @@ async fn analyze_performance(backend: &Arc<IrohBackend>) -> Result<String> {
             .push("✓ SISTEMA SAUDÁVEL\n   > Continuar monitoramento preventivo".to_string());
     } else {
         recommendations.push(format!(
-            "⚠️ SISTEMA COM PROBLEMAS: {}\n   > Investigar componentes com falha\n   > Verificar conectividade",
+            "⚠ SISTEMA COM PROBLEMAS: {}\n   > Investigar componentes com falha\n   > Verificar conectividade",
             health.message
         ));
     }
@@ -190,14 +186,14 @@ async fn analyze_performance(backend: &Arc<IrohBackend>) -> Result<String> {
     if stats.repo_size > 1_000_000_000 {
         // > 1GB
         recommendations.push(format!(
-            "⚠️ REPOSITÓRIO GRANDE: {} bytes\n   > Considerar garbage collection\n   > Implementar políticas de retenção", 
+            "⚠ REPOSITÓRIO GRANDE: {} bytes\n   > Considerar garbage collection\n   > Implementar políticas de retenção", 
             stats.repo_size
         ));
     }
 
     if stats.num_objects > 10_000 {
         recommendations.push(format!(
-            "⚠️ MUITOS OBJETOS: {}\n   > Otimizar indexação\n   > Considerar compactação",
+            "⚠ MUITOS OBJETOS: {}\n   > Otimizar indexação\n   > Considerar compactação",
             stats.num_objects
         ));
     }
@@ -231,16 +227,15 @@ mod metrics_tests {
 
     #[tokio::test]
     async fn test_metrics_collection() {
-        let temp_dir = TempDir::new("test_metrics_data").unwrap();
+        let temp_dir = TempDir::new().unwrap();
 
-        let config = ClientConfig {
+        let client_config = ClientConfig {
             data_store_path: Some(temp_dir.path().to_path_buf()),
             enable_pubsub: true,
-            enable_swarm: true,
             ..Default::default()
         };
 
-        let backend = Arc::new(IrohBackend::new(&config).await.unwrap());
+        let backend = Arc::new(IrohBackend::new(&client_config).await.unwrap());
 
         // Executar carga de trabalho
         simulate_typical_workload(&backend).await.unwrap();
