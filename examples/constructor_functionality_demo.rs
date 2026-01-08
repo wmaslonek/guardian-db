@@ -5,10 +5,10 @@
 /// 2. Recuperar construtores registrados
 /// 3. Demonstrar a clonagem com Arc<dyn Fn>
 use guardian_db::{
-    access_controller::{manifest::ManifestParams, simple::SimpleAccessController},
-    base_guardian::GuardianDB,
-    error::Result,
-    ipfs_core_api::config::ClientConfig,
+    access_control::{acl_simple::SimpleAccessController, manifest::ManifestParams},
+    guardian::core::GuardianDB,
+    guardian::error::Result,
+    p2p::network::config::ClientConfig,
     traits::AccessControllerConstructor,
 };
 use std::sync::Arc;
@@ -20,7 +20,7 @@ async fn demonstrate_constructor_functionality(guardian_db: &GuardianDB) -> Resu
     info!("=== Demonstração de Funcionalidade dos Construtores ===");
 
     // 1. Verificar tipos disponíveis antes do registro
-    let initial_types = guardian_db.access_controller_types_names();
+    let initial_types = guardian_db.access_control_types_names();
     info!(
         types = ?initial_types,
         "1. Tipos iniciais de AccessController"
@@ -34,7 +34,7 @@ async fn demonstrate_constructor_functionality(guardian_db: &GuardianDB) -> Resu
 
     // Registrar o construtor (isso testará toda a cadeia de determinação de tipo)
     match guardian_db
-        .register_access_controller_type(simple_constructor)
+        .register_access_control_type(simple_constructor)
         .await
     {
         Ok(()) => {
@@ -46,7 +46,7 @@ async fn demonstrate_constructor_functionality(guardian_db: &GuardianDB) -> Resu
     }
 
     // 3. Verificar se o tipo foi registrado corretamente
-    let updated_types = guardian_db.access_controller_types_names();
+    let updated_types = guardian_db.access_control_types_names();
     info!(
         count = updated_types.len(),
         types = ?updated_types,
@@ -59,7 +59,7 @@ async fn demonstrate_constructor_functionality(guardian_db: &GuardianDB) -> Resu
     for controller_type in &updated_types {
         info!(controller_type = %controller_type, "Testando tipo");
 
-        match guardian_db.get_access_controller_type(controller_type) {
+        match guardian_db.get_access_control_type(controller_type) {
             Some(_constructor) => {
                 info!(controller_type = %controller_type, "Construtor recuperado com sucesso");
 
@@ -67,7 +67,6 @@ async fn demonstrate_constructor_functionality(guardian_db: &GuardianDB) -> Resu
                 info!("Testando execução do construtor recuperado");
 
                 // Para evitar problemas com mock, vamos apenas verificar que o construtor existe
-                // Em um ambiente real, poderíamos executar o construtor
                 info!(controller_type = %controller_type, "Construtor recuperado e disponível para uso");
             }
             None => {
@@ -129,7 +128,7 @@ fn _example_how_to_create_constructor() {
             let controller = SimpleAccessController::new(initial_keys);
             Ok(Arc::new(controller)
                 as Arc<
-                    dyn guardian_db::access_controller::traits::AccessController,
+                    dyn guardian_db::access_control::traits::AccessController,
                 >)
         })
     });
@@ -155,7 +154,7 @@ fn create_simple_access_controller_constructor() -> AccessControllerConstructor 
             let controller = SimpleAccessController::new(initial_keys);
             Ok(Arc::new(controller)
                 as Arc<
-                    dyn guardian_db::access_controller::traits::AccessController,
+                    dyn guardian_db::access_control::traits::AccessController,
                 >)
         })
     })
