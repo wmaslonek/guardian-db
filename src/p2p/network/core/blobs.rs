@@ -30,6 +30,7 @@ impl BlobStore {
     /// use std::sync::Arc;
     /// use tokio::sync::RwLock;
     /// use iroh_blobs::store::fs::FsStore;
+    /// use guardian_db::p2p::network::core::BlobStore;
     ///
     /// # async fn example(fs_store: FsStore) {
     /// let store = Arc::new(RwLock::new(fs_store));
