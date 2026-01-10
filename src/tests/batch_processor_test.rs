@@ -1354,10 +1354,7 @@ async fn test_auto_processor_with_high_load() {
             )
             .await;
 
-            match result {
-                Ok(Ok(_)) => true,
-                _ => false,
-            }
+            matches!(result, Ok(Ok(_)))
         });
         handles.push(handle_task);
     }
