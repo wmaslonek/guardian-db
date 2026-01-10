@@ -161,11 +161,11 @@ async fn create_test_guardian_db() -> Result<Arc<GuardianDB>> {
 
     let iroh_client = crate::p2p::network::client::IrohClient::new(config).await?;
 
-    let mut options = NewGuardianDBOptions::default();
-    // Configurar o backend Iroh a partir do cliente
-    options.backend = Some(iroh_client.backend().clone());
-    // Configurar diretório único para este teste
-    options.directory = Some(isolated_path);
+    let options = NewGuardianDBOptions {
+        backend: Some(iroh_client.backend().clone()),
+        directory: Some(isolated_path),
+        ..Default::default()
+    };
 
     let guardian_db = GuardianDB::new(iroh_client, Some(options)).await?;
 
