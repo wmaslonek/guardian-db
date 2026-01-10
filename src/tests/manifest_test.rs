@@ -579,8 +579,7 @@ async fn test_concurrent_access_modifications() {
         handle.await.unwrap();
     }
 
-    // Test passes if no panics occurred
-    assert!(true);
+    // Test passes if no panics occurred (implicitly verified by reaching here)
 }
 
 // ============= SERIALIZATION SIZE COMPARISON =============
