@@ -75,12 +75,14 @@ async fn create_test_store() -> Result<(GuardianDBKeyValue, TempDir), Box<dyn st
         .await
         .map_err(|e| format!("Failed to create DirectChannel: {}", e))?;
 
-    let mut options = NewStoreOptions::default();
-    options.event_bus = Some(event_bus);
-    options.pubsub = Some(pubsub);
-    options.message_marshaler = Some(message_marshaler);
-    options.direct_channel = Some(direct_channel);
-    options.directory = temp_dir.path().join("cache").to_string_lossy().to_string();
+    let options = NewStoreOptions {
+        event_bus: Some(event_bus),
+        pubsub: Some(pubsub),
+        message_marshaler: Some(message_marshaler),
+        direct_channel: Some(direct_channel),
+        directory: temp_dir.path().join("cache").to_string_lossy().to_string(),
+        ..Default::default()
+    };
 
     let store = GuardianDBKeyValue::new(client, identity, address, Some(options)).await?;
 
@@ -430,11 +432,11 @@ mod tests {
             store
                 .put((*key).to_string(), value.clone())
                 .await
-                .expect(&format!("Failed to put key: {}", key));
+                .unwrap_or_else(|_| panic!("Failed to put key: {}", key));
 
             let retrieved = store
                 .get(key)
-                .expect(&format!("Failed to get key: {}", key));
+                .unwrap_or_else(|_| panic!("Failed to get key: {}", key));
             assert_eq!(retrieved.unwrap(), value);
         }
     }
@@ -504,7 +506,7 @@ mod tests {
             store
                 .put(key, value)
                 .await
-                .expect(&format!("Failed to put key: {}", i));
+                .unwrap_or_else(|_| panic!("Failed to put key: {}", i));
         }
 
         // Verify all items were added
@@ -516,7 +518,7 @@ mod tests {
             let expected_value = format!("value_{}", i).into_bytes();
             let retrieved = store
                 .get(&key)
-                .expect(&format!("Failed to get key: {}", key));
+                .unwrap_or_else(|_| panic!("Failed to get key: {}", key));
             assert_eq!(retrieved.unwrap(), expected_value);
         }
     }
@@ -528,7 +530,7 @@ mod tests {
             .expect("Failed to create test store");
 
         // Test with UTF-8 strings
-        let utf8_values = vec![
+        let utf8_values = [
             ("english", "Hello World"),
             ("portuguese", "Olá Mundo"),
             ("chinese", "你好世界"),
@@ -540,9 +542,11 @@ mod tests {
             store
                 .put(key.to_string(), value.as_bytes().to_vec())
                 .await
-                .expect(&format!("Failed to put {}", key));
+                .unwrap_or_else(|_| panic!("Failed to put {}", key));
 
-            let retrieved = store.get(key).expect(&format!("Failed to get {}", key));
+            let retrieved = store
+                .get(key)
+                .unwrap_or_else(|_| panic!("Failed to get {}", key));
             let retrieved_str = String::from_utf8(retrieved.unwrap()).expect("Invalid UTF-8");
             assert_eq!(retrieved_str, value);
         }
