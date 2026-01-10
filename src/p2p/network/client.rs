@@ -147,7 +147,8 @@ impl IrohClient {
     /// # Exemplo
     /// ```no_run
     /// # use guardian_db::p2p::network::IrohClient;
-    /// # async fn example() -> guardian_db::error::Result<()> {
+    /// # use guardian_db::guardian::error::Result;
+    /// # async fn example() -> Result<()> {
     /// let client = IrohClient::development().await?;
     ///
     /// // Acesso direto ao backend otimizado
@@ -175,7 +176,8 @@ impl IrohClient {
     /// # Exemplo
     /// ```no_run
     /// # use guardian_db::p2p::network::IrohClient;
-    /// # async fn example() -> guardian_db::error::Result<()> {
+    /// # use guardian_db::guardian::error::Result;
+    /// # async fn example() -> Result<()> {
     /// let client = IrohClient::development().await?;
     /// let data = b"Hello, Guardian!".to_vec();
     /// let response = client.add_bytes(data).await?;
@@ -219,7 +221,8 @@ impl IrohClient {
     /// # Exemplo
     /// ```no_run
     /// # use guardian_db::p2p::network::IrohClient;
-    /// # async fn example() -> guardian_db::error::Result<()> {
+    /// # use guardian_db::guardian::error::Result;
+    /// # async fn example() -> Result<()> {
     /// let client = IrohClient::development().await?;
     /// let hash = "..."; // hash do conteúdo
     /// let data = client.cat_bytes(hash).await?;
@@ -361,24 +364,29 @@ impl IrohClient {
     /// ```no_run
     /// use guardian_db::p2p::network::IrohClient;
     /// use guardian_db::p2p::network::config::ClientConfig;
-    /// use guardian_db::log::identity::DefaultIdentificator;
-    /// use guardian_db::traits::{NewStoreOptions, CreateDocumentDBOptions, Identificator};
+    /// use guardian_db::log::identity::{DefaultIdentificator, Identificator};
+    /// use guardian_db::traits::NewStoreOptions;
+    /// use guardian_db::stores::document_store::default_store_opts_for_map;
+    /// use guardian_db::guardian::error::Result;
+    /// use guardian_db::address;
     /// use std::sync::Arc;
     ///
-    /// # async fn example() -> guardian_db::error::Result<()> {
+    /// # async fn example() -> Result<()> {
     /// let client = IrohClient::new(ClientConfig::development()).await?;
     ///
     /// // Cria identidade
     /// let mut identificator = DefaultIdentificator::new();
     /// let identity = Arc::new(identificator.create("user"));
     ///
-    /// // Cria endereço
-    /// let addr = Arc::new(guardian_db::address::GuardianDBAddress::parse("/guardiandb/zdpuAm...")?);
+    /// // Cria endereço a partir de uma string
+    /// let addr = Arc::new(address::parse("/guardiandb/zdpuAm...")?);
     ///
-    /// // Configura opções
-    /// let mut options = NewStoreOptions::default();
-    /// let doc_opts = CreateDocumentDBOptions::new("_id".to_string());
-    /// options.store_specific_opts = Some(Box::new(doc_opts));
+    /// // Configura opções - usa função helper para criar opções padrão
+    /// let doc_opts = default_store_opts_for_map("_id");
+    /// let options = NewStoreOptions {
+    ///     store_specific_opts: Some(Box::new(doc_opts)),
+    ///     ..Default::default()
+    /// };
     ///
     /// let store = client.create_document_store(
     ///     identity,
