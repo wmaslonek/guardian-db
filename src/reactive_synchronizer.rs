@@ -155,7 +155,7 @@ impl SyncEvent {
 /// # Exemplo
 ///
 /// ```rust,no_run
-/// use guardian_db::reactive_synchronizer::SyncObserver;
+/// use guardian_db::reactive_synchronizer::{SyncObserver, SyncEvent};
 ///
 /// async fn monitor_sync(observer: SyncObserver) {
 ///     let mut receiver = observer.subscribe().await.unwrap();
