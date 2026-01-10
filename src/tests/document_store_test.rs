@@ -77,12 +77,14 @@ async fn create_test_store()
         .await
         .map_err(|e| format!("Failed to create DirectChannel: {}", e))?;
 
-    let mut options = NewStoreOptions::default();
-    options.event_bus = Some(event_bus);
-    options.pubsub = Some(pubsub);
-    options.message_marshaler = Some(message_marshaler);
-    options.direct_channel = Some(direct_channel);
-    options.directory = temp_dir.path().join("cache").to_string_lossy().to_string();
+    let options = NewStoreOptions {
+        event_bus: Some(event_bus),
+        pubsub: Some(pubsub),
+        message_marshaler: Some(message_marshaler),
+        direct_channel: Some(direct_channel),
+        directory: temp_dir.path().join("cache").to_string_lossy().to_string(),
+        ..Default::default()
+    };
 
     let store = GuardianDBDocumentStore::new(client, identity, address, options).await?;
 
