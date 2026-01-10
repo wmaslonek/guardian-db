@@ -54,12 +54,12 @@ mod guardian_wrapper_integration_tests {
         let (backend, temp_dir) = create_test_backend(name).await?;
         let client = IrohClient::new_with_backend(backend.clone()).await?;
 
-        let mut options = NewGuardianDBOptions::default();
-        options.directory = Some(temp_dir.path().join("db").to_path_buf());
-        options.backend = Some(backend.clone());
-
-        // Configura EventBus para evitar erro "EventBus is a required option"
-        options.event_bus = Some(Arc::new(EventBus::new()));
+        let options = NewGuardianDBOptions {
+            directory: Some(temp_dir.path().join("db").to_path_buf()),
+            backend: Some(backend.clone()),
+            event_bus: Some(Arc::new(EventBus::new())),
+            ..Default::default()
+        };
 
         let guardian = GuardianDB::new(client, Some(options)).await?;
 
@@ -100,9 +100,11 @@ mod guardian_wrapper_integration_tests {
             .await
             .expect("Client creation failed");
 
-        let mut options = NewGuardianDBOptions::default();
-        options.directory = Some(temp_dir.path().join("custom_db").to_path_buf());
-        options.backend = Some(backend);
+        let options = NewGuardianDBOptions {
+            directory: Some(temp_dir.path().join("custom_db").to_path_buf()),
+            backend: Some(backend),
+            ..Default::default()
+        };
 
         let result = GuardianDB::new(client, Some(options)).await;
         assert!(
