@@ -57,19 +57,9 @@ mod tests {
         assert!(operation.value.is_empty());
     }
 
-    #[test]
-    fn test_guardian_db_adapter_structure() {
-        // Testa que a estrutura GuardianDBAdapter está corretamente definida
-        // Este é um teste de compilação - se compila, a estrutura está correta
-        assert!(true, "GuardianDBAdapter structure is correctly defined");
-    }
-
-    #[test]
-    fn test_keyvalue_store_adapter_structure() {
-        // Testa que a estrutura KeyValueStoreAdapter está corretamente definida
-        // Este é um teste de compilação - se compila, a estrutura está correta
-        assert!(true, "KeyValueStoreAdapter structure is correctly defined");
-    }
+    // Os testes de estrutura GuardianDBAdapter e KeyValueStoreAdapter
+    // são verificados implicitamente através dos outros testes que usam esses tipos
+    // Se compilar, as estruturas estão corretamente definidas
 
     #[tokio::test]
     async fn test_multiple_operations_serialization() {
