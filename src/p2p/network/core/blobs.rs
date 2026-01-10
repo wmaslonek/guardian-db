@@ -205,6 +205,31 @@ impl BlobStore {
 
         Ok(0) // Retorna 0 pois GC é automático
     }
+
+    /// Cria uma instância de teste com store temporário
+    ///
+    /// # Retorna
+    /// Ok(BlobStore) configurado para usar armazenamento temporário
+    ///
+    /// # Nota
+    /// Este método é útil apenas para testes. Em produção, use `new()` com
+    /// o store compartilhado do IrohBackend.
+    #[cfg(test)]
+    pub async fn memory() -> Result<Self> {
+        // Cria um diretório temporário
+        let temp_dir =
+            std::env::temp_dir().join(format!("iroh-blobs-test-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&temp_dir).await.map_err(|e| {
+            GuardianError::Other(format!("Erro ao criar diretório temporário: {}", e))
+        })?;
+
+        // Carrega FsStore no diretório temporário
+        let store = FsStore::load(&temp_dir)
+            .await
+            .map_err(|e| GuardianError::Other(format!("Erro ao criar store temporário: {}", e)))?;
+
+        Ok(Self::new(Arc::new(RwLock::new(store))))
+    }
 }
 
 #[cfg(test)]
@@ -258,32 +283,5 @@ mod tests {
 
         let docs = blobs_client.list_documents().await.unwrap();
         assert_eq!(docs.len(), 2);
-    }
-}
-
-impl BlobStore {
-    /// Cria uma instância de teste com store temporário
-    ///
-    /// # Retorna
-    /// Ok(BlobStore) configurado para usar armazenamento temporário
-    ///
-    /// # Nota
-    /// Este método é útil apenas para testes. Em produção, use `new()` com
-    /// o store compartilhado do IrohBackend.
-    #[cfg(test)]
-    pub async fn memory() -> Result<Self> {
-        // Cria um diretório temporário
-        let temp_dir =
-            std::env::temp_dir().join(format!("iroh-blobs-test-{}", uuid::Uuid::new_v4()));
-        tokio::fs::create_dir_all(&temp_dir).await.map_err(|e| {
-            GuardianError::Other(format!("Erro ao criar diretório temporário: {}", e))
-        })?;
-
-        // Carrega FsStore no diretório temporário
-        let store = FsStore::load(&temp_dir)
-            .await
-            .map_err(|e| GuardianError::Other(format!("Erro ao criar store temporário: {}", e)))?;
-
-        Ok(Self::new(Arc::new(RwLock::new(store))))
     }
 }
