@@ -84,9 +84,11 @@ mod guardian_core_tests {
 
         let identity = create_test_identity(&format!("guardian_{}", name));
 
-        let mut options = NewGuardianDBOptions::default();
-        options.directory = Some(temp_dir.path().join("db").to_path_buf());
-        options.backend = Some(backend.clone());
+        let options = NewGuardianDBOptions {
+            directory: Some(temp_dir.path().join("db").to_path_buf()),
+            backend: Some(backend.clone()),
+            ..Default::default()
+        };
 
         let guardian = GuardianDB::new_guardian_db(client, identity, Some(options)).await?;
 
@@ -122,9 +124,11 @@ mod guardian_core_tests {
 
         let identity = create_test_identity("custom_test");
 
-        let mut options = NewGuardianDBOptions::default();
-        options.directory = Some(temp_dir.path().join("custom_db").to_path_buf());
-        options.backend = Some(backend);
+        let options = NewGuardianDBOptions {
+            directory: Some(temp_dir.path().join("custom_db").to_path_buf()),
+            backend: Some(backend),
+            ..Default::default()
+        };
 
         let result = GuardianDB::new_guardian_db(client, identity.clone(), Some(options)).await;
         assert!(result.is_ok());
@@ -830,7 +834,7 @@ mod guardian_core_tests {
     async fn test_multiple_stores_lifecycle() {
         let (guardian, _, _temp_dir) = create_test_guardian_db("multi_stores_test").await.unwrap();
 
-        let store_types = vec!["eventlog", "keyvalue", "document"];
+        let store_types = ["eventlog", "keyvalue", "document"];
 
         let mut addresses = vec![];
 
