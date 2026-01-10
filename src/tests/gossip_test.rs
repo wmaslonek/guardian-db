@@ -63,12 +63,8 @@ mod initialization_tests {
 
         let (pubsub, _temp_dir) = result.unwrap();
 
-        // Verifica que o gossip foi criado
-        let gossip_ref = pubsub.gossip();
-        assert!(
-            gossip_ref as *const _ != std::ptr::null(),
-            "Gossip deve estar inicializado"
-        );
+        // Verifica que o gossip foi criado (se chegou aqui sem panic, está inicializado)
+        let _gossip_ref = pubsub.gossip();
 
         info!("✓ EpidemicPubSub inicializado com sucesso");
     }
@@ -105,10 +101,10 @@ mod initialization_tests {
         let (pubsub2, _dir2) = create_test_pubsub("backend2").await.unwrap();
         let (pubsub3, _dir3) = create_test_pubsub("backend3").await.unwrap();
 
-        // Todos devem ter gossip inicializado
-        assert!(pubsub1.gossip() as *const _ != std::ptr::null());
-        assert!(pubsub2.gossip() as *const _ != std::ptr::null());
-        assert!(pubsub3.gossip() as *const _ != std::ptr::null());
+        // Todos devem ter gossip inicializado (se chegou aqui sem panic, está inicializado)
+        let _g1 = pubsub1.gossip();
+        let _g2 = pubsub2.gossip();
+        let _g3 = pubsub3.gossip();
 
         info!("✓ Múltiplos backends inicializados com sucesso");
     }
