@@ -41,9 +41,11 @@ async fn create_test_guardian_db() -> (GuardianDB, TempDir) {
     // Obtém o backend do IrohClient
     let backend = client.backend().clone();
 
-    let mut options = NewGuardianDBOptions::default();
-    options.directory = Some(db_dir);
-    options.backend = Some(backend);
+    let options = NewGuardianDBOptions {
+        directory: Some(db_dir),
+        backend: Some(backend),
+        ..Default::default()
+    };
 
     let guardian = GuardianDB::new(client, Some(options))
         .await
@@ -83,7 +85,7 @@ fn create_test_options() -> CreateDBOptions {
 #[tokio::test]
 async fn test_create_guardian_db() {
     let (guardian, _temp_dir) = create_test_guardian_db().await;
-    assert!(guardian.base().identity().id().len() > 0);
+    assert!(!guardian.base().identity().id().is_empty());
 }
 
 #[tokio::test]
@@ -95,15 +97,17 @@ async fn test_guardian_db_with_custom_options() {
     // Obtém o backend do IrohClient
     let backend = client.backend().clone();
 
-    let mut options = NewGuardianDBOptions::default();
-    options.directory = Some(custom_dir);
-    options.backend = Some(backend);
+    let options = NewGuardianDBOptions {
+        directory: Some(custom_dir),
+        backend: Some(backend),
+        ..Default::default()
+    };
 
     let guardian = GuardianDB::new(client, Some(options))
         .await
         .expect("Failed to create GuardianDB with custom options");
 
-    assert!(guardian.base().identity().id().len() > 0);
+    assert!(!guardian.base().identity().id().is_empty());
 }
 
 // ============================================================================
@@ -169,13 +173,15 @@ async fn test_eventlog_get_by_hash() {
 
     // Obtém o hash da operação através do oplog
     let oplog = store.op_log();
-    let oplog_guard = oplog.read();
-    let values = oplog_guard.values();
-    let first_entry = values.iter().next().expect("No entries found");
-    let hash = first_entry.hash();
+    let hash = {
+        let oplog_guard = oplog.read();
+        let values = oplog_guard.values();
+        let first_entry = values.first().expect("No entries found");
+        *first_entry.hash()
+    };
 
     // Busca pela hash
-    let retrieved_op = store.get(hash).await.expect("Failed to get operation");
+    let retrieved_op = store.get(&hash).await.expect("Failed to get operation");
 
     assert_eq!(retrieved_op.op(), "ADD");
     assert_eq!(retrieved_op.value(), &data);
@@ -846,7 +852,7 @@ async fn test_special_characters_in_keys() {
         store
             .put(key, value.clone())
             .await
-            .expect(&format!("Failed to put value for key: {}", key));
+            .unwrap_or_else(|_| panic!("Failed to put value for key: {}", key));
 
         let retrieved = store
             .get(key)
@@ -893,5 +899,5 @@ async fn test_document_with_complex_json() {
     // Verifica que foi armazenado
     let oplog = store.op_log();
     let oplog_guard = oplog.read();
-    assert!(oplog_guard.values().len() > 0);
+    assert!(!oplog_guard.values().is_empty());
 }
