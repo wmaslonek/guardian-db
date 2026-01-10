@@ -80,20 +80,19 @@ async fn create_test_base_store() -> Result<(Arc<BaseStore>, TempDir), Box<dyn s
         .await
         .map_err(|e| format!("Failed to create DirectChannel: {}", e))?;
 
-    let mut options = NewStoreOptions::default();
-    options.event_bus = Some(event_bus);
-    options.pubsub = Some(pubsub);
-    options.message_marshaler = Some(message_marshaler);
-    options.direct_channel = Some(direct_channel);
-    options.directory = temp_dir.path().join("cache").to_string_lossy().to_string();
-
-    // Configura o index builder para usar NoopIndex (BaseStore não precisa de índice especializado)
-    options.index =
-        Some(Box::new(
+    let options = NewStoreOptions {
+        event_bus: Some(event_bus),
+        pubsub: Some(pubsub),
+        message_marshaler: Some(message_marshaler),
+        direct_channel: Some(direct_channel),
+        directory: temp_dir.path().join("cache").to_string_lossy().to_string(),
+        index: Some(Box::new(
             |_data: &[u8]| -> Box<
                 dyn crate::traits::StoreIndex<Error = crate::guardian::error::GuardianError>,
             > { Box::new(crate::stores::base_store::noop_index::NoopIndex) },
-        ));
+        )),
+        ..Default::default()
+    };
 
     let base_store = BaseStore::new(client, identity, address, Some(options)).await?;
 
