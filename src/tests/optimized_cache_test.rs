@@ -676,7 +676,7 @@ async fn test_mixed_sized_data() {
     let cache = OptimizedCache::new(CacheConfig::default());
 
     // Vários tamanhos diferentes
-    let sizes = vec![100, 1024, 10 * 1024, 64 * 1024, 128 * 1024, 256 * 1024];
+    let sizes = [100, 1024, 10 * 1024, 64 * 1024, 128 * 1024, 256 * 1024];
 
     for (i, size) in sizes.iter().enumerate() {
         let cid = create_test_cid(i as u32);
