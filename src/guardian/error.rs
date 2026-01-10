@@ -291,9 +291,8 @@ mod tests {
         let timeout_io_err = std::io::Error::new(std::io::ErrorKind::TimedOut, "Timeout");
         let guardian_timeout_err: GuardianError = timeout_io_err.into();
         // Nota: io::Error é convertido para GuardianError::Io, não Timeout
-        match guardian_timeout_err {
-            GuardianError::Io(msg) => assert!(msg.contains("Timeout")),
-            _ => {}
+        if let GuardianError::Io(msg) = guardian_timeout_err {
+            assert!(msg.contains("Timeout"));
         }
     }
 
