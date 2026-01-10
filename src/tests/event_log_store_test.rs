@@ -94,12 +94,14 @@ async fn create_test_store() -> Result<(GuardianDBEventLogStore, TempDir)> {
         .await
         .expect("Failed to create DirectChannel");
 
-    let mut options = traits::NewStoreOptions::default();
-    options.event_bus = Some(event_bus);
-    options.pubsub = Some(pubsub);
-    options.message_marshaler = Some(message_marshaler);
-    options.direct_channel = Some(direct_channel);
-    options.directory = temp_dir.path().join("cache").to_string_lossy().to_string();
+    let options = traits::NewStoreOptions {
+        event_bus: Some(event_bus),
+        pubsub: Some(pubsub),
+        message_marshaler: Some(message_marshaler),
+        direct_channel: Some(direct_channel),
+        directory: temp_dir.path().join("cache").to_string_lossy().to_string(),
+        ..Default::default()
+    };
 
     let store = GuardianDBEventLogStore::new(client, identity, address, options)
         .await
@@ -163,12 +165,14 @@ async fn test_eventlog_creation_with_empty_address() {
         .await
         .expect("Failed to create DirectChannel");
 
-    let mut options = traits::NewStoreOptions::default();
-    options.event_bus = Some(event_bus);
-    options.pubsub = Some(pubsub);
-    options.message_marshaler = Some(message_marshaler);
-    options.direct_channel = Some(direct_channel);
-    options.directory = temp_dir.path().join("cache").to_string_lossy().to_string();
+    let options = traits::NewStoreOptions {
+        event_bus: Some(event_bus),
+        pubsub: Some(pubsub),
+        message_marshaler: Some(message_marshaler),
+        direct_channel: Some(direct_channel),
+        directory: temp_dir.path().join("cache").to_string_lossy().to_string(),
+        ..Default::default()
+    };
 
     let result = GuardianDBEventLogStore::new(client, identity, address, options).await;
 
@@ -217,7 +221,7 @@ async fn test_eventlog_add_empty_data() {
 async fn test_eventlog_add_multiple_entries() {
     let (store, _temp_dir) = create_test_store().await.expect("Failed to create store");
 
-    let entries = vec![
+    let entries = [
         b"First entry".to_vec(),
         b"Second entry".to_vec(),
         b"Third entry".to_vec(),
@@ -288,7 +292,7 @@ async fn test_eventlog_list_all_entries() {
     let (store, _temp_dir) = create_test_store().await.expect("Failed to create store");
 
     // Adiciona várias entradas
-    let entries = vec![
+    let entries = [
         b"Entry 1".to_vec(),
         b"Entry 2".to_vec(),
         b"Entry 3".to_vec(),
@@ -367,7 +371,7 @@ async fn test_eventlog_list_with_gte_filter() {
 
     let operations = list_result.unwrap();
     assert!(
-        operations.len() >= 1,
+        !operations.is_empty(),
         "Should return at least 1 entry, got: {}",
         operations.len()
     );
@@ -585,8 +589,8 @@ async fn test_eventlog_index_access() {
     let index = store.index();
 
     // Verifica propriedades básicas do índice
-    let supports_entry_queries = index.supports_entry_queries();
-    assert!(supports_entry_queries || !supports_entry_queries); // Always true, just checking it's callable
+    // Apenas verifica que o método é chamável - o valor retornado pode ser true ou false
+    let _supports_entry_queries = index.supports_entry_queries();
 }
 
 #[tokio::test]
