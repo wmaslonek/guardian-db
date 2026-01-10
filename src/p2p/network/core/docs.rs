@@ -211,9 +211,10 @@ impl WillowDocs {
         match doc.set_bytes(author_id, key, value).await {
             Ok(hash) => {
                 debug!("Set bytes in document {:?}: hash={:?}", doc.id(), hash);
-                // Converte de iroh_docs::Hash (0.94) para iroh_blobs::Hash (0.35)
+                // Converte de iroh_docs::Hash (0.92.0) para iroh_blobs::Hash (0.94.0)
+                // Ambas compartilham a mesma estrutura de hash (BLAKE3, 32 bytes), então
+                // a conversão é segura através dos bytes
                 let hash_bytes = hash.as_bytes();
-                // Cria Hash da versão 0.35 a partir dos bytes
                 let result_hash = iroh_blobs::Hash::from_bytes(*hash_bytes);
                 Ok(result_hash)
             }
