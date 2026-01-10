@@ -31,8 +31,8 @@ fn create_test_node_id(seed: u8) -> NodeId {
     let mut seed_bytes = [0u8; 32];
     seed_bytes[0] = seed;
     // Preenche com padrão determinístico
-    for i in 1..32 {
-        seed_bytes[i] = seed.wrapping_add(i as u8);
+    for (i, byte) in seed_bytes.iter_mut().enumerate().skip(1) {
+        *byte = seed.wrapping_add(i as u8);
     }
     let secret = SecretKey::from_bytes(&seed_bytes);
     secret.public()
@@ -339,7 +339,7 @@ async fn test_multiple_event_subscribers() {
     let _receiver3 = pool.subscribe_events();
 
     // Verifica que múltiplos subscribers podem ser criados
-    assert!(true);
+    // Se chegou aqui sem panic, o teste passou
 }
 
 #[tokio::test]
@@ -366,10 +366,10 @@ async fn test_concurrent_connection_attempts() {
     // Aguarda todas as tentativas completarem
     let mut failures = 0;
     for handle in handles {
-        if let Ok(result) = handle.await {
-            if result.is_err() {
-                failures += 1;
-            }
+        if let Ok(result) = handle.await
+            && result.is_err()
+        {
+            failures += 1;
         }
     }
 
@@ -466,8 +466,7 @@ async fn test_health_monitor_start() {
     // Cancela o monitor
     monitor_handle.abort();
 
-    // Verifica que não deu panic
-    assert!(true);
+    // Se chegou aqui sem panic, o teste passou
 }
 
 #[tokio::test]
