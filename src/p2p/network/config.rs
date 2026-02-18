@@ -340,7 +340,7 @@ impl GossipConfig {
 
     pub fn testing() -> Self {
         Self {
-            max_message_size: 1024, // 1KB
+            max_message_size: 1024 * 1024, // 1MB - precisa suportar múltiplas entries serializadas
             message_buffer_size: 10,
             operation_timeout: Duration::from_secs(5),
             heartbeat_interval: Duration::from_secs(5),
