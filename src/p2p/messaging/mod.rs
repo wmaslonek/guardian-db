@@ -116,8 +116,11 @@ impl PsTopic {
             ));
         }
 
-        // Publica via iroh-gossip
-        self.inner_topic.publish(message.to_vec()).await?;
+        // Publica via EpidemicPubSub usando o método correto
+        self.ps
+            .epidemic_pubsub
+            .publish_to_topic(&self.topic, message)
+            .await?;
         Ok(())
     }
 
