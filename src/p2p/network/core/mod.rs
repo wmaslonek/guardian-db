@@ -552,7 +552,9 @@ impl IrohBackend {
 
         // Inicializa Gossip com o Endpoint compartilhado
         debug!("Inicializando Gossip protocol...");
-        let gossip = Gossip::builder().spawn(endpoint.clone());
+        let gossip = Gossip::builder()
+            .max_message_size(self.config.gossip.max_message_size)
+            .spawn(endpoint.clone());
         {
             let mut gossip_lock = self.gossip.write().await;
             *gossip_lock = Some(gossip.clone());
@@ -2214,7 +2216,7 @@ impl IrohBackend {
         let now = Instant::now();
         let stale_peers: Vec<NodeId> = pool
             .iter()
-            .filter(|(_, conn)| now.duration_since(conn.last_used) > timeout)
+            .filter(|(_, conn)| now.saturating_duration_since(conn.last_used) > timeout)
             .map(|(id, _)| *id)
             .collect();
 
@@ -2275,6 +2277,11 @@ impl IrohBackend {
     /// Retorna a secret key do nó
     pub fn secret_key(&self) -> &SecretKey {
         &self.secret_key
+    }
+
+    /// Retorna referência à configuração do backend
+    pub fn config(&self) -> &ClientConfig {
+        &self.config
     }
 
     // === KEY SYNCHRONIZATION ===
