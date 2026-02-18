@@ -20,12 +20,11 @@ pub struct GuardianDB {
 impl GuardianDB {
     /// Cria uma nova instância do GuardianDB
     pub async fn new(client: IrohClient, options: Option<NewGuardianDBOptions>) -> Result<Self> {
-        // Usar imports necessários
-        use crate::log::identity::{Identity, Signatures};
+        // Usar DefaultIdentificator para criar uma identidade válida com assinaturas criptográficas
+        use crate::log::identity::{DefaultIdentificator, Identificator};
 
-        // Criar uma identidade temporária para usar com new_guardian_db
-        let signatures = Signatures::new("temp_sig", "temp_pub_sig");
-        let identity = Identity::new("temp_id", "temp_pubkey", signatures);
+        let mut identificator = DefaultIdentificator::new();
+        let identity = identificator.create(&client.node_id().to_string());
 
         let base = BaseGuardianDB::new_guardian_db(client, identity, options).await?;
         Ok(GuardianDB { base })
@@ -46,7 +45,17 @@ impl GuardianDB {
             opts.event_bus = Some((*self.base.event_bus()).clone());
         }
 
-        let store = self.base.open(address, opts).await?;
+        tracing::debug!(address = address, "GuardianDB::log - Criando EventLogStore");
+
+        // Usa create() diretamente para nomes simples (sem hash válido)
+        let store = self.base.create(address, "eventlog", Some(opts)).await?;
+
+        tracing::debug!(
+            address = address,
+            store_type = store.store_type(),
+            has_index = store.index().supports_entry_queries(),
+            "EventLogStore criado"
+        );
 
         // Verifica se o store retornado é do tipo correto
         if store.store_type() == "eventlog" {
@@ -75,7 +84,8 @@ impl GuardianDB {
             opts.event_bus = Some((*self.base.event_bus()).clone());
         }
 
-        let store = self.base.open(address, opts).await?;
+        // Usa create() diretamente para nomes simples
+        let store = self.base.create(address, "keyvalue", Some(opts)).await?;
 
         // Para KeyValueStore, criamos um wrapper genérico
         if store.store_type() == "keyvalue" {
@@ -103,7 +113,8 @@ impl GuardianDB {
             opts.event_bus = Some((*self.base.event_bus()).clone());
         }
 
-        let store = self.base.open(address, opts).await?;
+        // Usa create() diretamente para nomes simples
+        let store = self.base.create(address, "document", Some(opts)).await?;
 
         // Verifica se o store retornado é do tipo correto
         if store.store_type() == "document" {
@@ -157,6 +168,20 @@ impl GuardianDB {
     pub async fn register_default_access_control_types(&self) -> Result<()> {
         self.base.register_default_access_control_types().await
     }
+
+    /// Conecta e sincroniza com um peer específico
+    ///
+    /// Este método facilita a conexão manual com peers quando a descoberta
+    /// automática não é suficiente ou você quer forçar uma sincronização.
+    ///
+    /// # Argumentos
+    /// * `peer_id` - NodeId do peer com quem sincronizar
+    ///
+    /// # Retorna
+    /// `Ok(())` se a sincronização foi iniciada com sucesso
+    pub async fn connect_to_peer(&self, peer_id: iroh::NodeId) -> Result<()> {
+        self.base.connect_to_peer(peer_id).await
+    }
 }
 
 /// Wrapper que adapta um Store genérico para EventLogStore
@@ -164,13 +189,54 @@ impl GuardianDB {
 /// SOLUÇÃO IMPLEMENTADA: O problema das limitações de &mut self foi resolvido
 /// usando downcasting para BaseStore, que implementa add_operation(&self) de
 /// forma thread-safe usando Arc<RwLock<T>> internamente.
-struct EventLogStoreWrapper {
+pub struct EventLogStoreWrapper {
     store: Arc<dyn Store<Error = GuardianError> + Send + Sync>,
 }
 
 impl EventLogStoreWrapper {
     fn new(store: Arc<dyn Store<Error = GuardianError> + Send + Sync>) -> Self {
         Self { store }
+    }
+
+    /// Retorna uma referência ao store interno
+    pub fn inner_store(&self) -> &Arc<dyn Store<Error = GuardianError> + Send + Sync> {
+        &self.store
+    }
+
+    /// Tenta acessar o BaseStore subjacente através de downcast
+    ///
+    /// Este método é útil para operações avançadas como sincronização manual com peers.
+    /// Retorna `None` se o store interno não for do tipo esperado.
+    pub fn try_get_basestore(&self) -> Option<&crate::stores::base_store::BaseStore> {
+        // Tenta fazer downcast para GuardianDBEventLogStore
+        if let Some(event_log_store) =
+            self.store
+                .as_any()
+                .downcast_ref::<crate::stores::event_log_store::GuardianDBEventLogStore>()
+        {
+            return Some(event_log_store.basestore());
+        }
+        None
+    }
+
+    /// Conecta e sincroniza com um peer específico
+    ///
+    /// Este método facilita a conexão manual com peers quando a descoberta
+    /// automática não é suficiente ou você quer forçar uma sincronização.
+    ///
+    /// # Argumentos
+    /// * `peer_id` - NodeId do peer com quem sincronizar
+    ///
+    /// # Retorna
+    /// `Ok(())` se a sincronização foi iniciada com sucesso
+    pub async fn connect_to_peer(&self, peer_id: iroh::NodeId) -> Result<()> {
+        if let Some(base_store) = self.try_get_basestore() {
+            base_store.exchange_heads(peer_id).await
+        } else {
+            Err(GuardianError::Store(
+                "Não foi possível acessar BaseStore para sincronização".to_string(),
+            ))
+        }
     }
 
     /// Query otimizada usando o índice da store
