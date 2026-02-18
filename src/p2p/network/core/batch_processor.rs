@@ -977,17 +977,23 @@ impl BatchProcessor {
                         let add_timeout = queues
                             .add_queue
                             .front()
-                            .map(|op| now.duration_since(op.created_at) > timeout_threshold)
+                            .map(|op| {
+                                now.saturating_duration_since(op.created_at) > timeout_threshold
+                            })
                             .unwrap_or(false);
                         let get_timeout = queues
                             .get_queue
                             .front()
-                            .map(|op| now.duration_since(op.created_at) > timeout_threshold)
+                            .map(|op| {
+                                now.saturating_duration_since(op.created_at) > timeout_threshold
+                            })
                             .unwrap_or(false);
                         let pin_timeout = queues
                             .pin_queue
                             .front()
-                            .map(|op| now.duration_since(op.created_at) > timeout_threshold)
+                            .map(|op| {
+                                now.saturating_duration_since(op.created_at) > timeout_threshold
+                            })
                             .unwrap_or(false);
 
                         add_ready
@@ -1205,7 +1211,7 @@ impl BatchProcessor {
     /// Verifica se há operações antigas na fila
     fn has_old_operations(queue: &VecDeque<BatchOperation>, max_wait_ms: u64) -> bool {
         if let Some(oldest) = queue.front() {
-            let age = Instant::now().duration_since(oldest.created_at);
+            let age = Instant::now().saturating_duration_since(oldest.created_at);
             age > Duration::from_millis(max_wait_ms * 2)
         } else {
             false
@@ -1380,8 +1386,8 @@ impl BatchProcessor {
         if stats_copy.total_operations > 0 {
             stats_copy.batch_efficiency =
                 stats_copy.batched_operations as f64 / stats_copy.total_operations as f64;
-            stats_copy.operations_per_second = stats_copy.total_operations as f64
-                / (Instant::now().duration_since(Instant::now()).as_secs_f64() + 1.0);
+            // operations_per_second é atualizado durante o processamento de batches
+            // Não recalculamos aqui para evitar problemas com tempo
         }
 
         stats_copy
