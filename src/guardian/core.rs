@@ -3,7 +3,7 @@ use crate::cache::level_down::LevelDownCache;
 use crate::db_manifest;
 use crate::guardian::error::{GuardianError, Result};
 use crate::keystore::SledKeystore;
-use crate::log::identity::{Identity, Signatures};
+use crate::log::identity::Identity;
 pub use crate::log::identity_provider::Keystore;
 use crate::p2p::Emitter;
 pub use crate::p2p::EventBus;
@@ -20,7 +20,6 @@ use iroh::NodeId;
 use iroh_blobs::Hash;
 use opentelemetry::global::BoxedTracer;
 use parking_lot::RwLock;
-use rand::RngCore;
 use rand_core;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -371,24 +370,10 @@ impl GuardianDB {
                 GuardianError::Other("Keystore é necessário para criar uma identidade".to_string())
             })?;
 
-            // Criar uma identidade usando o keystore configurado
-            use crate::log::identity::Identity;
-
-            // Gerar uma chave secreta para a identidade
-            let mut rng = rand::rng();
-            let mut secret_bytes = [0u8; 32];
-            rng.fill_bytes(&mut secret_bytes);
-
-            // Gerar chave pública a partir da privada (simplificado)
-            let pub_key_hex = hex::encode(secret_bytes);
-
-            // Criar assinaturas criptográficas para a identidade
-            let signatures = Signatures::new(
-                &format!("id_sig_{}", id),
-                &format!("pk_sig_{}", pub_key_hex),
-            );
-
-            Identity::new(&id, &pub_key_hex, signatures)
+            // Criar uma identidade usando o DefaultIdentificator que gera chaves e assinaturas válidas
+            use crate::log::identity::{DefaultIdentificator, Identificator};
+            let mut identificator = DefaultIdentificator::new();
+            identificator.create(&id)
         };
 
         options.identity = Some(identity.clone());
@@ -524,8 +509,13 @@ impl GuardianDB {
         // Configura o emitter "newHeads" no event_bus
         tracing::debug!("Configurando emitters do EventBus");
 
-        // Inicia o monitor do canal direto de forma independente
+        // Inicia o monitor do canal direto para processar mensagens recebidas
         tracing::debug!("Iniciando monitor do canal direto");
+        if let Err(e) = instance.monitor_direct_channel(event_bus.clone()).await {
+            tracing::error!("Falha ao iniciar monitor do canal direto: {}", e);
+        } else {
+            tracing::info!("Monitor do canal direto iniciado com sucesso");
+        }
 
         // Emite evento de inicialização do GuardianDB
         let ready_event = EventGuardianDBReady {
@@ -626,6 +616,105 @@ impl GuardianDB {
     /// Retorna `Some(store)` se encontrada, ou `None` caso contrário.
     pub fn get_store(&self, address: &str) -> Option<Arc<GuardianStore>> {
         self.stores.read().get(address).cloned()
+    }
+
+    /// Conecta e sincroniza com um peer específico
+    ///
+    /// Este método facilita a conexão manual com peers quando a descoberta
+    /// automática não é suficiente ou você quer forçar uma sincronização.
+    /// Funciona encontrando qualquer EventLogStore ativa e usando seu BaseStore
+    /// para iniciar a sincronização via exchange_heads.
+    ///
+    /// # Argumentos
+    /// * `peer_id` - NodeId do peer com quem sincronizar
+    ///
+    /// # Retorna
+    /// `Ok(())` se a sincronização foi iniciada com sucesso
+    pub async fn connect_to_peer(&self, peer_id: NodeId) -> Result<()> {
+        tracing::info!(peer = %peer_id, "Establishing connection with peer");
+
+        // PASSO 1: Estabelece conexão QUIC via gossip ALPN
+        // CRÍTICO: O Iroh gossip requer que os peers estejam conectados via QUIC
+        // com o ALPN "/iroh-gossip/1" ANTES de formar o mesh
+        tracing::debug!(peer = %peer_id, "Establishing QUIC connection via gossip ALPN");
+
+        if let Err(e) = self.client.connect_gossip(peer_id).await {
+            tracing::warn!(
+                peer = %peer_id,
+                error = %e,
+                "Failed to establish gossip QUIC connection, but continuing anyway (peer may already be connected)"
+            );
+            // Não retorna erro - pode ser que já esteja conectado ou tenha outro caminho
+        } else {
+            tracing::info!(peer = %peer_id, "✓ Gossip QUIC connection established");
+        }
+
+        // PASSO 2: Encontra stores ativas para iniciar sincronização
+        // Suporta EventLogStore, KeyValueStore e DocumentStore
+        let stores: Vec<_> = self.stores.read().values().cloned().collect();
+
+        for store in &stores {
+            // Macro para sincronizar basestore de qualquer tipo de store
+            macro_rules! sync_store {
+                ($store_ref:expr, $store_type:expr) => {{
+                    let basestore = $store_ref.basestore();
+                    tracing::info!(
+                        peer = %peer_id,
+                        store_type = $store_type,
+                        "[SYNC] Iniciando sincronização com peer"
+                    );
+
+                    // Adiciona o peer ao gossip mesh antes de enviar heads
+                    let pubsub = basestore.pubsub();
+                    if let Some(epidemic_pubsub) = pubsub
+                        .as_any()
+                        .downcast_ref::<crate::p2p::network::core::gossip::EpidemicPubSub>()
+                    {
+                        let shared_topic_name = basestore.extract_log_name();
+                        tracing::debug!(peer = %peer_id, "[GOSSIP_MESH] Using topic: {}", shared_topic_name);
+                        if let Err(e) = epidemic_pubsub
+                            .get_or_create_topic_with_peers(&shared_topic_name, vec![peer_id])
+                            .await
+                        {
+                            tracing::warn!(peer = %peer_id, error = %e, "[GOSSIP_MESH] Failed to add peer to gossip mesh");
+                        } else {
+                            tracing::debug!(peer = %peer_id, "[GOSSIP_MESH] Successfully added peer to gossip mesh");
+                            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                        }
+                    }
+
+                    return basestore.exchange_heads(peer_id).await;
+                }};
+            }
+
+            // Tenta fazer downcast para EventLogStore
+            if let Some(event_log_store) = store
+                .as_any()
+                .downcast_ref::<crate::stores::event_log_store::GuardianDBEventLogStore>(
+            ) {
+                sync_store!(event_log_store, "eventlog");
+            }
+
+            // Tenta fazer downcast para KeyValueStore
+            if let Some(kv_store) = store
+                .as_any()
+                .downcast_ref::<crate::stores::kv_store::GuardianDBKeyValue>()
+            {
+                sync_store!(kv_store, "keyvalue");
+            }
+
+            // Tenta fazer downcast para DocumentStore
+            if let Some(doc_store) = store
+                .as_any()
+                .downcast_ref::<crate::stores::document_store::GuardianDBDocumentStore>(
+            ) {
+                sync_store!(doc_store, "document");
+            }
+        }
+
+        Err(GuardianError::Store(
+            "Nenhuma store ativa encontrada para sincronização. Crie uma store com db.log(), db.key_value() ou db.docs() primeiro.".to_string()
+        ))
     }
 
     /// Itera sobre todas as stores gerenciadas e chama o método `close()` de cada uma.
@@ -1403,7 +1492,9 @@ impl GuardianDB {
         })?;
 
         // 2. Converte CreateDBOptions para NewStoreOptions
-        let new_store_options = self.convert_create_to_store_options(options).await?;
+        let new_store_options = self
+            .convert_create_to_store_options(store_type, options)
+            .await?;
 
         // 3. Prepara argumentos para o construtor
         let client = Arc::new(self.client().clone());
@@ -1452,6 +1543,7 @@ impl GuardianDB {
     /// Converte CreateDBOptions para NewStoreOptions necessário pelos construtores
     async fn convert_create_to_store_options(
         &self,
+        store_type: &str,
         options: CreateDBOptions,
     ) -> Result<crate::traits::NewStoreOptions> {
         use crate::traits::NewStoreOptions;
@@ -1560,9 +1652,18 @@ impl GuardianDB {
 
         let store_options = NewStoreOptions {
             event_bus: options.event_bus, // Usa o EventBus fornecido (requerido)
-            index: None,                  // Será configurado pelo construtor específico
-            access_controller,            // AccessController convertido do ManifestParams
-            cache: None,                  // Usa cache padrão
+            index: {
+                // CORREÇÃO CRÍTICA: Cria índice baseado no store_type
+                match store_type {
+                    "eventlog" => {
+                        use crate::stores::event_log_store::index::new_event_index;
+                        Some(Box::new(new_event_index))
+                    }
+                    _ => None, // Outros tipos de store podem não ter índice
+                }
+            },
+            access_controller, // AccessController convertido do ManifestParams
+            cache: None,       // Usa cache padrão
             cache_destroy: None,
             replication_concurrency: None,
             reference_count: None,
@@ -1820,15 +1921,38 @@ impl GuardianDB {
                                 );
 
                                 // ETAPA 2: Busca da store correspondente pelo endereço
+                                // Se msg.address for apenas o nome do log, tenta encontrar a store que termina com esse nome
                                 let store = {
                                     let stores_guard = stores.read();
-                                    stores_guard.get(&msg.address).cloned()
+
+                                    // Primeiro tenta busca exata
+                                    if let Some(store) = stores_guard.get(&msg.address) {
+                                        Some(store.clone())
+                                    } else {
+                                        // Se não encontrar, busca por endereço que termina com msg.address
+                                        tracing::debug!(
+                                            looking_for = %msg.address,
+                                            available_stores = ?stores_guard.keys().collect::<Vec<_>>(),
+                                            "Buscando store por nome parcial"
+                                        );
+
+                                        stores_guard.iter()
+                                            .find(|(addr, _)| addr.ends_with(&msg.address))
+                                            .map(|(_, store)| store.clone())
+                                    }
                                 };
 
                                 let _store = match store {
-                                    Some(store) => store,
-                                    None => {
+                                    Some(store) => {
                                         tracing::debug!(
+                                            store_address = %store.address(),
+                                            peer = %event.peer,
+                                            "Store encontrada para processamento"
+                                        );
+                                        store
+                                    },
+                                    None => {
+                                        tracing::warn!(
                                             store_address = %msg.address,
                                             peer = %event.peer,
                                             "Store não encontrada para endereço, ignorando mensagem"
