@@ -311,6 +311,38 @@ impl Log {
         &self.entries[&eh]
     }
 
+    /// Adds an existing entry to the log, preserving its original hash.
+    /// This is used during sync/replication to add entries received from other nodes.
+    /// Returns true if the entry was added, false if it already exists.
+    pub fn add_entry(&mut self, entry: Entry) -> bool {
+        let hash = *entry.hash();
+
+        // Check if entry already exists
+        if self.entries.contains_key(&hash) {
+            return false;
+        }
+
+        // Update nexts from entry's next pointers
+        for n in entry.next() {
+            self.nexts.insert(*n);
+        }
+
+        // Add entry to entries map
+        let arc_entry = Arc::new(entry);
+        self.entries.insert(hash, arc_entry.clone());
+
+        // Update heads: remove any heads that are in this entry's next list
+        self.heads.retain(|h| !arc_entry.next().contains(h.hash()));
+
+        // If this entry is not in any other entry's next list, it's a head
+        if !self.nexts.contains(&hash) {
+            self.heads.push(arc_entry);
+        }
+
+        self.length += 1;
+        true
+    }
+
     /// Joins the log `other` into this log. `other` is kept intact through and after the process.
     ///
     /// Optionally truncates the log into `size` after joining.
