@@ -8,7 +8,7 @@ use std::collections::HashMap;
 const SECRET_KEY_SIZE: usize = 32;
 
 /// A struct holding identifier and public key signatures for an identity.
-#[derive(Debug, Eq, PartialEq, Clone)]
+#[derive(Debug, Eq, PartialEq, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Signatures {
     id: String,
     pub_key: String,
@@ -42,7 +42,7 @@ impl Signatures {
 }
 
 /// An identity to determine ownership of the data stored in the log.
-#[derive(Debug, Eq, PartialEq, Clone)]
+#[derive(Debug, Eq, PartialEq, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Identity {
     pub id: String,
     pub pub_key: String,
