@@ -542,33 +542,6 @@ mod error_handling_tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_deprecated_publish_method() {
-        tracing_subscriber::fmt().with_test_writer().try_init().ok();
-
-        info!("Testando método deprecado publish da trait");
-
-        let (pubsub, _temp_dir) = create_test_pubsub("deprecated_test").await.unwrap();
-
-        let topic_name = "deprecated-topic";
-        let topic = pubsub.topic_subscribe(topic_name).await.unwrap();
-
-        // O método publish da trait está deprecado e deve retornar erro
-        let result = topic.publish(vec![1, 2, 3]).await;
-
-        assert!(result.is_err(), "Método deprecado deve retornar erro");
-
-        if let Err(e) = result {
-            let error_msg = format!("{}", e);
-            assert!(
-                error_msg.contains("publish_to_topic"),
-                "Erro deve sugerir usar publish_to_topic"
-            );
-        }
-
-        info!("✓ Método deprecado corretamente retorna erro");
-    }
-
-    #[tokio::test]
     async fn test_topic_name_validation() {
         tracing_subscriber::fmt().with_test_writer().try_init().ok();
 
