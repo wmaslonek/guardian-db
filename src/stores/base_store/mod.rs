@@ -228,7 +228,6 @@ pub struct RetryMetrics {
     pub failed_send_attempts: u64,
     pub successful_retries: u64,
     pub failed_after_all_retries: u64,
-    // ✅ NOVAS MÉTRICAS: Peer exchange específicas
     pub peer_exchange_attempts: u64,
     pub peer_exchange_successes: u64,
     pub peer_exchange_failures: u64,
@@ -264,7 +263,7 @@ impl RetryMetrics {
         self.failed_after_all_retries += 1;
     }
 
-    // ✅ NOVOS MÉTODOS: Para peer exchange
+    // NOVOS MÉTODOS: Para peer exchange
     pub fn record_peer_exchange_attempt(&mut self) {
         self.peer_exchange_attempts += 1;
     }
@@ -357,6 +356,8 @@ pub struct BaseStore {
     message_marshaler: Arc<dyn MessageMarshaler<Error = GuardianError> + Send + Sync>,
     direct_channel:
         Arc<tokio::sync::Mutex<Arc<dyn DirectChannel<Error = GuardianError> + Send + Sync>>>,
+    topic:
+        Arc<tokio::sync::Mutex<Option<Arc<dyn PubSubTopic<Error = GuardianError> + Send + Sync>>>>,
 
     // --- Sistema de Eventos e Observabilidade ---
     event_bus: Arc<EventBus>,
@@ -388,7 +389,19 @@ pub type IndexBuilder =
 // O `sortFn` é uma função de ordenação.
 pub type SortFn = fn(&Entry, &Entry) -> std::cmp::Ordering;
 fn default_sort_fn(a: &Entry, b: &Entry) -> std::cmp::Ordering {
-    a.clock().time().cmp(&b.clock().time())
+    // First compare by clock time
+    let time_cmp = a.clock().time().cmp(&b.clock().time());
+    if time_cmp != std::cmp::Ordering::Equal {
+        return time_cmp;
+    }
+    // If times are equal, compare by clock ID (identity)
+    let id_cmp = a.clock().id().cmp(b.clock().id());
+    if id_cmp != std::cmp::Ordering::Equal {
+        return id_cmp;
+    }
+    // If clock IDs are also equal, use entry hash as final tiebreaker
+    // This guarantees a total order even for entries with identical clocks
+    a.hash().as_bytes().cmp(b.hash().as_bytes())
 }
 
 impl BaseStore {
@@ -704,6 +717,16 @@ impl BaseStore {
     /// ***Por enquanto, vamos simplificar retornando uma referência direta
     pub fn cache(&self) -> Arc<dyn Datastore> {
         self.cache.clone()
+    }
+
+    /// Retorna acesso ao PubSub da store
+    pub fn pubsub(&self) -> Arc<dyn PubSubInterface<Error = GuardianError> + Send + Sync> {
+        self.pubsub.clone()
+    }
+
+    /// Retorna o ID da store
+    pub fn id(&self) -> &str {
+        &self.id
     }
 
     /// Retorna uma referência compartilhada ao span. Usado para permitir
@@ -1373,6 +1396,7 @@ impl BaseStore {
                     .take()
                     .ok_or_else(|| GuardianError::Store("DirectChannel is required".to_string()))?,
             )),
+            topic: Arc::new(tokio::sync::Mutex::new(None)),
             event_bus: Arc::new(event_bus.clone()),
             emitter_interface,
             emitters,
@@ -1846,26 +1870,31 @@ impl BaseStore {
         // Processa as `heads` verificadas diretamente (sem replicator)
         debug!("Processing {} heads directly", verified_heads.len());
 
-        // Adiciona as entradas ao oplog usando append
-        let added_count = self.log_and_index.with_oplog_mut(|oplog| {
+        // Adiciona as entradas ao oplog usando add_entry (preserva hash original)
+        // Coleta informações de progresso para emissão FORA do lock
+        let (added_count, progress_info) = self.log_and_index.with_oplog_mut(|oplog| {
             let mut count = 0;
+            let mut progress = Vec::new();
             for (i, head) in verified_heads.iter().enumerate() {
-                // Converte payload Vec<u8> para String para append()
-                let payload_str = String::from_utf8_lossy(&head.payload).to_string();
-                oplog.append(&payload_str, None);
-                count += 1;
+                // Usa add_entry para preservar o hash original da entrada
+                if oplog.add_entry(head.clone()) {
+                    count += 1;
+                    debug!("Sync: added entry with hash {:?}", head.hash());
+                } else {
+                    debug!("Sync: entry already exists in oplog, skipping");
+                }
 
-                // Emite progresso via SyncObserver
-                tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(async {
-                        self.sync_observer
-                            .emit_progress(*head.hash(), head.clone(), i + 1, verified_heads.len())
-                            .await;
-                    });
-                });
+                progress.push((*head.hash(), head.clone(), i + 1, verified_heads.len()));
             }
-            count
+            (count, progress)
         });
+
+        // Emite progresso FORA do lock do oplog para evitar block_in_place dentro de lock
+        for (hash, head, current, total) in progress_info {
+            self.sync_observer
+                .emit_progress(hash, head, current, total)
+                .await;
+        }
 
         // Atualiza o índice se entradas foram adicionadas
         if added_count > 0 {
@@ -1902,7 +1931,13 @@ impl BaseStore {
         let new_entry = self.log_and_index.with_oplog_mut(|oplog| {
             use base64::{Engine as _, engine::general_purpose};
             let data_str = general_purpose::STANDARD.encode(&data);
-            oplog.append(&data_str, Some(self.reference_count)).clone()
+            let entry = oplog.append(&data_str, Some(self.reference_count)).clone();
+            debug!(
+                "[ADD_OPERATION] After append: oplog.len()={}, oplog.heads().len()={}",
+                oplog.len(),
+                oplog.heads().len()
+            );
+            entry
         });
 
         // Atualiza o índice usando a nova arquitetura
@@ -1911,14 +1946,19 @@ impl BaseStore {
 
         // Salva os heads locais no cache usando acesso thread-safe
         let heads = self.with_oplog(|oplog| {
-            oplog
+            let heads_vec = oplog
                 .heads()
                 .into_iter()
                 .map(|arc_entry| {
                     // Como oplog.heads() retorna Vec<Arc<Entry>>, fazemos clone do Arc
                     (*arc_entry).clone()
                 })
-                .collect::<Vec<Entry>>()
+                .collect::<Vec<Entry>>();
+            debug!(
+                "[ADD_OPERATION] Heads collected for cache: {} heads",
+                heads_vec.len()
+            );
+            heads_vec
         });
 
         let local_heads_bytes = crate::guardian::serializer::serialize(&heads).map_err(|e| {
@@ -1961,7 +2001,13 @@ impl BaseStore {
         debug!("Starting replication for store: {}", self.id);
 
         // --- 1. CRIAR O TÓPICO DE PUBSUB ---
-        debug!("Creating pubsub topic for store replication: {}", self.id);
+        // **IMPORTANTE**: Usa apenas o nome do log (sem hash do DB) para que
+        // diferentes nodes possam compartilhar o mesmo tópico de replicação
+        let shared_topic_name = self.extract_log_name();
+        debug!(
+            "Creating pubsub topic for store replication: {} (from full id: {})",
+            shared_topic_name, self.id
+        );
 
         // **Como PubSubInterface::topic_subscribe requer &mut self, mas temos Arc<dyn PubSubInterface>,
         // vamos usar uma abordagem baseada no tipo concreto quando disponível
@@ -1973,7 +2019,9 @@ impl BaseStore {
         {
             // Usa o método interno que funciona com &self
             debug!("Using CoreApiPubSub for topic subscription");
-            core_api_pubsub.topic_subscribe_internal(&self.id).await?
+            core_api_pubsub
+                .topic_subscribe_internal(&shared_topic_name)
+                .await?
         } else if let Some(epidemic_pubsub) =
             self.pubsub
                 .as_ref()
@@ -1982,7 +2030,7 @@ impl BaseStore {
         {
             // Usa EpidemicPubSub diretamente para replicação
             debug!("Using EpidemicPubSub for topic subscription");
-            epidemic_pubsub.topic_subscribe(&self.id).await?
+            epidemic_pubsub.topic_subscribe(&shared_topic_name).await?
         } else {
             return Err(GuardianError::Store(
                 "Unknown PubSub implementation type".to_string(),
@@ -1993,6 +2041,9 @@ impl BaseStore {
             "Successfully created topic '{}' for replication",
             topic.topic()
         );
+
+        // Armazena o topic no campo da struct para uso posterior
+        *self.topic.lock().await = Some(topic.clone());
 
         // --- 2. CONFIGURAR LISTENERS PARA EVENTOS DE ESCRITA ---
         debug!("Setting up store write event listener");
@@ -2014,7 +2065,17 @@ impl BaseStore {
             )));
         }
 
-        // --- 4. INICIAR SINCRONIZAÇÃO COM PEERS EXISTENTES ---
+        // --- 4. CONFIGURAR LISTENER PARA MENSAGENS GOSSIP RECEBIDAS ---
+        debug!("Setting up pubsub message listener");
+        if let Err(e) = self.pubsub_message_listener(topic.clone()) {
+            error!("Failed to start message listener: {:?}", e);
+            return Err(GuardianError::Store(format!(
+                "Failed to configure message listener: {}",
+                e
+            )));
+        }
+
+        // --- 5. INICIAR SINCRONIZAÇÃO COM PEERS EXISTENTES ---
         debug!("Starting synchronization with existing peers");
 
         // Obtém peers já conectados ao tópico
@@ -2224,6 +2285,62 @@ impl BaseStore {
                     node_id, self.id
                 );
 
+                // **CORREÇÃO CRÍTICA**: Quando recebemos Join de um peer, devemos também
+                // chamar join_peers() para garantir conexão BIDIRECIONAL.
+                // Sem isso, o Node A pode enviar para Node B, mas Node B não consegue
+                // receber porque não estabeleceu a conexão na sua ponta.
+                let topic_name = self.extract_log_name();
+                debug!(
+                    "[BIDIRECTIONAL_MESH] Establishing bidirectional connection with peer {:?} for topic {}",
+                    node_id, topic_name
+                );
+
+                if let Some(epidemic_pubsub) =
+                    self.pubsub
+                        .as_ref()
+                        .as_any()
+                        .downcast_ref::<crate::p2p::network::core::gossip::EpidemicPubSub>()
+                {
+                    if let Err(e) = epidemic_pubsub
+                        .subscribe_with_peers(&topic_name, vec![node_id])
+                        .await
+                    {
+                        warn!(
+                            "[BIDIRECTIONAL_MESH] Failed to establish bidirectional connection: {}",
+                            e
+                        );
+                    } else {
+                        debug!(
+                            "[BIDIRECTIONAL_MESH] Successfully established bidirectional connection with {:?}",
+                            node_id
+                        );
+                    }
+                } else if let Some(core_api_pubsub) = self
+                    .pubsub
+                    .as_ref()
+                    .as_any()
+                    .downcast_ref::<std::sync::Arc<crate::p2p::messaging::CoreApiPubSub>>()
+                {
+                    if let Err(e) = core_api_pubsub
+                        .epidemic_pubsub
+                        .subscribe_with_peers(&topic_name, vec![node_id])
+                        .await
+                    {
+                        warn!(
+                            "[BIDIRECTIONAL_MESH] Failed to establish bidirectional connection (CoreApiPubSub): {}",
+                            e
+                        );
+                    } else {
+                        debug!(
+                            "[BIDIRECTIONAL_MESH] Successfully established bidirectional connection with {:?} (CoreApiPubSub)",
+                            node_id
+                        );
+                    }
+                }
+
+                // Aguarda um pouco para o mesh se estabilizar bidirecionalmente
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
                 // Emite evento NewPeer para o sistema usando o tipo correto
                 let new_peer_event = crate::stores::events::EventNewPeer::new(node_id);
                 match self
@@ -2298,6 +2415,93 @@ impl BaseStore {
         }
     }
 
+    /// Spawns a task to handle incoming gossip messages from PubSub.
+    fn pubsub_message_listener(
+        self: &Arc<Self>,
+        topic: Arc<dyn PubSubTopic<Error = GuardianError> + Send + Sync>,
+    ) -> Result<()> {
+        let store_weak = Arc::downgrade(self);
+        let cancellation_token = self.cancellation_token.clone();
+
+        tokio::spawn(async move {
+            debug!(
+                "Starting pubsub message listener for topic: {}",
+                topic.topic()
+            );
+
+            // Obtém stream de mensagens do tópico
+            let message_stream = match topic.watch_messages().await {
+                Ok(stream) => {
+                    debug!("[✅ Message stream created successfully]");
+                    stream
+                }
+                Err(e) => {
+                    error!("Failed to create message stream: {:?}", e);
+                    return;
+                }
+            };
+
+            use futures::StreamExt;
+            let mut messages = message_stream;
+
+            debug!("[📬 Message listener loop starting]");
+
+            loop {
+                select! {
+                    _ = cancellation_token.cancelled() => {
+                        debug!("Pubsub message listener cancelled");
+                        break;
+                    }
+                    // Processa mensagens recebidas
+                    message_event = messages.next() => {
+                        match message_event {
+                            Some(event) => {
+                                debug!("[📬 Loop iteration - received event from gossip]");
+                                if let Some(store_arc) = store_weak.upgrade() {
+                                    debug!(
+                                        "[📨 Recebida mensagem gossip] {} bytes no tópico {}",
+                                        event.content.len(),
+                                        store_arc.id
+                                    );
+
+                                    // Desserializa MessageExchangeHeads
+                                    match store_arc.message_marshaler.unmarshal(&event.content) {
+                                        Ok(msg) => {
+                                            debug!(
+                                                "[🔄 Sincronizando] Recebidos {} heads do address: {} (esperado: {})",
+                                                msg.heads.len(),
+                                                msg.address,
+                                                store_arc.id
+                                            );
+
+                                            // Processa os heads recebidos
+                                            if let Err(e) = store_arc.sync(msg.heads).await {
+                                                error!("Failed to sync received heads: {}", e);
+                                            } else {
+                                                debug!("[✅ Sync concluído] Heads processados com sucesso");
+                                            }
+                                        }
+                                        Err(e) => {
+                                            warn!("Failed to unmarshal gossip message: {}", e);
+                                        }
+                                    }
+                                } else {
+                                    debug!("Store dropped, ending pubsub message listener");
+                                    break;
+                                }
+                            }
+                            None => {
+                                debug!("Message stream ended");
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        Ok(())
+    }
+
     /// Publica os "heads" mais recentes de uma escrita local para todos os
     /// peers conectados no tópico do pubsub.
     pub async fn handle_event_write(
@@ -2355,6 +2559,64 @@ impl BaseStore {
             "{:?}: New peer '{:?}' connected to {}",
             self.node_id, peer, self.id
         );
+
+        // **CORREÇÃO CRÍTICA**: Usa o nome simplificado do log (sem hash) para garantir
+        // que todos os peers usem o MESMO TopicId para o mesmo log
+        let shared_topic_name = self.extract_log_name();
+
+        // **SOLUÇÃO CRÍTICA**: Adiciona o peer ao gossip mesh re-subscrevendo com ele como bootstrap
+        // Isso permite que o iroh-gossip forme um mesh entre os peers
+        debug!(
+            "[GOSSIP_MESH] Adding peer {:?} to gossip mesh for topic {}",
+            peer, shared_topic_name
+        );
+
+        if let Some(core_api_pubsub) = self
+            .pubsub
+            .as_ref()
+            .as_any()
+            .downcast_ref::<std::sync::Arc<crate::p2p::messaging::CoreApiPubSub>>()
+        {
+            // Re-subscreve com o peer como bootstrap para formar mesh
+            // CORREÇÃO: Usa shared_topic_name ao invés de self.id para garantir mesmo TopicId
+            if let Err(e) = core_api_pubsub
+                .epidemic_pubsub
+                .get_or_create_topic_with_peers(&shared_topic_name, vec![peer])
+                .await
+            {
+                warn!("[GOSSIP_MESH] Failed to add peer to gossip mesh: {}", e);
+                // Não falha - continua com exchange_heads mesmo sem mesh
+            } else {
+                debug!(
+                    "[GOSSIP_MESH] Successfully added peer {:?} to gossip mesh",
+                    peer
+                );
+            }
+        } else if let Some(epidemic_pubsub) =
+            self.pubsub
+                .as_ref()
+                .as_any()
+                .downcast_ref::<crate::p2p::network::core::gossip::EpidemicPubSub>()
+        {
+            // CORREÇÃO: Usa shared_topic_name ao invés de self.id para garantir mesmo TopicId
+            if let Err(e) = epidemic_pubsub
+                .get_or_create_topic_with_peers(&shared_topic_name, vec![peer])
+                .await
+            {
+                warn!(
+                    "[GOSSIP_MESH] Failed to add peer to gossip mesh (EpidemicPubSub): {}",
+                    e
+                );
+            } else {
+                debug!(
+                    "[GOSSIP_MESH] Successfully added peer {:?} to gossip mesh (EpidemicPubSub)",
+                    peer
+                );
+            }
+        }
+
+        // Pequeno delay para permitir que o mesh se forme
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
         // Estratégias robustas de retry e tratamento de erros
         const MAX_PEER_EXCHANGE_RETRIES: u32 = 3;
@@ -2503,54 +2765,38 @@ impl BaseStore {
     /// Conecta-se a um peer via canal direto, carrega os "heads" locais
     /// do cache e os envia para o peer.
     pub async fn exchange_heads(&self, peer: NodeId) -> Result<()> {
-        debug!("Exchanging heads with peer: {:?}", peer);
+        debug!("[EXCHANGE_HEADS] Starting exchange with peer: {:?}", peer);
 
-        let mut heads: Vec<Entry> = vec![];
-
-        // Primeiro, carrega heads do oplog atual
-        let current_heads = self.log_and_index.with_oplog(|oplog| {
-            oplog
-                .heads()
+        // **CORREÇÃO CRÍTICA**: Para sincronização completa, enviamos TODAS as entradas
+        // do oplog, não apenas os heads (tips). Os heads são apenas os nós folha,
+        // mas o receptor precisa de toda a cadeia de entradas.
+        let all_entries: Vec<Entry> = self.log_and_index.with_oplog(|oplog| {
+            // values() retorna todas as entradas do log, não apenas os heads
+            let entries_vec = oplog
+                .values()
                 .iter()
                 .map(|arc_entry| (**arc_entry).clone())
-                .collect::<Vec<Entry>>()
+                .collect::<Vec<Entry>>();
+            debug!(
+                "[EXCHANGE_HEADS] From oplog.values(): {} total entries, oplog.heads().len()={}",
+                entries_vec.len(),
+                oplog.heads().len()
+            );
+            entries_vec
         });
-        heads.extend(current_heads);
 
-        // Carrega heads adicionais do cache se disponíveis
-        let cache = self.cache();
+        debug!(
+            "[EXCHANGE_HEADS] Sending {} total entries to peer: {:?}",
+            all_entries.len(),
+            peer
+        );
 
-        // Carrega os heads locais do cache
-        if let Ok(Some(local_heads_bytes)) = cache.get("_localHeads".as_bytes()).await {
-            match crate::guardian::serializer::deserialize::<Vec<Entry>>(&local_heads_bytes) {
-                Ok(local_heads) => {
-                    debug!("Loaded {} local heads from cache", local_heads.len());
-                    heads.extend(local_heads);
-                }
-                Err(e) => warn!("Failed to deserialize local heads from cache: {}", e),
-            }
-        }
-
-        // Carrega os heads remotos do cache
-        if let Ok(Some(remote_heads_bytes)) = cache.get("_remoteHeads".as_bytes()).await {
-            match crate::guardian::serializer::deserialize::<Vec<Entry>>(&remote_heads_bytes) {
-                Ok(remote_heads) => {
-                    debug!("Loaded {} remote heads from cache", remote_heads.len());
-                    heads.extend(remote_heads);
-                }
-                Err(e) => warn!("Failed to deserialize remote heads from cache: {}", e),
-            }
-        }
-
-        // Remove duplicatas baseadas no hash
-        heads.sort_by(|a, b| a.hash().cmp(b.hash()));
-        heads.dedup_by(|a, b| a.hash() == b.hash());
-
-        debug!("Sending {} unique heads to peer: {:?}", heads.len(), peer);
-
+        // USA APENAS O NOME DO LOG, não o address completo, para permitir
+        // que diferentes peers (com DBNames diferentes) sincronizem o mesmo log
+        let log_name = self.extract_log_name();
         let msg = MessageExchangeHeads {
-            address: self.id.clone(),
-            heads,
+            address: log_name.clone(),
+            heads: all_entries, // Envia todas as entradas, não apenas heads
         };
 
         let payload = self
@@ -2558,405 +2804,191 @@ impl BaseStore {
             .marshal(&msg)
             .map_err(|e| GuardianError::Store(format!("unable to marshall message: {}", e)))?;
 
-        // Conecta ao peer e envia a mensagem via DirectChannel
         debug!(
-            "Connecting to peer {} and sending {} bytes",
-            peer,
+            "[EXCHANGE_HEADS] Broadcasting {} entries ({} bytes) via gossip topic",
+            msg.heads.len(),
             payload.len()
         );
 
-        // Obtém acesso ao DirectChannel para executar operações
-        let direct_channel = self.direct_channel.lock().await;
-
-        if let Some(concrete_channel) = direct_channel
+        // Obtém o tópico gossip compartilhado
+        let topic_option = self.topic.lock().await;
+        let topic = topic_option
             .as_ref()
-            .as_any()
-            .downcast_ref::<crate::p2p::messaging::direct_channel::DirectChannel>(
-        ) {
-            debug!("Using concrete DirectChannel implementation for communication");
+            .ok_or_else(|| GuardianError::Store("Gossip topic not initialized".to_string()))?;
 
-            // 1. CONECTA AO PEER - Usando métodos públicos com retry
-            debug!("Establishing connection to peer: {:?}", peer);
+        // Usa o PubSub API para publicar a mensagem
+        let topic_name = topic.topic();
 
-            let mut connection_established = false;
-            let mut connection_attempts = 0;
-            const MAX_CONNECTION_RETRIES: u32 = 2;
-            const CONNECTION_BASE_DELAY_MS: u64 = 50;
-
-            while !connection_established && connection_attempts <= MAX_CONNECTION_RETRIES {
-                connection_attempts += 1;
-
-                match concrete_channel.connect_to_peer(peer).await {
-                    Ok(()) => {
-                        debug!(
-                            "Successfully connected to peer: {:?} on attempt {}",
-                            peer, connection_attempts
-                        );
-                        connection_established = true;
-
-                        // Registra métricas de sucesso na conexão
-                        if let Some(mut metrics) = self.retry_metrics.try_lock() {
-                            metrics.record_connection_attempt(true);
-                        }
-                    }
-                    Err(e) => {
-                        // Registra métricas de falha na conexão
-                        if let Some(mut metrics) = self.retry_metrics.try_lock() {
-                            metrics.record_connection_attempt(false);
-                        }
-
-                        if connection_attempts <= MAX_CONNECTION_RETRIES {
-                            let delay_ms = CONNECTION_BASE_DELAY_MS * connection_attempts as u64;
-                            warn!(
-                                "Connection attempt {}/{} failed for peer {}: {}. Retrying in {}ms",
-                                connection_attempts,
-                                MAX_CONNECTION_RETRIES + 1,
-                                peer,
-                                e,
-                                delay_ms
-                            );
-                            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                        } else {
-                            error!(
-                                "Failed to connect to peer {} after {} attempts: {}",
-                                peer,
-                                MAX_CONNECTION_RETRIES + 1,
-                                e
-                            );
-
-                            // Registra falha após todos os retries
-                            if let Some(mut metrics) = self.retry_metrics.try_lock() {
-                                metrics.record_failed_after_retries();
-                            }
-                            return Err(GuardianError::Store(format!(
-                                "DirectChannel connection failed after {} attempts: {}",
-                                MAX_CONNECTION_RETRIES + 1,
-                                e
-                            )));
-                        }
-                    }
-                }
-            }
-
-            // 2. ENVIA OS DADOS - Usando métodos públicos
+        // **CORREÇÃO CRÍTICA**: Antes de publicar, garante que o peer destino esteja no mesh
+        // Re-subscrevendo com o peer como bootstrap garante que iroh-gossip forme conexão
+        if let Some(epidemic_pubsub) =
+            self.pubsub
+                .as_ref()
+                .as_any()
+                .downcast_ref::<crate::p2p::network::core::gossip::EpidemicPubSub>()
+        {
             debug!(
-                "Sending {} bytes of head data to peer: {:?}",
-                payload.len(),
+                "[EXCHANGE_HEADS] Adding peer {:?} to gossip mesh before publishing",
                 peer
             );
 
-            match concrete_channel.send_data(peer, payload.clone()).await {
-                Ok(()) => {
-                    debug!(
-                        "Successfully sent {} bytes to peer: {:?}",
-                        payload.len(),
-                        peer
+            // Adiciona o peer ao mesh via subscribe_with_peers
+            epidemic_pubsub
+                .subscribe_with_peers(topic_name, vec![peer])
+                .await
+                .map_err(|e| {
+                    warn!(
+                        "[EXCHANGE_HEADS] Failed to add peer to mesh (continuing anyway): {}",
+                        e
                     );
-                }
-                Err(e) => {
-                    error!("Failed to send data to peer {}: {}", peer, e);
-                    // Implementa lógica de retry com backoff exponencial
-                    debug!("Initiating retry logic for DirectChannel send failure");
+                    GuardianError::Store(format!("Failed to add peer to mesh: {}", e))
+                })
+                .ok(); // Não falha se não conseguir adicionar, tenta publicar mesmo assim
 
-                    let mut retry_attempts = 0;
-                    const MAX_RETRIES: u32 = 3;
-                    const BASE_DELAY_MS: u64 = 100;
+            // **CORREÇÃO CRÍTICA**: Verifica se o peer está realmente conectado antes de publicar
+            // Isso evita enviar mensagens quando o mesh ainda não está formado bilateralmente
+            let iroh_topic = epidemic_pubsub.get_topic(topic_name).await;
+            if let Some(iroh_topic) = iroh_topic {
+                let mut attempts = 0;
+                const MAX_WAIT_ATTEMPTS: u32 = 30; // 30 * 100ms = 3 segundos max
 
-                    while retry_attempts < MAX_RETRIES {
-                        retry_attempts += 1;
+                loop {
+                    let peers = iroh_topic.list_peers().await;
+                    let peer_connected = peers.contains(&peer);
 
-                        // Backoff exponencial: 100ms, 200ms, 400ms
-                        let delay_ms = BASE_DELAY_MS * (2_u64.pow(retry_attempts - 1));
-
-                        warn!(
-                            "Retry attempt {}/{} for peer {} after {}ms delay",
-                            retry_attempts, MAX_RETRIES, peer, delay_ms
-                        );
-
-                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-
-                        // Tenta reconectar antes do retry
-                        match concrete_channel.connect_to_peer(peer).await {
-                            Ok(()) => {
-                                debug!("Reconnection successful on retry {}", retry_attempts);
-
-                                // Tenta enviar novamente
-                                match concrete_channel.send_data(peer, payload.clone()).await {
-                                    Ok(()) => {
-                                        debug!(
-                                            "Retry {}/{} successful: sent {} bytes to peer: {:?}",
-                                            retry_attempts,
-                                            MAX_RETRIES,
-                                            payload.len(),
-                                            peer
-                                        );
-                                        // Sucesso no retry - sai do loop
-                                        break;
-                                    }
-                                    Err(retry_err) => {
-                                        warn!(
-                                            "Retry {}/{} failed to send data: {}",
-                                            retry_attempts, MAX_RETRIES, retry_err
-                                        );
-
-                                        // Se foi a última tentativa, retorna erro
-                                        if retry_attempts >= MAX_RETRIES {
-                                            error!(
-                                                "All {} retry attempts failed for peer {}",
-                                                MAX_RETRIES, peer
-                                            );
-                                            return Err(GuardianError::Store(format!(
-                                                "DirectChannel send failed after {} retries. Last error: {}",
-                                                MAX_RETRIES, retry_err
-                                            )));
-                                        }
-                                    }
-                                }
-                            }
-                            Err(reconnect_err) => {
-                                warn!(
-                                    "Retry {}/{} failed to reconnect: {}",
-                                    retry_attempts, MAX_RETRIES, reconnect_err
-                                );
-
-                                // Se foi a última tentativa, retorna erro
-                                if retry_attempts >= MAX_RETRIES {
-                                    error!(
-                                        "All {} retry attempts failed for peer {} (reconnection failed)",
-                                        MAX_RETRIES, peer
-                                    );
-                                    return Err(GuardianError::Store(format!(
-                                        "DirectChannel connection failed after {} retries. Last error: {}",
-                                        MAX_RETRIES, reconnect_err
-                                    )));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        } else if let Some(channels) = direct_channel
-            .as_ref()
-            .as_any()
-            .downcast_ref::<crate::p2p::messaging::one_on_one_channel::Channels>(
-        ) {
-            debug!("Using Channels implementation for communication");
-
-            // 1. CONECTA AO PEER - Channels com retry
-            debug!("Establishing Channels connection to peer: {:?}", peer);
-
-            let mut channels_connection_established = false;
-            let mut channels_connection_attempts = 0;
-            const MAX_CHANNELS_CONNECTION_RETRIES: u32 = 2;
-            const CHANNELS_CONNECTION_BASE_DELAY_MS: u64 = 75; // Delay ligeiramente maior para Channels
-
-            while !channels_connection_established
-                && channels_connection_attempts <= MAX_CHANNELS_CONNECTION_RETRIES
-            {
-                channels_connection_attempts += 1;
-
-                match channels.connect(peer).await {
-                    Ok(()) => {
+                    if peer_connected {
                         debug!(
-                            "Successfully connected to peer: {:?} via Channels on attempt {}",
-                            peer, channels_connection_attempts
+                            "[EXCHANGE_HEADS] Peer {:?} confirmed in mesh, proceeding with broadcast",
+                            peer
                         );
-                        channels_connection_established = true;
+                        break;
                     }
-                    Err(e) => {
-                        if channels_connection_attempts <= MAX_CHANNELS_CONNECTION_RETRIES {
-                            let delay_ms = CHANNELS_CONNECTION_BASE_DELAY_MS
-                                * channels_connection_attempts as u64;
-                            warn!(
-                                "Channels connection attempt {}/{} failed for peer {}: {}. Retrying in {}ms",
-                                channels_connection_attempts,
-                                MAX_CHANNELS_CONNECTION_RETRIES + 1,
-                                peer,
-                                e,
-                                delay_ms
-                            );
-                            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                        } else {
-                            error!(
-                                "Failed to connect to peer {} via Channels after {} attempts: {}",
-                                peer,
-                                MAX_CHANNELS_CONNECTION_RETRIES + 1,
-                                e
-                            );
-                            return Err(GuardianError::Store(format!(
-                                "Channels connection failed after {} attempts: {}",
-                                MAX_CHANNELS_CONNECTION_RETRIES + 1,
-                                e
-                            )));
-                        }
+
+                    attempts += 1;
+                    if attempts >= MAX_WAIT_ATTEMPTS {
+                        warn!(
+                            "[EXCHANGE_HEADS] Timeout waiting for peer {:?} to appear in mesh after {}ms",
+                            peer,
+                            attempts * 100
+                        );
+                        // Continua mesmo assim - pode funcionar
+                        break;
                     }
+
+                    debug!(
+                        "[EXCHANGE_HEADS] Waiting for peer {:?} to appear in mesh (attempt {}/{})",
+                        peer, attempts, MAX_WAIT_ATTEMPTS
+                    );
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                 }
             }
 
-            // 2. ENVIA OS DADOS - Channels
+            epidemic_pubsub
+                .publish_to_topic(topic_name, &payload)
+                .await
+                .map_err(|e| {
+                    error!(
+                        "[EXCHANGE_HEADS] Failed to broadcast via EpidemicPubSub: {}",
+                        e
+                    );
+                    GuardianError::Store(format!("Failed to broadcast via gossip: {}", e))
+                })?;
+        } else if let Some(core_api_pubsub) =
+            self.pubsub
+                .as_ref()
+                .as_any()
+                .downcast_ref::<crate::p2p::messaging::CoreApiPubSub>()
+        {
+            // Para CoreApiPubSub, usa o método interno
             debug!(
-                "Sending {} bytes of head data to peer: {:?}",
-                payload.len(),
+                "[EXCHANGE_HEADS] Adding peer {:?} to gossip mesh before publishing (CoreApiPubSub)",
                 peer
             );
 
-            match channels.send(peer, &payload).await {
-                Ok(()) => {
-                    debug!(
-                        "Successfully sent {} bytes to peer: {:?}",
-                        payload.len(),
-                        peer
+            core_api_pubsub
+                .epidemic_pubsub
+                .subscribe_with_peers(topic_name, vec![peer])
+                .await
+                .map_err(|e| {
+                    warn!(
+                        "[EXCHANGE_HEADS] Failed to add peer to mesh (continuing anyway): {}",
+                        e
                     );
-                }
-                Err(e) => {
-                    error!("Failed to send data to peer {}: {}", peer, e);
-                    // Retry logic para Channels com backoff exponencial
-                    debug!("Initiating retry logic for Channels send failure");
+                    GuardianError::Store(format!("Failed to add peer to mesh: {}", e))
+                })
+                .ok();
 
-                    let mut retry_attempts = 0;
-                    const MAX_RETRIES: u32 = 3;
-                    const BASE_DELAY_MS: u64 = 150; // Delay ligeiramente maior para Channels
+            // **CORREÇÃO CRÍTICA**: Verifica se o peer está realmente conectado antes de publicar
+            let iroh_topic = core_api_pubsub.epidemic_pubsub.get_topic(topic_name).await;
+            if let Some(iroh_topic) = iroh_topic {
+                let mut attempts = 0;
+                const MAX_WAIT_ATTEMPTS: u32 = 30; // 30 * 100ms = 3 segundos max
 
-                    while retry_attempts < MAX_RETRIES {
-                        retry_attempts += 1;
+                loop {
+                    let peers = iroh_topic.list_peers().await;
+                    let peer_connected = peers.contains(&peer);
 
-                        // Backoff exponencial: 150ms, 300ms, 600ms
-                        let delay_ms = BASE_DELAY_MS * (2_u64.pow(retry_attempts - 1));
-
-                        warn!(
-                            "Channels retry attempt {}/{} for peer {} after {}ms delay",
-                            retry_attempts, MAX_RETRIES, peer, delay_ms
+                    if peer_connected {
+                        debug!(
+                            "[EXCHANGE_HEADS] Peer {:?} confirmed in mesh (CoreApiPubSub), proceeding with broadcast",
+                            peer
                         );
-
-                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-
-                        // Tenta reconectar antes do retry
-                        match channels.connect(peer).await {
-                            Ok(()) => {
-                                debug!(
-                                    "Channels reconnection successful on retry {}",
-                                    retry_attempts
-                                );
-
-                                // Tenta enviar novamente
-                                match channels.send(peer, &payload).await {
-                                    Ok(()) => {
-                                        debug!(
-                                            "Channels retry {}/{} successful: sent {} bytes to peer: {:?}",
-                                            retry_attempts,
-                                            MAX_RETRIES,
-                                            payload.len(),
-                                            peer
-                                        );
-                                        // Sucesso no retry - sai do loop
-                                        break;
-                                    }
-                                    Err(retry_err) => {
-                                        warn!(
-                                            "Channels retry {}/{} failed to send data: {}",
-                                            retry_attempts, MAX_RETRIES, retry_err
-                                        );
-
-                                        // Se foi a última tentativa, retorna erro
-                                        if retry_attempts >= MAX_RETRIES {
-                                            error!(
-                                                "All {} Channels retry attempts failed for peer {}",
-                                                MAX_RETRIES, peer
-                                            );
-                                            return Err(GuardianError::Store(format!(
-                                                "Channels send failed after {} retries. Last error: {}",
-                                                MAX_RETRIES, retry_err
-                                            )));
-                                        }
-                                    }
-                                }
-                            }
-                            Err(reconnect_err) => {
-                                warn!(
-                                    "Channels retry {}/{} failed to reconnect: {}",
-                                    retry_attempts, MAX_RETRIES, reconnect_err
-                                );
-
-                                // Se foi a última tentativa, retorna erro
-                                if retry_attempts >= MAX_RETRIES {
-                                    error!(
-                                        "All {} Channels retry attempts failed for peer {} (reconnection failed)",
-                                        MAX_RETRIES, peer
-                                    );
-                                    return Err(GuardianError::Store(format!(
-                                        "Channels connection failed after {} retries. Last error: {}",
-                                        MAX_RETRIES, reconnect_err
-                                    )));
-                                }
-                            }
-                        }
+                        break;
                     }
+
+                    attempts += 1;
+                    if attempts >= MAX_WAIT_ATTEMPTS {
+                        warn!(
+                            "[EXCHANGE_HEADS] Timeout waiting for peer {:?} to appear in mesh after {}ms (CoreApiPubSub)",
+                            peer,
+                            attempts * 100
+                        );
+                        break;
+                    }
+
+                    debug!(
+                        "[EXCHANGE_HEADS] Waiting for peer {:?} to appear in mesh (attempt {}/{}) (CoreApiPubSub)",
+                        peer, attempts, MAX_WAIT_ATTEMPTS
+                    );
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                 }
             }
+
+            core_api_pubsub
+                .epidemic_pubsub
+                .publish_to_topic(topic_name, &payload)
+                .await
+                .map_err(|e| {
+                    error!(
+                        "[EXCHANGE_HEADS] Failed to broadcast via CoreApiPubSub: {}",
+                        e
+                    );
+                    GuardianError::Store(format!("Failed to broadcast via gossip: {}", e))
+                })?;
         } else {
-            // Fallback: Usando métodos do trait DirectChannel
-            debug!(
-                "Could not downcast DirectChannel to concrete type, using trait methods directly"
-            );
-            // Liberamos o lock atual e obtemos um novo com mutabilidade
-            drop(direct_channel);
-
-            // Obtém acesso mutável ao DirectChannel via Mutex
-            let mut mutable_channel_guard = self.direct_channel.lock().await;
-            let mutable_channel = Arc::get_mut(&mut mutable_channel_guard).ok_or_else(|| {
-                GuardianError::Store("Failed to get mutable access to DirectChannel".to_string())
-            })?;
-
-            debug!(
-                "Connecting and sending to peer {:?} with {} bytes using trait methods",
-                peer,
-                payload.len()
-            );
-            // 1. CONECTA AO PEER - Usando trait methods
-            if let Err(e) = mutable_channel.connect(peer).await {
-                error!(
-                    "DirectChannel trait connect failed for peer {}: {}",
-                    peer, e
-                );
-                return Err(GuardianError::Store(format!(
-                    "DirectChannel trait connection failed: {}",
-                    e
-                )));
-            }
-
-            debug!(
-                "Successfully connected to peer via trait methods: {:?}",
-                peer
-            );
-
-            // 2. ENVIA OS DADOS - Usando trait methods
-            if let Err(e) = mutable_channel.send(peer, payload.clone()).await {
-                error!("DirectChannel trait send failed for peer {}: {}", peer, e);
-                return Err(GuardianError::Store(format!(
-                    "DirectChannel trait send failed: {}",
-                    e
-                )));
-            }
-
-            debug!(
-                "Successfully sent {} bytes to peer via trait methods: {:?}",
-                payload.len(),
-                peer
-            );
-
-            // Registra métricas de sucesso
-            if let Some(mut metrics) = self.retry_metrics.try_lock() {
-                metrics.record_connection_attempt(true);
-                metrics.record_send_attempt(true);
-            }
+            return Err(GuardianError::Store(
+                "Unknown PubSub implementation - cannot publish".to_string(),
+            ));
         }
 
-        debug!("Successfully exchanged heads with peer: {:?}", peer);
-
-        // Loga as métricas de retry atualizadas para monitoramento
-        self.log_retry_metrics();
+        debug!(
+            "[EXCHANGE_HEADS] Successfully broadcast {} entries to all peers via gossip topic",
+            msg.heads.len()
+        );
 
         Ok(())
+    }
+
+    /// Extrai o nome do log do endereço completo da store
+    /// Exemplo: /GuardianDB/HASH/global-chat -> global-chat
+    pub fn extract_log_name(&self) -> String {
+        // O ID tem formato: /GuardianDB/HASH/NOME_DO_LOG
+        // Queremos apenas o NOME_DO_LOG para usar como tópico compartilhado
+        self.id
+            .split('/')
+            .next_back()
+            .unwrap_or(&self.id)
+            .to_string()
     }
 
     /// Carrega o estado da store a partir dos heads salvos no cache. Ele processa
