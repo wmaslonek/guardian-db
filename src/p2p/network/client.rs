@@ -271,6 +271,59 @@ impl IrohClient {
         self.backend.id().await
     }
 
+    /// Adiciona um NodeAddr ao endpoint (útil para testes onde discovery não funciona)
+    pub async fn add_node_addr(&self, node_addr: iroh::NodeAddr) -> Result<()> {
+        let endpoint_arc = self.backend.get_endpoint().await?;
+        let endpoint_lock = endpoint_arc.read().await;
+        let endpoint = endpoint_lock
+            .as_ref()
+            .ok_or_else(|| GuardianError::Other("Endpoint não disponível".to_string()))?;
+
+        endpoint
+            .add_node_addr(node_addr)
+            .map_err(|e| GuardianError::Other(format!("Failed to add node addr: {}", e)))?;
+        Ok(())
+    }
+
+    /// Conecta ao peer via gossip ALPN e registra a conexão no Gossip
+    ///
+    /// IMPORTANTE: Esta função abre uma conexão QUIC com o ALPN do gossip e a passa
+    /// para o Gossip.handle_connection() para que seja mantida ativa. Sem isso,
+    /// a conexão seria fechada ao sair do escopo, causando "closed by peer: 0".
+    pub async fn connect_gossip(&self, node_id: NodeId) -> Result<()> {
+        let endpoint_arc = self.backend.get_endpoint().await?;
+        let endpoint_lock = endpoint_arc.read().await;
+        let endpoint = endpoint_lock
+            .as_ref()
+            .ok_or_else(|| GuardianError::Other("Endpoint não disponível".to_string()))?;
+
+        // Obtém o Gossip do backend
+        let gossip_arc = self.backend.get_gossip().await?;
+        let gossip_lock = gossip_arc.read().await;
+        let gossip = gossip_lock
+            .as_ref()
+            .ok_or_else(|| GuardianError::Other("Gossip não inicializado".to_string()))?
+            .clone();
+        drop(gossip_lock);
+
+        // ALPN para iroh-gossip: "/iroh-gossip/1"
+        let gossip_alpn = b"/iroh-gossip/1";
+
+        // Abre conexão QUIC com ALPN do gossip
+        let connection = endpoint
+            .connect(node_id, gossip_alpn)
+            .await
+            .map_err(|e| GuardianError::Other(format!("Failed to connect via gossip: {}", e)))?;
+
+        // CRUCIAL: Passa a conexão para o Gossip para que ele a mantenha ativa
+        // Sem isso, a conexão seria fechada ao sair do escopo
+        gossip.handle_connection(connection).await.map_err(|e| {
+            GuardianError::Other(format!("Failed to register connection with gossip: {}", e))
+        })?;
+
+        Ok(())
+    }
+
     // ==================== Integração de Subsistemas ====================
     // Métodos iroh-docs
 
