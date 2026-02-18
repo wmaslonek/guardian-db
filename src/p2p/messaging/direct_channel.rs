@@ -5,6 +5,7 @@ use crate::traits::{
     DirectChannelEmitter, DirectChannelFactory, DirectChannelOptions, EventPubSubPayload,
 };
 use async_trait::async_trait;
+use futures::StreamExt;
 use iroh::NodeId;
 use iroh_gossip::net::Gossip;
 use iroh_gossip::proto::TopicId;
@@ -15,8 +16,11 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::sync::{Mutex, RwLock, mpsc};
+use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
+use tokio::task::JoinHandle;
 use tracing::Span;
+
+type TopicMessageChannels = Arc<RwLock<HashMap<TopicId, broadcast::Sender<(NodeId, Vec<u8>)>>>>;
 
 // Timeout para resposta de beacon (fração do CONNECTION_TIMEOUT)
 const BEACON_TIMEOUT: Duration = Duration::from_secs(CONNECTION_TIMEOUT.as_secs() / 6);
@@ -40,9 +44,12 @@ pub enum MessageType {
 #[async_trait]
 pub trait DirectChannelNetwork: Send + Sync {
     async fn publish_message(&self, topic: &TopicId, message: &[u8]) -> Result<()>;
-    async fn subscribe_topic(&self, topic: &TopicId) -> Result<()>;
+    async fn subscribe_topic(&self, topic: &TopicId, bootstrap_peers: Vec<NodeId>) -> Result<()>;
     async fn get_connected_peers(&self) -> Vec<NodeId>;
     async fn get_topic_peers(&self, topic: &TopicId) -> Vec<NodeId>;
+
+    /// Permite downcast para tipos concretos
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 // Implementação do DirectChannelNetwork usando IrohBackend + iroh-gossip
@@ -55,6 +62,10 @@ pub struct IrohBridge {
     topic_peers: Arc<RwLock<HashMap<TopicId, Vec<NodeId>>>>,
     subscribed_topics: Arc<RwLock<HashMap<TopicId, bool>>>,
     own_node_id: NodeId,
+    // Canais de mensagens por tópico para event loops consumirem
+    topic_message_channels: TopicMessageChannels,
+    // Event loops ativos por tópico
+    topic_event_loops: Arc<RwLock<HashMap<TopicId, JoinHandle<()>>>>,
 }
 
 impl IrohBridge {
@@ -70,7 +81,9 @@ impl IrohBridge {
         drop(endpoint_lock);
 
         // Inicializa gossip
-        let gossip = Gossip::builder().spawn(endpoint);
+        let gossip = Gossip::builder()
+            .max_message_size(backend.config().gossip.max_message_size)
+            .spawn(endpoint);
 
         Ok(Self {
             span,
@@ -80,6 +93,8 @@ impl IrohBridge {
             topic_peers: Arc::new(RwLock::new(HashMap::new())),
             subscribed_topics: Arc::new(RwLock::new(HashMap::new())),
             own_node_id,
+            topic_message_channels: Arc::new(RwLock::new(HashMap::new())),
+            topic_event_loops: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -182,6 +197,16 @@ impl IrohBridge {
         let hash = blake3::hash(topic.as_bytes());
         TopicId::from_bytes(hash.into())
     }
+
+    /// Obtém um receiver para mensagens de um tópico específico
+    /// Retorna None se o tópico não está subscrito
+    pub async fn get_topic_receiver(
+        &self,
+        topic: &TopicId,
+    ) -> Option<broadcast::Receiver<(NodeId, Vec<u8>)>> {
+        let channels = self.topic_message_channels.read().await;
+        channels.get(topic).map(|sender| sender.subscribe())
+    }
 }
 
 #[async_trait]
@@ -203,8 +228,123 @@ impl DirectChannelNetwork for IrohBridge {
         Ok(())
     }
 
-    async fn subscribe_topic(&self, topic: &TopicId) -> Result<()> {
-        tracing::debug!("Inscrevendo no tópico: {}", topic.fmt_short());
+    async fn subscribe_topic(&self, topic: &TopicId, bootstrap_peers: Vec<NodeId>) -> Result<()> {
+        tracing::debug!(
+            "Inscrevendo no tópico: {} com {} bootstrap peers",
+            topic.fmt_short(),
+            bootstrap_peers.len()
+        );
+
+        // Verifica se já está subscrito
+        {
+            let topics = self.subscribed_topics.read().await;
+            if topics.contains_key(topic) {
+                tracing::debug!(
+                    "Tópico {} já está subscrito, re-subscrevendo com novos peers",
+                    topic.fmt_short()
+                );
+                // Se já subscrito, re-subscreve com novos peers para adicionar ao mesh
+                if !bootstrap_peers.is_empty() {
+                    let gossip_topic_new = self
+                        .gossip
+                        .subscribe(*topic, bootstrap_peers.clone())
+                        .await
+                        .map_err(|e| {
+                            GuardianError::Other(format!("Erro ao re-subscrever tópico: {}", e))
+                        })?;
+
+                    // CORREÇÃO: NÃO descartamos o novo stream. Precisamos processar eventos dele.
+                    // Obtém o canal de mensagens existente para encaminhar
+                    let message_tx = {
+                        let channels = self.topic_message_channels.read().await;
+                        channels.get(topic).cloned()
+                    };
+
+                    if let Some(tx) = message_tx {
+                        let topic_id = *topic;
+                        let topic_peers_map = self.topic_peers.clone();
+                        let span = self.span.clone();
+
+                        // Spawna event loop adicional para o novo subscription
+                        tokio::spawn(async move {
+                            let _entered = span.enter();
+                            let mut gossip_topic = gossip_topic_new;
+                            tracing::info!(
+                                "[PEER_MESH] Event loop adicional iniciado para tópico {} com novos peers",
+                                topic_id.fmt_short()
+                            );
+
+                            while let Some(event_result) = gossip_topic.next().await {
+                                match event_result {
+                                    Ok(iroh_gossip::api::Event::Received(msg)) => {
+                                        tracing::info!(
+                                            "[PEER_MESH] Mensagem recebida via novo mesh no tópico {}: {} bytes do peer {}",
+                                            topic_id.fmt_short(),
+                                            msg.content.len(),
+                                            msg.delivered_from
+                                        );
+                                        let _ = tx.send((msg.delivered_from, msg.content.to_vec()));
+                                    }
+                                    Ok(iroh_gossip::api::Event::NeighborUp(peer_id)) => {
+                                        tracing::info!(
+                                            "[PEER_MESH] Peer {} conectado ao tópico {} via novo mesh",
+                                            peer_id,
+                                            topic_id.fmt_short()
+                                        );
+                                        let mut peers = topic_peers_map.write().await;
+                                        peers
+                                            .entry(topic_id)
+                                            .or_insert_with(Vec::new)
+                                            .push(peer_id);
+                                    }
+                                    Ok(iroh_gossip::api::Event::NeighborDown(peer_id)) => {
+                                        tracing::debug!(
+                                            "[PEER_MESH] Peer {} desconectado do tópico {} via novo mesh",
+                                            peer_id,
+                                            topic_id.fmt_short()
+                                        );
+                                        let mut peers = topic_peers_map.write().await;
+                                        if let Some(peer_list) = peers.get_mut(&topic_id) {
+                                            peer_list.retain(|p| *p != peer_id);
+                                        }
+                                    }
+                                    Ok(iroh_gossip::api::Event::Lagged) => {
+                                        tracing::warn!(
+                                            "[PEER_MESH] Event loop atrasado no tópico {} (novo mesh)",
+                                            topic_id.fmt_short()
+                                        );
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "[PEER_MESH] Erro no event stream do tópico {} (novo mesh): {}",
+                                            topic_id.fmt_short(),
+                                            e
+                                        );
+                                        break;
+                                    }
+                                }
+                            }
+
+                            tracing::debug!(
+                                "[PEER_MESH] Event loop encerrado para tópico {} (novo mesh)",
+                                topic_id.fmt_short()
+                            );
+                        });
+
+                        tracing::info!(
+                            "Re-subscrição com event loop adicional realizada para tópico: {}",
+                            topic.fmt_short()
+                        );
+                    } else {
+                        tracing::warn!(
+                            "Canal de mensagens não encontrado para tópico {} - descartando re-subscrição",
+                            topic.fmt_short()
+                        );
+                    }
+                }
+                return Ok(());
+            }
+        }
 
         // Marca o tópico como inscrito
         {
@@ -214,15 +354,90 @@ impl DirectChannelNetwork for IrohBridge {
             topic_peers.entry(*topic).or_insert_with(Vec::new);
         }
 
-        // Subscreve via iroh-gossip (sem bootstrap peers inicialmente)
-        self.gossip
-            .subscribe(*topic, vec![])
+        // Cria canal de mensagens para este tópico (capacity: 100 mensagens)
+        let (message_tx, _message_rx) = broadcast::channel::<(NodeId, Vec<u8>)>(100);
+
+        {
+            let mut channels = self.topic_message_channels.write().await;
+            channels.insert(*topic, message_tx.clone());
+        }
+
+        // Subscreve via iroh-gossip com bootstrap peers
+        let mut gossip_topic = self
+            .gossip
+            .subscribe(*topic, bootstrap_peers.clone())
             .await
             .map_err(|e| GuardianError::Other(format!("Erro ao subscrever tópico: {}", e)))?;
 
+        // Cria event loop para processar mensagens recebidas
+        let topic_id = *topic;
+        let topic_peers_map = self.topic_peers.clone();
+        let span = self.span.clone();
+
+        let event_loop = tokio::spawn(async move {
+            let _entered = span.enter();
+            tracing::info!("Event loop iniciado para tópico: {}", topic_id.fmt_short());
+
+            while let Some(event_result) = gossip_topic.next().await {
+                match event_result {
+                    Ok(iroh_gossip::api::Event::Received(msg)) => {
+                        tracing::debug!(
+                            "Mensagem recebida no tópico {}: {} bytes do peer {}",
+                            topic_id.fmt_short(),
+                            msg.content.len(),
+                            msg.delivered_from
+                        );
+
+                        // Envia mensagem para o canal (ignora erros se não há receivers)
+                        let _ = message_tx.send((msg.delivered_from, msg.content.to_vec()));
+                    }
+                    Ok(iroh_gossip::api::Event::NeighborUp(peer_id)) => {
+                        tracing::debug!(
+                            "Peer {} conectado ao tópico {}",
+                            peer_id,
+                            topic_id.fmt_short()
+                        );
+                        let mut peers = topic_peers_map.write().await;
+                        peers.entry(topic_id).or_insert_with(Vec::new).push(peer_id);
+                    }
+                    Ok(iroh_gossip::api::Event::NeighborDown(peer_id)) => {
+                        tracing::debug!(
+                            "Peer {} desconectado do tópico {}",
+                            peer_id,
+                            topic_id.fmt_short()
+                        );
+                        let mut peers = topic_peers_map.write().await;
+                        if let Some(peer_list) = peers.get_mut(&topic_id) {
+                            peer_list.retain(|p| *p != peer_id);
+                        }
+                    }
+                    Ok(iroh_gossip::api::Event::Lagged) => {
+                        tracing::warn!("Event loop atrasado no tópico {}", topic_id.fmt_short());
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "Erro no event stream do tópico {}: {}",
+                            topic_id.fmt_short(),
+                            e
+                        );
+                        break;
+                    }
+                }
+            }
+
+            tracing::info!("Event loop encerrado para tópico: {}", topic_id.fmt_short());
+        });
+
+        // Armazena o event loop handle
+        {
+            let mut loops = self.topic_event_loops.write().await;
+            loops.insert(*topic, event_loop);
+        }
+
         tracing::info!(
-            "Inscrição realizada com sucesso no tópico via iroh-gossip: {}",
-            topic.fmt_short()
+            "Inscrição realizada com sucesso no tópico via iroh-gossip: {} com {} peers",
+            topic.fmt_short(),
+            bootstrap_peers.len()
         );
         Ok(())
     }
@@ -246,6 +461,10 @@ impl DirectChannelNetwork for IrohBridge {
             peers.len()
         );
         peers
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 
@@ -652,8 +871,7 @@ impl DirectChannel {
                 _ => {}
             }
         }
-        // Inscreve no tópico
-        self.iroh_network.subscribe_topic(&topic).await?;
+
         // Adiciona ou atualiza o estado do canal
         channels_map.insert(
             peer,
@@ -666,12 +884,117 @@ impl DirectChannel {
                 last_heartbeat: Instant::now(),
             },
         );
+        drop(channels_map); // Libera o lock antes de operações assíncronas
+
+        // Inscreve no tópico (cria event loop no IrohBridge se ainda não existe)
+        // IMPORTANTE: Passa o peer como bootstrap para formar o gossip mesh
+        self.iroh_network
+            .subscribe_topic(&topic, vec![peer])
+            .await?;
+
+        // Inicia consumer loop para processar mensagens recebidas neste tópico
+        self.start_message_consumer_for_topic(topic).await?;
+
         tracing::info!(
             "Conectando ao peer {} no tópico: {}",
             peer,
             topic.fmt_short()
         );
         self.establish_peer_connection(peer, topic).await?;
+        Ok(())
+    }
+
+    /// Inicia um loop para consumir mensagens de um tópico específico
+    async fn start_message_consumer_for_topic(&self, topic: TopicId) -> Result<()> {
+        // Downcast para acessar métodos concretos do IrohBridge
+        let iroh_bridge = self
+            .iroh_network
+            .as_any()
+            .downcast_ref::<IrohBridge>()
+            .ok_or_else(|| {
+                GuardianError::Other("Não é possível fazer downcast para IrohBridge".to_string())
+            })?;
+
+        // Obtém receiver para mensagens deste tópico
+        let Some(mut receiver): Option<broadcast::Receiver<(NodeId, Vec<u8>)>> =
+            iroh_bridge.get_topic_receiver(&topic).await
+        else {
+            return Err(GuardianError::Other(format!(
+                "Não foi possível obter receiver para tópico: {}",
+                topic.fmt_short()
+            )));
+        };
+
+        // Captura apenas as partes necessárias do self
+        let event_sender = self.event_sender.clone();
+        let span = self.span.clone();
+
+        // Spawna task para processar mensagens
+        tokio::spawn(async move {
+            let _entered = span.enter();
+            tracing::debug!("Consumer loop iniciado para tópico: {}", topic.fmt_short());
+
+            loop {
+                match receiver.recv().await {
+                    Ok((peer, data)) => {
+                        tracing::debug!(
+                            "Mensagem recebida do peer {} no tópico {}: {} bytes",
+                            peer,
+                            topic.fmt_short(),
+                            data.len()
+                        );
+
+                        // Deserializa a mensagem DirectChannel
+                        match serde_cbor::from_slice::<DirectChannelMessage>(&data) {
+                            Ok(decoded_msg) => {
+                                match decoded_msg.message_type {
+                                    MessageType::Data => {
+                                        // Envia evento de mensagem recebida
+                                        let _ = event_sender.send(
+                                            DirectChannelEvent::MessageReceived {
+                                                peer,
+                                                payload: decoded_msg.payload,
+                                            },
+                                        );
+                                    }
+                                    MessageType::Heartbeat => {
+                                        // Envia evento de heartbeat recebido
+                                        let _ = event_sender
+                                            .send(DirectChannelEvent::HeartbeatReceived(peer));
+                                    }
+                                    MessageType::Ack => {
+                                        // Processa ACK/handshake
+                                        tracing::trace!("ACK recebido de: {}", peer);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Erro ao decodificar mensagem de {} no tópico {}: {}",
+                                    peer,
+                                    topic.fmt_short(),
+                                    e
+                                );
+                            }
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(
+                            "Consumer loop atrasado no tópico {}: {} mensagens perdidas",
+                            topic.fmt_short(),
+                            n
+                        );
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        tracing::info!("Canal fechado para tópico: {}", topic.fmt_short());
+                        break;
+                    }
+                }
+            }
+
+            tracing::debug!("Consumer loop encerrado para tópico: {}", topic.fmt_short());
+        });
+
         Ok(())
     }
 
