@@ -78,7 +78,6 @@ pub struct Entry {
     pub v: u32,
     pub clock: LamportClock,
     // Campo opcional para armazenar a identidade associada à entrada
-    #[serde(skip)]
     pub identity: Option<Arc<Identity>>,
 }
 
