@@ -2060,7 +2060,7 @@ fn render_main(frame: &mut Frame, area: Rect, app: &App) {
         )
         .highlight_symbol("▸ ");
 
-    let mut menu_state = app.menu_state.clone();
+    let mut menu_state = app.menu_state;
     frame.render_stateful_widget(menu, chunks[0], &mut menu_state);
 
     // Content area
@@ -2198,7 +2198,7 @@ fn render_select_contact(frame: &mut Frame, area: Rect, app: &App) {
         )
         .highlight_symbol("▸ ");
 
-    let mut list_state = app.list_state.clone();
+    let mut list_state = app.list_state;
     frame.render_stateful_widget(list, area, &mut list_state);
 }
 
@@ -2272,7 +2272,7 @@ fn render_select_group(frame: &mut Frame, area: Rect, app: &App) {
         )
         .highlight_symbol("▸ ");
 
-    let mut list_state = app.list_state.clone();
+    let mut list_state = app.list_state;
     frame.render_stateful_widget(list, area, &mut list_state);
 }
 
@@ -2841,7 +2841,7 @@ fn render_select_group_for_member(frame: &mut Frame, area: Rect, app: &App) {
         )
         .highlight_symbol("▸ ");
 
-    let mut list_state = app.list_state.clone();
+    let mut list_state = app.list_state;
     frame.render_stateful_widget(list, area, &mut list_state);
 }
 
@@ -2887,7 +2887,7 @@ fn render_add_member(frame: &mut Frame, area: Rect, app: &App) {
         )
         .highlight_symbol("▸ ");
 
-    let mut list_state = app.list_state.clone();
+    let mut list_state = app.list_state;
     frame.render_stateful_widget(list, area, &mut list_state);
 }
 
