@@ -452,8 +452,10 @@ impl OptimizedCache {
         // Limita o histórico para não crescer indefinidamente
         let analysis_window = predictor.analysis_window_secs; // Copia valor antes do empréstimo
         if let Some(history) = predictor.access_history.get_mut(cid) {
-            let cutoff = now - Duration::from_secs(analysis_window);
-            history.retain(|&access_time| access_time > cutoff);
+            // Usa checked_sub para evitar overflow
+            if let Some(cutoff) = now.checked_sub(Duration::from_secs(analysis_window)) {
+                history.retain(|&access_time| access_time > cutoff);
+            }
         }
     }
 
@@ -482,8 +484,9 @@ impl OptimizedCache {
             data_cache
                 .iter()
                 .map(|(cid, entry)| {
-                    let age_score =
-                        Instant::now().duration_since(entry.last_accessed).as_secs() as f64;
+                    let age_score = Instant::now()
+                        .saturating_duration_since(entry.last_accessed)
+                        .as_secs() as f64;
                     let frequency_score = 1.0 / (entry.access_count as f64 + 1.0);
                     let priority_score = (10 - entry.priority) as f64;
 
