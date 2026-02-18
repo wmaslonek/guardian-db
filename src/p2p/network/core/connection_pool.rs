@@ -283,7 +283,7 @@ impl OptimizedConnectionPool {
             for conn in connections.iter_mut() {
                 if !conn.in_use && conn.info.status == ConnectionStatus::Healthy {
                     // Verifica se não está muito idle
-                    let idle_time = Instant::now().duration_since(conn.info.last_used);
+                    let idle_time = Instant::now().saturating_duration_since(conn.info.last_used);
                     if idle_time.as_secs() < self.pool_config.idle_timeout_secs {
                         conn.in_use = true;
                         conn.reuse_count += 1;
@@ -695,7 +695,7 @@ impl OptimizedConnectionPool {
                 CircuitState::Open => {
                     // Verifica se pode tentar half-open
                     if let Some(last_failure) = breaker.last_failure_time {
-                        let elapsed = Instant::now().duration_since(last_failure);
+                        let elapsed = Instant::now().saturating_duration_since(last_failure);
                         if elapsed.as_millis() > breaker.timeout_ms as u128 {
                             // Transiciona para half-open
                             drop(circuit_breakers);
@@ -871,7 +871,7 @@ impl OptimizedConnectionPool {
                                     packet_loss_rate: 0.02, // 2% simulado
                                     throughput_bps: conn.info.bandwidth_bps,
                                     uptime_secs: Instant::now()
-                                        .duration_since(conn.info.connected_at)
+                                        .saturating_duration_since(conn.info.connected_at)
                                         .as_secs(),
                                     health_score,
                                     last_measured: Instant::now(),
@@ -930,7 +930,7 @@ impl OptimizedConnectionPool {
 
         let age_score = {
             let age_secs = Instant::now()
-                .duration_since(connection_info.connected_at)
+                .saturating_duration_since(connection_info.connected_at)
                 .as_secs();
             if age_secs < 3600 {
                 1.0
@@ -943,7 +943,7 @@ impl OptimizedConnectionPool {
 
         let usage_score = {
             let last_used_secs = Instant::now()
-                .duration_since(connection_info.last_used)
+                .saturating_duration_since(connection_info.last_used)
                 .as_secs();
             if last_used_secs < 60 {
                 1.0
