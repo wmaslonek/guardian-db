@@ -8,7 +8,7 @@
 ![Version](https://img.shields.io/badge/version-0.14.0-brightgreen.svg)
 ![Build Status](https://img.shields.io/badge/build-passing-green.svg)
 ![Tests](https://img.shields.io/badge/tests-847%20passed-green.svg)
-![Examples](https://img.shields.io/badge/examples-14%20demos-blue.svg)
+![Examples](https://img.shields.io/badge/examples-16%20demos-blue.svg)
 [![codecov](https://codecov.io/github/wmaslonek/guardian-db/branch/main/graph/badge.svg?token=AKOZE17VN8)](https://codecov.io/github/wmaslonek/guardian-db)
 
 ---
