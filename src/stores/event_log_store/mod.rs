@@ -192,7 +192,19 @@ impl GuardianDBEventLogStore {
             ));
         }
 
+        tracing::info!(
+            "EventLogStore::new - Configurando índice para {}",
+            addr.to_string()
+        );
+
+        // CRÍTICO: Configura o índice ANTES de criar BaseStore
         options.index = Some(Box::new(new_event_index));
+
+        tracing::info!(
+            "EventLogStore::new - Índice configurado: {}",
+            options.index.is_some()
+        );
+
         // Inicializa o BaseStore com as opções fornecidas
         let basestore = BaseStore::new(iroh_client, identity, addr.clone(), Some(options))
             .await
@@ -202,6 +214,11 @@ impl GuardianDBEventLogStore {
                     e
                 ))
             })?;
+
+        tracing::info!(
+            "EventLogStore::new - BaseStore criado com índice ativo: {}",
+            basestore.has_active_index()
+        );
 
         // Cria span para esta instância da EventLogStore
         let span = tracing::info_span!("event_log_store", address = %addr.to_string());
