@@ -437,10 +437,9 @@ async fn test_docs_put_and_get() {
     // Put
     store.put(doc).await.expect("Failed to put document");
 
-    // Verifica via oplog que o documento foi adicionado
-    let oplog = store.op_log();
-    let oplog_guard = oplog.read();
-    assert_eq!(oplog_guard.values().len(), 1, "Document should be in oplog");
+    // Verifica via index que o documento foi adicionado
+    let index = store.index();
+    assert_eq!(index.len().unwrap_or(0), 1, "Document should be in index");
 }
 
 #[tokio::test]
@@ -462,11 +461,9 @@ async fn test_docs_put_multiple() {
         store.put(doc).await.expect("Failed to put document");
     }
 
-    // Verifica que todos foram adicionados - usar método de contagem simples
-    // Tentativa de contar através do índice ou oplog
-    let oplog = store.op_log();
-    let oplog_guard = oplog.read();
-    let count = oplog_guard.values().len();
+    // Verifica que todos foram adicionados via index
+    let index = store.index();
+    let count = index.len().unwrap_or(0);
     assert!(count >= 5, "Expected at least 5 documents, found {}", count);
 }
 
@@ -526,13 +523,12 @@ async fn test_docs_get_with_partial_match() {
         store.put(doc).await.expect("Failed to put document");
     }
 
-    // Verifica que todos os documentos foram adicionados via oplog
-    let oplog = store.op_log();
-    let oplog_guard = oplog.read();
+    // Verifica que todos os documentos foram adicionados via index
+    let index = store.index();
     assert_eq!(
-        oplog_guard.values().len(),
+        index.len().unwrap_or(0),
         3,
-        "All 3 documents should be in oplog"
+        "All 3 documents should be in index"
     );
 }
 
@@ -551,10 +547,9 @@ async fn test_docs_get_case_insensitive() {
     let doc: Document = Box::new(doc_json);
     store.put(doc).await.expect("Failed to put document");
 
-    // Verifica que o documento foi adicionado via oplog
-    let oplog = store.op_log();
-    let oplog_guard = oplog.read();
-    assert_eq!(oplog_guard.values().len(), 1, "Document should be in oplog");
+    // Verifica que o documento foi adicionado via index
+    let index = store.index();
+    assert_eq!(index.len().unwrap_or(0), 1, "Document should be in index");
 }
 
 #[tokio::test]
@@ -580,10 +575,12 @@ async fn test_docs_put_batch() {
     store.put_batch(docs).await.expect("Failed to put batch");
 
     // Verifica que todos foram adicionados
-    let oplog = store.op_log();
-    let oplog_guard = oplog.read();
-    let count = oplog_guard.values().len();
-    assert!(count >= 1, "Expected at least 1 batch operation");
+    let index = store.index();
+    let count = index.len().unwrap_or(0);
+    assert!(
+        count >= 1,
+        "Expected at least 1 document in index after batch"
+    );
 }
 
 #[tokio::test]
@@ -606,9 +603,8 @@ async fn test_docs_query_with_filter() {
     }
 
     // Verifica que documentos foram adicionados
-    let oplog = store.op_log();
-    let oplog_guard = oplog.read();
-    let count = oplog_guard.values().len();
+    let index = store.index();
+    let count = index.len().unwrap_or(0);
     assert_eq!(count, 5, "Expected 5 documents");
 }
 
@@ -897,7 +893,6 @@ async fn test_document_with_complex_json() {
         .expect("Failed to put complex document");
 
     // Verifica que foi armazenado
-    let oplog = store.op_log();
-    let oplog_guard = oplog.read();
-    assert!(!oplog_guard.values().is_empty());
+    let index = store.index();
+    assert!(!index.is_empty().unwrap_or(true));
 }
