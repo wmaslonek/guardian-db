@@ -1,3 +1,6 @@
+//! ╔════════════════════════════════════════════════════════════════════════════════╗
+//! ║  ⚠ DEPRECATED | Bug fixes and improvements are being applied to the CHAT TUI. ║
+//! ╚════════════════════════════════════════════════════════════════════════════════╝
 //! P2P Chat Demo using GuardianDB - Advanced Version
 //!
 //! Features:
@@ -402,34 +405,6 @@ fn find_existing_profiles() -> Vec<String> {
     profiles
 }
 
-// ─── Message persistence (JSON) ───
-
-fn messages_dir(username: &str) -> PathBuf {
-    profiles_dir().join(username).join("messages")
-}
-
-fn messages_path(username: &str, log_name: &str) -> PathBuf {
-    messages_dir(username).join(format!("{}.json", log_name))
-}
-
-fn load_messages_from_file(username: &str, log_name: &str) -> Vec<ChatMessage> {
-    let data = match fs::read_to_string(messages_path(username, log_name)) {
-        Ok(d) => d,
-        Err(_) => return vec![],
-    };
-    serde_json::from_str::<Vec<ChatMessage>>(&data).unwrap_or_default()
-}
-
-fn save_messages_to_file(username: &str, log_name: &str, messages: &[ChatMessage]) {
-    let path = messages_path(username, log_name);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).ok();
-    }
-    if let Ok(data) = serde_json::to_string_pretty(messages) {
-        fs::write(&path, data).ok();
-    }
-}
-
 // ─── Pending sync persistence ───
 
 fn pending_sync_path(username: &str) -> PathBuf {
@@ -515,36 +490,6 @@ fn save_groups(username: &str, groups: &[Group]) {
     };
     if let Ok(data) = serde_json::to_string_pretty(&file) {
         fs::write(&path, data).ok();
-    }
-}
-
-/// Cleans up messages that were saved in the wrong JSON (DM in group or vice-versa).
-/// Runs once at startup to fix data from previous sessions.
-fn cleanup_mixed_messages(
-    username: &str,
-    my_node_id: &str,
-    contacts: &[Contact],
-    groups: &[Group],
-) {
-    // Cleans up DM JSONs: removes messages with group target
-    for contact in contacts {
-        let log_name = dm_log_name(my_node_id, &contact.node_id);
-        let mut msgs = load_messages_from_file(username, &log_name);
-        let before = msgs.len();
-        msgs.retain(|m| m.belongs_to_dm());
-        if msgs.len() < before {
-            save_messages_to_file(username, &log_name, &msgs);
-        }
-    }
-    // Cleans up group JSONs: removes messages with DM target
-    for group in groups {
-        let log_name = group.log_name();
-        let mut msgs = load_messages_from_file(username, &log_name);
-        let before = msgs.len();
-        msgs.retain(|m| !m.target.starts_with("dm-"));
-        if msgs.len() < before {
-            save_messages_to_file(username, &log_name, &msgs);
-        }
     }
 }
 
@@ -961,36 +906,6 @@ impl ChatState {
             debug!("Warning loading log history '{}': {}", log_name, e);
         }
 
-        // Re-inserts our messages from previous sessions (JSON → EventLogStore)
-        // so they can be synced with the peer via connect_to_peer.
-        let my_node_id = self.profile.node_id.clone();
-        let local_msgs = load_messages_from_file(&self.profile.username, &log_name);
-        if !local_msgs.is_empty() {
-            let existing = log.list(None).await.unwrap_or_default();
-            let existing_msgs: Vec<ChatMessage> = existing
-                .iter()
-                .filter_map(|e| ChatMessage::from_bytes(e.value()))
-                .collect();
-
-            for msg in &local_msgs {
-                if msg.from_node_id != my_node_id {
-                    continue;
-                }
-                // Only re-inserts DM messages (ignores group that may have leaked)
-                if !msg.belongs_to_dm() {
-                    continue;
-                }
-                let already = existing_msgs.iter().any(|em| {
-                    em.timestamp == msg.timestamp
-                        && em.from_node_id == msg.from_node_id
-                        && em.content == msg.content
-                });
-                if !already {
-                    let _ = log.add(msg.to_bytes()).await;
-                }
-            }
-        }
-
         dm_logs.insert(log_name, log.clone());
         Ok(log)
     }
@@ -1018,13 +933,9 @@ impl ChatState {
         // replicated to the peer on the next connect_to_peer() call.
         log.add(msg.to_bytes()).await?;
 
-        // Persists locally in JSON
-        let msgs = self
-            .local_messages
-            .entry(log_name.clone())
-            .or_insert_with(|| load_messages_from_file(&self.profile.username, &log_name));
+        // Caches locally in memory
+        let msgs = self.local_messages.entry(log_name.clone()).or_default();
         msgs.push(msg);
-        save_messages_to_file(&self.profile.username, &log_name, msgs);
 
         // Marks contact as pending sync
         {
@@ -1050,12 +961,8 @@ impl ChatState {
         );
         let log = self.get_or_create_dm_log(contact_node_id).await?;
         log.add(msg.to_bytes()).await?;
-        let msgs = self
-            .local_messages
-            .entry(log_name.clone())
-            .or_insert_with(|| load_messages_from_file(&self.profile.username, &log_name));
+        let msgs = self.local_messages.entry(log_name.clone()).or_default();
         msgs.push(msg);
-        save_messages_to_file(&self.profile.username, &log_name, msgs);
         {
             let mut pending = self.pending_sync.lock().await;
             pending.insert(contact_node_id.to_string());
@@ -1064,7 +971,7 @@ impl ChatState {
         Ok(())
     }
 
-    /// Adds a prepared FileAttachment to the group log and persists locally.
+    /// Adds a prepared FileAttachment to the group log.
     async fn store_file_group(&mut self, group: &Group, attachment: &FileAttachment) -> Result<()> {
         let log_name = group.log_name();
         let msg = ChatMessage::new_file(
@@ -1075,74 +982,43 @@ impl ChatState {
         );
         let log = self.get_or_create_group_log(group).await?;
         log.add(msg.to_bytes()).await?;
-        let msgs = self
-            .local_messages
-            .entry(log_name.clone())
-            .or_insert_with(|| load_messages_from_file(&self.profile.username, &log_name));
+        let msgs = self.local_messages.entry(log_name.clone()).or_default();
         msgs.push(msg);
-        save_messages_to_file(&self.profile.username, &log_name, msgs);
         Ok(())
     }
 
-    /// Retrieves DM messages by merging the EventLogStore with local JSON cache.
+    /// Retrieves DM messages from the EventLogStore.
     ///
     /// ## GuardianDB feature: `EventLogStore::list()`
     ///
     /// `log.list(None)` returns all entries currently in the event log, including
-    /// entries received from the remote peer via P2P sync. These are merged with
-    /// locally-persisted JSON messages (from previous sessions) to provide a
-    /// complete, deduplicated conversation history. Deduplication uses the tuple
-    /// (timestamp, from_node_id, content) as a unique key.
+    /// entries received from the remote peer via P2P sync. The store is the
+    /// single source of truth — no JSON backup needed.
     async fn get_dm_messages(
         &mut self,
         contact_node_id: &str,
         limit: usize,
     ) -> Result<Vec<ChatMessage>> {
         let log_name = dm_log_name(&self.profile.node_id, contact_node_id);
-        let username = self.profile.username.clone();
 
-        // EventLogStore::list() — returns all entries, including those received
-        // from the peer via P2P sync (connect_to_peer / gossip).
         let log = self.get_or_create_dm_log(contact_node_id).await?;
         let entries = log.list(None).await?;
-        // Filters: only accepts messages that belong to DM (ignores leaked group)
-        let store_messages: Vec<ChatMessage> = entries
+        let mut messages: Vec<ChatMessage> = entries
             .iter()
             .filter_map(|entry| ChatMessage::from_bytes(entry.value()))
             .filter(|m| m.belongs_to_dm())
             .collect();
 
-        // Loads local messages from JSON (includes previous session history)
-        let local = self
-            .local_messages
-            .entry(log_name.clone())
-            .or_insert_with(|| {
-                let mut loaded = load_messages_from_file(&username, &log_name);
-                // Removes group messages that may have been saved by mistake
-                loaded.retain(|m| m.belongs_to_dm());
-                loaded
-            });
+        messages.sort_by_key(|m| m.timestamp);
+        messages.dedup_by(|a, b| {
+            a.timestamp == b.timestamp && a.from_node_id == b.from_node_id && a.content == b.content
+        });
 
-        // Merges: adds to local any store messages that don't yet exist
-        let mut changed = false;
-        for sm in &store_messages {
-            let already_exists = local.iter().any(|lm| {
-                lm.timestamp == sm.timestamp
-                    && lm.from_node_id == sm.from_node_id
-                    && lm.content == sm.content
-            });
-            if !already_exists {
-                local.push(sm.clone());
-                changed = true;
-            }
-        }
-        if changed {
-            local.sort_by_key(|m| m.timestamp);
-            save_messages_to_file(&username, &log_name, local);
-        }
+        // Update in-memory cache
+        self.local_messages.insert(log_name, messages.clone());
 
-        let start = local.len().saturating_sub(limit);
-        Ok(local[start..].to_vec())
+        let start = messages.len().saturating_sub(limit);
+        Ok(messages[start..].to_vec())
     }
 
     fn add_contact(&mut self, node_id: String, display_name: String) -> bool {
@@ -1223,12 +1099,8 @@ impl ChatState {
         let log = self.get_or_create_dm_log(contact_node_id).await?;
         log.add(msg.to_bytes()).await?;
         let log_name = dm_log_name(&self.profile.node_id, contact_node_id);
-        let msgs = self
-            .local_messages
-            .entry(log_name.clone())
-            .or_insert_with(|| load_messages_from_file(&self.profile.username, &log_name));
+        let msgs = self.local_messages.entry(log_name.clone()).or_default();
         msgs.push(msg);
-        save_messages_to_file(&self.profile.username, &log_name, msgs);
         {
             let mut pending = self.pending_sync.lock().await;
             pending.insert(contact_node_id.to_string());
@@ -1276,8 +1148,10 @@ impl ChatState {
         let contact_ids: Vec<String> = self.contacts.iter().map(|c| c.node_id.clone()).collect();
         for contact_node_id in &contact_ids {
             let log_name = dm_log_name(&self.profile.node_id, contact_node_id);
-            let msgs = load_messages_from_file(&self.profile.username, &log_name);
-            self.process_group_invites(&msgs);
+            if let Some(msgs) = self.local_messages.get(&log_name) {
+                let msgs_clone = msgs.clone();
+                self.process_group_invites(&msgs_clone);
+            }
         }
     }
 
@@ -1317,35 +1191,6 @@ impl ChatState {
             debug!("Warning loading group history '{}': {}", log_name, e);
         }
 
-        // Re-inserts our messages from previous sessions
-        let my_node_id = self.profile.node_id.clone();
-        let local_msgs = load_messages_from_file(&self.profile.username, &log_name);
-        if !local_msgs.is_empty() {
-            let existing = log.list(None).await.unwrap_or_default();
-            let existing_msgs: Vec<ChatMessage> = existing
-                .iter()
-                .filter_map(|e| ChatMessage::from_bytes(e.value()))
-                .collect();
-
-            for msg in &local_msgs {
-                if msg.from_node_id != my_node_id {
-                    continue;
-                }
-                // Only re-inserts messages from this group (ignores DM that may have leaked)
-                if msg.target.starts_with("dm-") {
-                    continue;
-                }
-                let already = existing_msgs.iter().any(|em| {
-                    em.timestamp == msg.timestamp
-                        && em.from_node_id == msg.from_node_id
-                        && em.content == msg.content
-                });
-                if !already {
-                    let _ = log.add(msg.to_bytes()).await;
-                }
-            }
-        }
-
         dm_logs.insert(log_name, log.clone());
         Ok(log)
     }
@@ -1361,12 +1206,8 @@ impl ChatState {
         log.add(msg.to_bytes()).await?;
 
         let log_name = group.log_name();
-        let msgs = self
-            .local_messages
-            .entry(log_name.clone())
-            .or_insert_with(|| load_messages_from_file(&self.profile.username, &log_name));
+        let msgs = self.local_messages.entry(log_name.clone()).or_default();
         msgs.push(msg);
-        save_messages_to_file(&self.profile.username, &log_name, msgs);
         Ok(())
     }
 
@@ -1376,46 +1217,25 @@ impl ChatState {
         limit: usize,
     ) -> Result<Vec<ChatMessage>> {
         let log_name = group.log_name();
-        let username = self.profile.username.clone();
 
         let log = self.get_or_create_group_log(group).await?;
         let entries = log.list(None).await?;
-        // Filters: only accepts messages that belong to THIS group (ignores leaked DM)
-        let store_messages: Vec<ChatMessage> = entries
+        let mut messages: Vec<ChatMessage> = entries
             .iter()
             .filter_map(|entry| ChatMessage::from_bytes(entry.value()))
             .filter(|m| m.belongs_to_group(&log_name) || (m.target.is_empty() && m.is_text()))
             .collect();
 
-        let local = self
-            .local_messages
-            .entry(log_name.clone())
-            .or_insert_with(|| {
-                let mut loaded = load_messages_from_file(&username, &log_name);
-                // Removes DM messages that may have been saved by mistake
-                loaded.retain(|m| !m.target.starts_with("dm-"));
-                loaded
-            });
+        messages.sort_by_key(|m| m.timestamp);
+        messages.dedup_by(|a, b| {
+            a.timestamp == b.timestamp && a.from_node_id == b.from_node_id && a.content == b.content
+        });
 
-        let mut changed = false;
-        for sm in &store_messages {
-            let already_exists = local.iter().any(|lm| {
-                lm.timestamp == sm.timestamp
-                    && lm.from_node_id == sm.from_node_id
-                    && lm.content == sm.content
-            });
-            if !already_exists {
-                local.push(sm.clone());
-                changed = true;
-            }
-        }
-        if changed {
-            local.sort_by_key(|m| m.timestamp);
-            save_messages_to_file(&username, &log_name, local);
-        }
+        // Update in-memory cache
+        self.local_messages.insert(log_name, messages.clone());
 
-        let start = local.len().saturating_sub(limit);
-        Ok(local[start..].to_vec())
+        let start = messages.len().saturating_sub(limit);
+        Ok(messages[start..].to_vec())
     }
 
     /// Syncs the group event log with all members via `connect_to_peer()`.
@@ -2720,14 +2540,6 @@ async fn main() -> Result<()> {
     let mut state = ChatState::new(username).await?;
     state.display_welcome();
 
-    // Cleans up mixed messages in existing JSON files
-    cleanup_mixed_messages(
-        &state.profile.username,
-        &state.profile.node_id,
-        &state.contacts,
-        &state.groups,
-    );
-
     // Checks for pending group invites at startup
     state.check_local_files_for_invites();
     if !state.groups.is_empty() {
@@ -2877,32 +2689,6 @@ async fn main() -> Result<()> {
                         }
                     };
 
-                    // Re-inserts messages from JSON that are not in the current log
-                    let local_msgs = load_messages_from_file(&profile_username, &log_name);
-                    let existing = log.list(None).await.unwrap_or_default();
-                    let existing_msgs: Vec<ChatMessage> = existing
-                        .iter()
-                        .filter_map(|e| ChatMessage::from_bytes(e.value()))
-                        .collect();
-
-                    for msg in &local_msgs {
-                        if msg.from_node_id != profile_node_id {
-                            continue;
-                        }
-                        // Only re-inserts DM messages in this DM log
-                        if !msg.belongs_to_dm() {
-                            continue;
-                        }
-                        let already = existing_msgs.iter().any(|em| {
-                            em.timestamp == msg.timestamp
-                                && em.from_node_id == msg.from_node_id
-                                && em.content == msg.content
-                        });
-                        if !already {
-                            let _ = log.add(msg.to_bytes()).await;
-                        }
-                    }
-
                     if let Ok(peer_id) = contact_node_id.parse::<NodeId>()
                         && let Some(wrapper) = log.as_any().downcast_ref::<EventLogStoreWrapper>()
                     {
@@ -2953,31 +2739,6 @@ async fn main() -> Result<()> {
                             }
                         }
                     };
-
-                    // Re-inserts our messages from JSON into the group log
-                    let local_msgs = load_messages_from_file(&profile_username, &grp_log_name);
-                    let existing = grp_log.list(None).await.unwrap_or_default();
-                    let existing_msgs: Vec<ChatMessage> = existing
-                        .iter()
-                        .filter_map(|e| ChatMessage::from_bytes(e.value()))
-                        .collect();
-                    for msg in &local_msgs {
-                        if msg.from_node_id != profile_node_id {
-                            continue;
-                        }
-                        // Only re-inserts group messages in this group log
-                        if msg.target.starts_with("dm-") {
-                            continue;
-                        }
-                        let already = existing_msgs.iter().any(|em| {
-                            em.timestamp == msg.timestamp
-                                && em.from_node_id == msg.from_node_id
-                                && em.content == msg.content
-                        });
-                        if !already {
-                            let _ = grp_log.add(msg.to_bytes()).await;
-                        }
-                    }
 
                     // Connects to each member to sync
                     for member in &group.members {
