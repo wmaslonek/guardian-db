@@ -439,24 +439,29 @@ impl Entry {
         }
     }
 
-    /// A sorting helper function that forbids the sorting function `sort_fn` from
-    /// producing unsorted (equal) cases.
+    /// A sorting helper function that ensures the sorting function `sort_fn`
+    /// produces a total order by falling back to hash comparison when entries
+    /// are otherwise equal.
     ///
     /// Returns a closure that behaves in the same way as `sort_fn`
-    /// but panics if the two entries given as input are equal.
+    /// but uses entry hash as the ultimate tiebreaker instead of panicking.
+    /// Identical entries (same hash) are correctly treated as equal.
     pub fn no_zeroes<F>(sort_fn: F) -> impl Fn(&Entry, &Entry) -> Ordering
     where
         F: 'static + Fn(&Entry, &Entry) -> Ordering,
     {
         move |a, b| {
+            // Identical entries (same hash) are truly equal
+            if a.hash() == b.hash() {
+                return Ordering::Equal;
+            }
             let diff = sort_fn(a, b);
             if diff == Ordering::Equal {
-                panic!(
-                    "Your log's tiebreaker function {}",
-                    "has returned zero and therefore cannot be"
-                );
+                // Use hash comparison as ultimate tiebreaker for different entries
+                a.hash().as_bytes().cmp(b.hash().as_bytes())
+            } else {
+                diff
             }
-            diff
         }
     }
 }
