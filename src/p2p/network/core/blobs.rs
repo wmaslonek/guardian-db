@@ -7,16 +7,24 @@
 /// consistência e evitando duplicação de armazenamento.
 use crate::guardian::error::{GuardianError, Result};
 use bytes::Bytes;
+use futures::StreamExt;
+use iroh::NodeId;
+use iroh::endpoint::Endpoint;
 use iroh_blobs::{Hash as BlobHash, HashAndFormat, store::fs::FsStore};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 /// Cliente para operações com iroh-blobs
+///
+/// Suporta operações locais e download P2P de blobs de peers remotos
+/// quando o Endpoint está configurado.
 #[derive(Clone)]
 pub struct BlobStore {
     /// Store do iroh-blobs compartilhado (filesystem-based)
     store: Arc<RwLock<FsStore>>,
+    /// Endpoint do Iroh para download P2P de blobs (opcional)
+    endpoint: Option<Endpoint>,
 }
 
 impl BlobStore {
@@ -39,8 +47,24 @@ impl BlobStore {
     /// ```
     #[instrument(level = "debug", skip(store))]
     pub fn new(store: Arc<RwLock<FsStore>>) -> Self {
-        debug!("Criando BlobStore com store compartilhado");
-        Self { store }
+        debug!("Criando BlobStore com store compartilhado (sem P2P download)");
+        Self {
+            store,
+            endpoint: None,
+        }
+    }
+
+    /// Cria uma nova instância com suporte a download P2P via Endpoint
+    ///
+    /// O Endpoint permite baixar blobs de peers remotos usando o protocolo
+    /// iroh-blobs nativo (QUIC + BLAKE3 verified streaming).
+    #[instrument(level = "debug", skip(store, endpoint))]
+    pub fn new_with_endpoint(store: Arc<RwLock<FsStore>>, endpoint: Endpoint) -> Self {
+        debug!("Criando BlobStore com store compartilhado + P2P download");
+        Self {
+            store,
+            endpoint: Some(endpoint),
+        }
     }
 
     /// Adiciona um documento (bytes) ao blob store
@@ -95,6 +119,109 @@ impl BlobStore {
         );
 
         Ok(data)
+    }
+
+    /// Recupera um documento do blob store, tentando download P2P se não encontrado localmente
+    ///
+    /// Se o blob não existe no store local e um peer provider é fornecido,
+    /// tenta baixar do peer remoto usando o protocolo iroh-blobs.
+    #[instrument(level = "debug", skip(self))]
+    pub async fn get_or_download(&self, hash: &BlobHash, providers: &[NodeId]) -> Result<Bytes> {
+        // Tenta buscar localmente primeiro
+        let store = self.store.read().await;
+        match store.blobs().get_bytes(*hash).await {
+            Ok(data) => {
+                debug!(
+                    "Documento encontrado localmente: {} ({} bytes)",
+                    hex::encode(hash.as_bytes()),
+                    data.len()
+                );
+                return Ok(data);
+            }
+            Err(_) => {
+                debug!(
+                    "Documento não encontrado localmente: {}, tentando P2P download",
+                    hex::encode(hash.as_bytes())
+                );
+            }
+        }
+        drop(store);
+
+        // Tenta download P2P
+        self.download_from_peers(hash, providers).await?;
+
+        // Agora busca do store local (deve estar lá após download)
+        let store = self.store.read().await;
+        let data = store.blobs().get_bytes(*hash).await.map_err(|e| {
+            GuardianError::Other(format!("Blob não encontrado após download P2P: {}", e))
+        })?;
+
+        // Cria tag permanente para proteger contra GC
+        let tag_name = format!("doc_{}", hex::encode(hash.as_bytes()));
+        store
+            .tags()
+            .set(tag_name.as_bytes(), HashAndFormat::raw(*hash))
+            .await
+            .ok();
+
+        debug!(
+            "Documento baixado via P2P: {} ({} bytes)",
+            hex::encode(hash.as_bytes()),
+            data.len()
+        );
+
+        Ok(data)
+    }
+
+    /// Baixa um blob de peers remotos usando o Downloader do iroh-blobs
+    #[instrument(level = "debug", skip(self))]
+    pub async fn download_from_peers(&self, hash: &BlobHash, providers: &[NodeId]) -> Result<()> {
+        let endpoint = self.endpoint.as_ref().ok_or_else(|| {
+            GuardianError::Other("Endpoint não disponível para download P2P de blobs".to_string())
+        })?;
+
+        if providers.is_empty() {
+            return Err(GuardianError::Other(
+                "Nenhum provider fornecido para download P2P".to_string(),
+            ));
+        }
+
+        let store = self.store.read().await;
+        let downloader = store.downloader(endpoint);
+
+        let providers_vec: Vec<NodeId> = providers.to_vec();
+        info!(
+            "Iniciando download P2P do blob {} de {} provider(s)",
+            hex::encode(hash.as_bytes()),
+            providers_vec.len()
+        );
+
+        let progress = downloader.download(*hash, providers_vec);
+        let mut stream = progress
+            .stream()
+            .await
+            .map_err(|e| GuardianError::Other(format!("Erro ao iniciar download P2P: {}", e)))?;
+
+        while let Some(item) = stream.next().await {
+            match &item {
+                iroh_blobs::api::downloader::DownloadProgressItem::Error(e) => {
+                    return Err(GuardianError::Other(format!("Erro no download P2P: {}", e)));
+                }
+                iroh_blobs::api::downloader::DownloadProgressItem::DownloadError => {
+                    return Err(GuardianError::Other("Download P2P falhou".to_string()));
+                }
+                iroh_blobs::api::downloader::DownloadProgressItem::PartComplete { .. } => {
+                    debug!("Download P2P: parte concluída");
+                }
+                iroh_blobs::api::downloader::DownloadProgressItem::Progress(bytes) => {
+                    debug!("Download P2P: {} bytes recebidos", bytes);
+                }
+                _ => {}
+            }
+        }
+
+        info!("Download P2P concluído: {}", hex::encode(hash.as_bytes()));
+        Ok(())
     }
 
     /// Verifica se um documento existe no blob store
@@ -207,14 +334,12 @@ impl BlobStore {
         Ok(0) // Retorna 0 pois GC é automático
     }
 
+    /// Retorna true se o BlobStore tem suporte a download P2P
+    pub fn has_p2p_support(&self) -> bool {
+        self.endpoint.is_some()
+    }
+
     /// Cria uma instância de teste com store temporário
-    ///
-    /// # Retorna
-    /// Ok(BlobStore) configurado para usar armazenamento temporário
-    ///
-    /// # Nota
-    /// Este método é útil apenas para testes. Em produção, use `new()` com
-    /// o store compartilhado do IrohBackend.
     #[cfg(test)]
     pub async fn memory() -> Result<Self> {
         // Cria um diretório temporário
