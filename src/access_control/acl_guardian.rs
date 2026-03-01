@@ -72,6 +72,9 @@ pub struct GuardianDBAccessController {
     /// porque pode ser substituído dinamicamente pela função `load`.
     kv_store: KVStoreType,
 
+    /// Mutex para serializar operações de grant/revoke (evita race conditions)
+    write_mutex: tokio::sync::Mutex<()>,
+
     /// Opções de manifesto.
     options: Box<dyn ManifestParams>,
 
@@ -181,7 +184,9 @@ impl GuardianDBAccessController {
     #[allow(dead_code)]
     #[instrument(skip(self), fields(capability = %capability, key_id = %key_id))]
     pub async fn grant(&self, capability: &str, key_id: &str) -> Result<()> {
-        // Primeiro, executa as operações que precisam do store
+        // Serializa operações de grant para evitar race conditions
+        let _guard = self.write_mutex.lock().await;
+
         {
             let store_guard = self.kv_store.read().await;
             let store_arc = store_guard
@@ -207,7 +212,7 @@ impl GuardianDBAccessController {
                 .put(capability, capabilities_bytes)
                 .await
                 .map_err(|e| GuardianError::Store(format!("Erro ao salvar no store: {}", e)))?;
-        } // store_guard é liberado aqui
+        }
 
         // Depois, emite evento de atualização usando EventBus
         self.on_update("grant", capability, key_id).await;
@@ -218,7 +223,9 @@ impl GuardianDBAccessController {
     #[allow(dead_code)]
     #[instrument(skip(self), fields(capability = %capability, key_id = %key_id))]
     pub async fn revoke(&self, capability: &str, key_id: &str) -> Result<()> {
-        // Primeiro, executa as operações que precisam do store
+        // Serializa operações de revoke para evitar race conditions
+        let _guard = self.write_mutex.lock().await;
+
         {
             let store_guard = self.kv_store.read().await;
             let store_arc = store_guard
@@ -247,7 +254,7 @@ impl GuardianDBAccessController {
                     GuardianError::Store(format!("Erro ao remover permissões: {}", e))
                 })?;
             }
-        } // store_guard é liberado aqui
+        }
 
         // Depois, emite evento de atualização usando EventBus
         self.on_update("revoke", capability, key_id).await;
@@ -414,6 +421,7 @@ impl GuardianDBAccessController {
             event_emitter: Arc::new(tokio::sync::Mutex::new(None)), // Será inicializado lazy quando necessário
             guardian_db: kv_provider,
             kv_store: RwLock::new(Some(Arc::new(tokio::sync::Mutex::new(kv_store)))), // Inicializa com o store
+            write_mutex: tokio::sync::Mutex::new(()),
             options: params,
             // Cria um span para contexto de tracing
             span: tracing::info_span!("guardian_access_controller", address = %addr_str),
