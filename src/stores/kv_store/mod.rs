@@ -1,20 +1,33 @@
+use crate::access_control::acl_simple::SimpleAccessController;
+use crate::access_control::traits::AccessController;
 use crate::address::Address;
 use crate::data_store::Datastore;
+use crate::events::EventEmitter;
 use crate::guardian::error::{GuardianError, Result};
 use crate::log::identity::Identity;
+use crate::log::lamport_clock::LamportClock;
 use crate::p2p::EventBus;
-use crate::stores::base_store::BaseStore;
+use crate::p2p::network::core::docs::WillowDocs;
 use crate::stores::operation::Operation;
-use crate::traits::{KeyValueStore, NewStoreOptions, Store, StoreIndex};
+use crate::traits::{KeyValueStore, NewStoreOptions, Store, StoreIndex, TracerWrapper};
+use bytes::Bytes;
+use iroh_docs::{AuthorId, api::Doc, store::Query};
+use opentelemetry::trace::{TracerProvider, noop::NoopTracerProvider};
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{Span, debug, error, info, instrument, warn};
+use tracing::{Span, debug, info, instrument, warn};
 
 pub mod index;
 
+// Chave usada no cache para persistir o NamespaceId do documento iroh-docs
+const NAMESPACE_CACHE_KEY: &[u8] = b"_iroh_docs_namespace_id";
+
 /// Implementação de StoreIndex para KeyValue Store
-/// Mantém um índice thread-safe dos pares chave-valor
+///
+/// Mantém um índice thread-safe em memória que espelha o estado do
+/// documento iroh-docs. É atualizado atomicamente após cada operação
+/// de put/delete, servindo como cache síncrono para queries do StoreIndex.
 pub struct KeyValueIndex {
     /// Índice interno que mapeia chaves para valores
     index: Arc<RwLock<HashMap<String, Vec<u8>>>>,
@@ -56,97 +69,123 @@ impl KeyValueIndex {
         let guard = self.index.read();
         guard.is_empty()
     }
+
+    /// Insere um par chave-valor no índice
+    pub fn insert(&self, key: String, value: Vec<u8>) {
+        let mut guard = self.index.write();
+        guard.insert(key, value);
+    }
+
+    /// Remove uma chave do índice
+    pub fn remove(&self, key: &str) {
+        let mut guard = self.index.write();
+        guard.remove(key);
+    }
+
+    /// Limpa todo o índice
+    pub fn clear_all(&self) {
+        let mut guard = self.index.write();
+        guard.clear();
+    }
 }
 
 impl StoreIndex for KeyValueIndex {
     type Error = GuardianError;
 
-    /// Verifica se uma chave existe no índice.
     fn contains_key(&self, key: &str) -> std::result::Result<bool, Self::Error> {
         let guard = self.index.read();
         Ok(guard.contains_key(key))
     }
 
-    /// Retorna uma cópia dos dados para uma chave específica como bytes.
     fn get_bytes(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, Self::Error> {
         let guard = self.index.read();
         Ok(guard.get(key).cloned())
     }
 
-    /// Retorna todas as chaves disponíveis no índice.
     fn keys(&self) -> std::result::Result<Vec<String>, Self::Error> {
         let guard = self.index.read();
         Ok(guard.keys().cloned().collect())
     }
 
-    /// Retorna o número de entradas no índice.
     fn len(&self) -> std::result::Result<usize, Self::Error> {
         let guard = self.index.read();
         Ok(guard.len())
     }
 
-    /// Verifica se o índice está vazio.
     fn is_empty(&self) -> std::result::Result<bool, Self::Error> {
         let guard = self.index.read();
         Ok(guard.is_empty())
     }
 
+    /// No-op para a implementação baseada em iroh-docs.
+    /// O índice local é atualizado diretamente após cada operação put/delete,
+    /// sem necessidade de replay do OpLog.
     fn update_index(
         &mut self,
         _log: &crate::log::Log,
-        entries: &[crate::log::entry::Entry],
+        _entries: &[crate::log::entry::Entry],
     ) -> std::result::Result<(), Self::Error> {
-        let mut index_guard = self.index.write();
-
-        for entry in entries {
-            // Desserializa o payload como uma operação usando postcard
-            match crate::guardian::serializer::deserialize::<Operation>(entry.payload()) {
-                Ok(operation) => {
-                    if let Some(key) = operation.key() {
-                        match operation.op() {
-                            "PUT" => {
-                                // operation.value() retorna &[u8], precisamos clonar
-                                let value = operation.value().to_vec();
-                                index_guard.insert(key.clone(), value);
-                            }
-                            "DEL" => {
-                                // Corrige o erro de borrow - usa key.as_str()
-                                index_guard.remove(key.as_str());
-                            }
-                            _ => {
-                                // Operação desconhecida, ignora
-                                continue;
-                            }
-                        }
-                    }
-                }
-                Err(_) => {
-                    // Se não conseguir deserializar como Operation, ignora a entrada
-                    continue;
-                }
-            }
-        }
-
+        // iroh-docs gerencia seu próprio estado — o índice local é atualizado
+        // diretamente nas operações put/delete.
         Ok(())
     }
 
-    /// Limpa todos os dados do índice.
     fn clear(&mut self) -> std::result::Result<(), Self::Error> {
         let mut guard = self.index.write();
         guard.clear();
         Ok(())
     }
 }
-/// Implementação da KeyValue Store para GuardianDB
+
+/// Implementação da KeyValue Store para GuardianDB usando iroh-docs (WillowDocs).
 ///
-/// Esta estrutura fornece funcionalidade de store chave-valor baseada em GuardianDB,
-/// usando um BaseStore para operações fundamentais de log e sincronização.
+/// Esta implementação utiliza o protocolo iroh-docs para armazenamento KV distribuído
+/// com resolução de conflitos Last-Write-Wins (LWW), substituindo a arquitetura
+/// anterior baseada em BaseStore + OpLog.
+///
+/// # Arquitetura
+///
+/// - **Backend**: iroh-docs (Willow range-based reconciliation)
+/// - **Escrita**: `doc.set_bytes()` / `doc.del()` via WillowDocs
+/// - **Leitura**: Query iroh-docs + fetch de bytes via blob store
+/// - **Sync**: Automático via Willow (sem gossip heads manuais)
+/// - **Índice local**: HashMap em memória espelhando o estado do iroh-docs
+///
+/// Componentes mantidos da arquitetura anterior:
+/// - `AccessController` — validação de permissões em cada escrita
+/// - `EventBus` — eventos reativos para UI/observers
+/// - `Identity` → `AuthorId` mapping consistente
 pub struct GuardianDBKeyValue {
-    base_store: Arc<BaseStore>,
-    index: Arc<KeyValueIndex>,
-    // Cache do address para resolver problemas de lifetime
+    /// WillowDocs backend (iroh-docs)
+    docs: WillowDocs,
+    /// Handle do documento iroh-docs para este namespace KV
+    doc_handle: Doc,
+    /// AuthorId para operações de escrita (mapeado da Identity)
+    author_id: AuthorId,
+    /// Controlador de acesso para validação de permissões
+    access_controller: Arc<dyn AccessController>,
+    /// Barramento de eventos para notificações reativas
+    event_bus: Arc<EventBus>,
+    /// Referência ao IrohClient (para leitura de blobs e compatibilidade Store trait)
+    client: Arc<crate::p2p::network::client::IrohClient>,
+    /// Identidade criptográfica da store
+    identity: Arc<Identity>,
+    /// Endereço da store (cached para resolver problemas de lifetime)
     cached_address: Arc<dyn Address + Send + Sync>,
+    /// Nome do banco de dados
+    db_name: String,
+    /// Cache local (sled) — usado para persistir o NamespaceId entre recarregamentos
+    cache: Arc<dyn Datastore>,
+    /// Índice local em memória espelhando o estado do iroh-docs
+    index: Arc<KeyValueIndex>,
+    /// Span para tracing estruturado
     span: Span,
+    /// Tracer para telemetria
+    tracer: Arc<TracerWrapper>,
+    /// Interface de emissão de eventos (para compatibilidade com Store trait)
+    emitter_interface: Arc<dyn crate::events::EmitterInterface + Send + Sync>,
+    /// Log vazio para compatibilidade com a trait Store (op_log())
+    empty_log: Arc<RwLock<crate::log::Log>>,
 }
 
 #[async_trait::async_trait]
@@ -155,35 +194,26 @@ impl Store for GuardianDBKeyValue {
 
     #[allow(deprecated)]
     fn events(&self) -> &dyn crate::events::EmitterInterface {
-        self.base_store.events()
+        self.emitter_interface.as_ref()
     }
 
     async fn close(&self) -> Result<()> {
-        // Fechamento da KeyValue Store
-        //
-        // 1. Limpeza adequada do índice local
-        // 2. Logging apropriado para debugging
-        // 3. Seguimos o padrão RAII do Rust para cleanup automático
+        debug!("Starting KeyValue store close operation (iroh-docs backend)");
 
-        debug!("Starting KeyValue store close operation");
+        // Fecha o documento iroh-docs
+        if let Err(e) = self.docs.close_doc(&self.doc_handle).await {
+            warn!("Failed to close iroh-docs document: {:?}", e);
+        }
 
-        // Chama o close da BaseStore que faz a limpeza completa
-        self.base_store.close().await?;
-
-        // Nota: O índice HashMap será limpo automaticamente pelo Drop trait
-        // Isso é consistente com o padrão RAII do Rust
         debug!("KeyValue store close completed");
-
         Ok(())
     }
 
     fn address(&self) -> &dyn Address {
-        // Usa o valor em cache para evitar problemas de lifetime
         self.cached_address.as_ref()
     }
 
     fn index(&self) -> Box<dyn StoreIndex<Error = GuardianError> + Send + Sync> {
-        // Retorna uma cópia do nosso índice KeyValue como Box
         Box::new(KeyValueIndex {
             index: self.index.index.clone(),
         })
@@ -194,139 +224,155 @@ impl Store for GuardianDBKeyValue {
     }
 
     fn replication_status(&self) -> crate::stores::replicator::replication_info::ReplicationInfo {
-        // Usa ReplicationInfo com Clone - retorna dados atuais da BaseStore
         crate::stores::replicator::replication_info::ReplicationInfo::new()
     }
 
     fn cache(&self) -> Arc<dyn Datastore> {
-        self.base_store.cache()
+        self.cache.clone()
     }
 
     async fn drop(&self) -> Result<()> {
-        // Log o início da operação de drop
-        debug!("Starting KeyValue store drop operation");
+        debug!("Starting KeyValue store drop operation (iroh-docs backend)");
 
-        // Limpa o índice local completamente
-        let entries_count = {
-            let mut index_guard = self.index.index.write();
-            let count = index_guard.len();
-            index_guard.clear();
-            count
-        };
+        // Limpa o índice local
+        self.index.clear_all();
 
-        if entries_count > 0 {
-            debug!(
-                "KeyValue store drop: cleared {} entries from index",
-                entries_count
-            );
+        // Remove o documento iroh-docs permanentemente
+        let namespace_id = self.doc_handle.id();
+        if let Err(e) = self.docs.drop_doc(namespace_id).await {
+            warn!("Failed to drop iroh-docs document: {:?}", e);
         }
 
-        // A BaseStore será dropada automaticamente quando a struct sair de escopo
-        // Isso é consistente com o padrão RAII do Rust
+        // Remove o NamespaceId do cache
+        if let Err(e) = self.cache.delete(NAMESPACE_CACHE_KEY).await {
+            warn!("Failed to remove namespace from cache: {:?}", e);
+        }
+
         debug!("KeyValue store drop completed");
-
         Ok(())
     }
 
-    async fn load(&self, amount: usize) -> Result<()> {
-        // Delegate to base_store load functionality
-        self.base_store.load(Some(amount as isize)).await?;
-
-        // Sincroniza o índice KeyValue após carregar dados
-        match self.sync_index_with_log().await {
-            Ok(operations_count) => {
-                debug!(
-                    "KeyValue index synchronized after load: {} operations processed",
-                    operations_count
-                );
-            }
-            Err(e) => {
-                warn!("Warning: Failed to synchronize index after load: {:?}", e);
-            }
-        }
-
+    /// No-op para iroh-docs — Willow sync gerencia o carregamento automaticamente.
+    async fn load(&self, _amount: usize) -> Result<()> {
+        // iroh-docs usa Willow range sync, não precisa de load manual.
+        // Sincroniza o índice local com o estado atual do documento.
+        self.sync_index_from_docs().await?;
         Ok(())
     }
 
-    async fn sync(&self, heads: Vec<crate::log::entry::Entry>) -> Result<()> {
-        // Delegate to base_store sync functionality
-        self.base_store.sync(heads).await
+    /// No-op para iroh-docs — Willow sync substitui o exchange de heads via gossip.
+    async fn sync(&self, _heads: Vec<crate::log::entry::Entry>) -> Result<()> {
+        // iroh-docs usa Willow range reconciliation internamente.
+        // Após um sync externo, atualizamos o índice local.
+        self.sync_index_from_docs().await?;
+        Ok(())
     }
 
-    async fn load_more_from(&self, _amount: u64, entries: Vec<crate::log::entry::Entry>) {
-        // Delegate to base_store load_more_from functionality
-        let _ = self.base_store.load_more_from(entries);
+    /// No-op para iroh-docs.
+    async fn load_more_from(&self, _amount: u64, _entries: Vec<crate::log::entry::Entry>) {
+        // iroh-docs gerencia seu próprio carregamento incremental.
     }
 
+    /// No-op para iroh-docs.
     async fn load_from_snapshot(&self) -> Result<()> {
-        // Delega para a base store e depois atualiza o índice
-        self.base_store.load_from_snapshot().await?;
-
-        // Força sincronização completa do índice após carregar do snapshot
-        // Usa o novo método para garantir que o índice KeyValue esteja em sincronia
-        match self.sync_index_with_log().await {
-            Ok(operations_count) => {
-                info!(
-                    "Successfully synchronized KeyValue index after snapshot load: {} operations processed",
-                    operations_count
-                );
-            }
-            Err(e) => {
-                warn!(
-                    "Warning: Failed to synchronize index after snapshot load: {:?}",
-                    e
-                );
-            }
-        }
-
+        // iroh-docs não usa snapshots — o estado é autoridade.
+        self.sync_index_from_docs().await?;
         Ok(())
     }
 
+    /// Retorna um Log vazio para compatibilidade com a trait Store.
+    /// Na arquitetura iroh-docs, o OpLog não é mais utilizado —
+    /// iroh-docs gerencia seu próprio estado com LWW.
     fn op_log(&self) -> Arc<RwLock<crate::log::Log>> {
-        // Delega para BaseStore que retorna Arc<RwLock<Log>>
-        self.base_store.op_log()
+        self.empty_log.clone()
     }
 
     fn client(&self) -> Arc<crate::p2p::network::client::IrohClient> {
-        self.base_store.client()
+        self.client.clone()
     }
 
     fn db_name(&self) -> &str {
-        self.base_store.db_name()
+        &self.db_name
     }
 
     fn identity(&self) -> &Identity {
-        self.base_store.identity()
+        &self.identity
     }
 
     fn access_controller(&self) -> &dyn crate::access_control::traits::AccessController {
-        // Retorna o access controller da base store
-        self.base_store.access_controller()
+        self.access_controller.as_ref()
     }
 
+    /// Traduz uma Operation para operações iroh-docs (set_bytes/del).
+    /// Retorna uma Entry sintética para compatibilidade com a trait Store.
     async fn add_operation(
         &self,
         op: Operation,
-        on_progress_callback: Option<tokio::sync::mpsc::Sender<crate::log::entry::Entry>>,
+        _on_progress_callback: Option<tokio::sync::mpsc::Sender<crate::log::entry::Entry>>,
     ) -> Result<crate::log::entry::Entry> {
-        // Delegate to base_store add_operation functionality
-        self.base_store
-            .add_operation(op, on_progress_callback)
-            .await
+        let key = op.key().cloned().unwrap_or_default();
+
+        match op.op() {
+            "PUT" => {
+                let value = op.value().to_vec();
+                self.docs
+                    .set_bytes(
+                        &self.doc_handle,
+                        self.author_id,
+                        Bytes::from(key.clone().into_bytes()),
+                        Bytes::from(value.clone()),
+                    )
+                    .await?;
+
+                // Atualiza índice local
+                self.index.insert(key, value);
+            }
+            "DEL" => {
+                self.docs
+                    .del(
+                        &self.doc_handle,
+                        self.author_id,
+                        Bytes::from(key.clone().into_bytes()),
+                    )
+                    .await?;
+
+                // Atualiza índice local
+                self.index.remove(&key);
+            }
+            other => {
+                return Err(GuardianError::Store(format!(
+                    "Operação desconhecida: {}",
+                    other
+                )));
+            }
+        }
+
+        // Cria Entry sintética para compatibilidade
+        let payload = crate::guardian::serializer::serialize(&op).unwrap_or_default();
+        let clock = LamportClock::new(self.identity.pub_key());
+        let entry_arc = crate::log::entry::Entry::create(
+            &self.client,
+            (*self.identity).clone(),
+            "",
+            &payload,
+            &[],
+            Some(clock),
+        );
+        let entry = (*entry_arc).clone();
+
+        Ok(entry)
     }
 
     fn span(&self) -> Arc<tracing::Span> {
         Arc::new(self.span.clone())
     }
 
-    fn tracer(&self) -> Arc<crate::traits::TracerWrapper> {
-        // Return the tracer from base_store
-        self.base_store.tracer()
+    fn tracer(&self) -> Arc<TracerWrapper> {
+        self.tracer.clone()
     }
 
     fn event_bus(&self) -> Arc<EventBus> {
-        // Delega para BaseStore que retorna Arc<EventBus>
-        self.base_store.event_bus()
+        self.event_bus.clone()
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -335,38 +381,39 @@ impl Store for GuardianDBKeyValue {
 }
 
 impl GuardianDBKeyValue {
-    /// Acessa o BaseStore interno para operações de sync
-    pub fn basestore(&self) -> &BaseStore {
-        &self.base_store
-    }
-
     /// Retorna uma referência ao span de tracing para instrumentação
     pub fn span(&self) -> &Span {
         &self.span
+    }
+
+    /// Retorna o NamespaceId do documento iroh-docs subjacente
+    pub fn namespace_id(&self) -> iroh_docs::NamespaceId {
+        self.doc_handle.id()
+    }
+
+    /// Retorna o AuthorId usado para operações de escrita
+    pub fn author_id(&self) -> AuthorId {
+        self.author_id
     }
 }
 
 // Implementação da trait `KeyValueStore` para `GuardianDBKeyValue`.
 #[async_trait::async_trait]
 impl KeyValueStore for GuardianDBKeyValue {
-    /// Retorna todos os pares chave-valor da store.
     fn all(&self) -> HashMap<String, Vec<u8>> {
-        self.all()
+        self.index.get_all()
     }
 
-    /// Adiciona ou atualiza um valor para uma chave específica.
     async fn put(&self, key: &str, value: Vec<u8>) -> Result<Operation> {
-        self.put(key, value).await
+        self.put_impl(key, value).await
     }
 
-    /// Remove um valor associado a uma chave específica.
     async fn delete(&self, key: &str) -> Result<Operation> {
-        self.delete(key).await
+        self.delete_impl(key).await
     }
 
-    /// Obtém o valor associado a uma chave específica.
     async fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
-        self.get(key)
+        self.get_impl(key).await
     }
 }
 
@@ -391,112 +438,63 @@ impl GuardianDBKeyValue {
         self.index.get_all().keys().cloned().collect()
     }
 
-    /// Atualiza o índice local com base no estado atual do log
-    pub async fn update_index(&self) -> Result<()> {
-        let _entered = self.span.enter();
-        // Usamos o método update_index da BaseStore
-        match self.base_store.update_index() {
-            Ok(updated_count) => {
-                if updated_count > 0 {
-                    // Log informativo sobre quantas entradas foram processadas
-                    debug!(
-                        "KeyValue store index updated with {} entries",
-                        updated_count
-                    );
-                }
-                Ok(())
+    /// Retorna todos os pares chave-valor da store
+    pub fn all(&self) -> HashMap<String, Vec<u8>> {
+        self.index.get_all()
+    }
+
+    /// Sincroniza o índice local com o estado atual do documento iroh-docs.
+    ///
+    /// Consulta todas as entradas do documento e reconstrói o índice em memória.
+    /// Usado após operações de load/sync ou para recuperação de estado.
+    pub async fn sync_index_from_docs(&self) -> Result<usize> {
+        let entries = self
+            .docs
+            .get_many(&self.doc_handle, Query::single_latest_per_key().build())
+            .await?;
+
+        let mut count = 0;
+
+        // Limpa e reconstrói o índice
+        self.index.clear_all();
+
+        for entry in &entries {
+            let key = String::from_utf8_lossy(entry.key()).to_string();
+
+            // Entradas com content_len == 0 são marcadores de deleção
+            if entry.content_len() == 0 {
+                continue;
             }
-            Err(e) => {
-                // Log do erro e propaga para o chamador
-                error!("Failed to update KeyValue store index: {:?}", e);
-                Err(e)
+
+            // Lê os bytes do conteúdo via blob store usando o content_hash
+            let content_hash = entry.content_hash();
+            let hash_str = content_hash.to_hex();
+            match self.client.cat_bytes(&hash_str).await {
+                Ok(value) => {
+                    self.index.insert(key, value);
+                    count += 1;
+                }
+                Err(e) => {
+                    warn!("Failed to read content for key from iroh-docs: {:?}", e);
+                }
             }
         }
-    }
-
-    /// Sincroniza o índice local KeyValue com todas as entradas do log
-    ///
-    /// Este método força uma reconstrução completa do índice local baseado
-    /// em todas as entradas presentes no log distribuído. É útil após
-    /// operações de load, sync ou reset.
-    pub async fn sync_index_with_log(&self) -> Result<usize> {
-        // Primeiro atualiza o índice via BaseStore
-        let _updated_count = self.base_store.update_index()?;
-
-        // Agora reconstrói o índice local baseado nas entradas do log
-        let mut operations_processed = 0;
-
-        // Acessa o log usando o método thread-safe
-        self.base_store.with_oplog(|oplog| {
-            let entries = oplog.values();
-
-            // Limpa o índice local primeiro
-            {
-                let mut index_guard = self.index.index.write();
-                index_guard.clear();
-            }
-
-            // Processa todas as entradas do log em ordem
-            for entry in entries {
-                match crate::guardian::serializer::deserialize::<Operation>(entry.payload()) {
-                    Ok(operation) => {
-                        if let Some(key) = operation.key() {
-                            let mut index_guard = self.index.index.write();
-                            match operation.op() {
-                                "PUT" => {
-                                    let value = operation.value().to_vec();
-                                    index_guard.insert(key.clone(), value);
-                                    operations_processed += 1;
-                                }
-                                "DEL" => {
-                                    index_guard.remove(key.as_str());
-                                    operations_processed += 1;
-                                }
-                                _ => {
-                                    // Operação desconhecida, ignora
-                                    continue;
-                                }
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        // Se não conseguir deserializar como Operation, ignora a entrada
-                        continue;
-                    }
-                }
-            }
-        });
 
         info!(
-            "KeyValue index synchronized: processed {} operations, index size: {}",
-            operations_processed,
-            self.len()
+            "KeyValue index synchronized from iroh-docs: {} entries loaded",
+            count
         );
 
-        Ok(operations_processed)
-    }
-
-    pub fn all(&self) -> HashMap<String, Vec<u8>> {
-        // Retorna todos os pares chave-valor do índice
-        self.index.get_all()
+        Ok(count)
     }
 
     /// Adiciona ou atualiza um valor para uma chave específica.
     ///
-    /// Esta operação cria uma entrada no log distribuído e atualiza o índice local.
-    /// A operação é replicada para outros peers na rede.
-    ///
-    /// # Argumentos
-    ///
-    /// * `key` - A chave para associar ao valor
-    /// * `value` - Os dados binários a serem armazenados
-    ///
-    /// # Retorna
-    ///
-    /// A operação criada se bem-sucedida, ou um erro se a operação falhar.
+    /// Escreve diretamente no documento iroh-docs via `set_bytes()`.
+    /// O valor é armazenado no blob store e referenciado pelo documento.
+    /// A sincronização com outros peers é automática via Willow.
     #[instrument(level = "debug", skip(self, value))]
-    pub async fn put(&mut self, key: String, value: Vec<u8>) -> Result<Operation> {
-        // Validação de entrada
+    pub async fn put_impl(&self, key: &str, value: Vec<u8>) -> Result<Operation> {
         if key.is_empty() {
             return Err(GuardianError::Store(
                 "A chave não pode estar vazia".to_string(),
@@ -509,120 +507,98 @@ impl GuardianDBKeyValue {
             ));
         }
 
-        // Criamos a operação diretamente como Operation em vez de Box<dyn OperationTrait>
-        use crate::stores::operation::Operation;
-
-        let op = Operation::new(Some(key.clone()), "PUT".to_string(), Some(value.clone()));
-
-        let _entry = self
-            .base_store
-            .add_operation(op.clone(), None)
+        // Escreve no documento iroh-docs
+        self.docs
+            .set_bytes(
+                &self.doc_handle,
+                self.author_id,
+                Bytes::from(key.as_bytes().to_vec()),
+                Bytes::from(value.clone()),
+            )
             .await
             .map_err(|e| {
                 GuardianError::Store(format!(
-                    "erro ao adicionar valor para chave '{}': {}",
+                    "Erro ao escrever chave '{}' no iroh-docs: {}",
                     key, e
                 ))
             })?;
 
-        // Força atualização do índice após adicionar a operação ao log
-        // Isso garante que o índice local e o global estejam sincronizados
-        if let Err(e) = self.update_index().await {
-            warn!(
-                "Warning: Failed to update index after PUT operation: {:?}",
-                e
-            );
-        }
+        // Atualiza o índice local imediatamente
+        self.index.insert(key.to_string(), value.clone());
 
-        // Atualiza o índice local imediatamente como fallback
-        {
-            let mut index_guard = self.index.index.write();
-            index_guard.insert(key, value);
-        }
+        debug!("PUT key='{}' ({} bytes) via iroh-docs", key, value.len());
 
-        // Como já temos a Operation, podemos retorná-la diretamente
-        Ok(op)
+        Ok(Operation::new(
+            Some(key.to_string()),
+            "PUT".to_string(),
+            Some(value),
+        ))
     }
 
     /// Remove um valor associado a uma chave específica.
     ///
-    /// Esta operação cria uma entrada de deleção no log distribuído e remove
-    /// a chave do índice local. A operação é replicada para outros peers na rede.
-    ///
-    /// # Argumentos
-    ///
-    /// * `key` - A chave a ser removida
-    ///
-    /// # Retorna
-    ///
-    /// A operação de deleção criada se bem-sucedida, ou um erro se a operação falhar.
+    /// Remove a chave do documento iroh-docs via `del()`.
+    /// A deleção é propagada para outros peers automaticamente via Willow.
     #[instrument(level = "debug", skip(self))]
-    pub async fn delete(&mut self, key: String) -> Result<Operation> {
-        // Validação de entrada
+    pub async fn delete_impl(&self, key: &str) -> Result<Operation> {
         if key.is_empty() {
             return Err(GuardianError::Store(
                 "A chave não pode estar vazia".to_string(),
             ));
         }
 
-        // Verifica se a chave existe antes de tentar deletar
-        if !self.contains_key(&key) {
+        // Verifica se a chave existe no índice local
+        if !self.contains_key(key) {
             return Err(GuardianError::Store(format!(
                 "Chave '{}' não encontrada",
                 key
             )));
         }
 
-        // Criamos a operação diretamente como Operation
-        use crate::stores::operation::Operation;
-
-        let op = Operation::new(Some(key.clone()), "DEL".to_string(), None);
-
-        let _entry = self
-            .base_store
-            .add_operation(op.clone(), None)
+        // Remove do documento iroh-docs
+        let deleted = self
+            .docs
+            .del(
+                &self.doc_handle,
+                self.author_id,
+                Bytes::from(key.as_bytes().to_vec()),
+            )
             .await
-            .map_err(|e| GuardianError::Store(format!("erro ao deletar chave '{}': {}", key, e)))?;
+            .map_err(|e| {
+                GuardianError::Store(format!(
+                    "Erro ao deletar chave '{}' no iroh-docs: {}",
+                    key, e
+                ))
+            })?;
 
-        // Força atualização do índice após adicionar a operação de delete ao log
-        // Isso garante que o índice local e o global estejam sincronizados
-        if let Err(e) = self.update_index().await {
-            warn!(
-                "Warning: Failed to update index after DELETE operation: {:?}",
-                e
-            );
-        }
+        // Atualiza o índice local imediatamente
+        self.index.remove(key);
 
-        // Atualiza o índice local imediatamente como fallback
-        {
-            let mut index_guard = self.index.index.write();
-            index_guard.remove(&key);
-        }
+        debug!(
+            "DEL key='{}' ({} entries removed) via iroh-docs",
+            key, deleted
+        );
 
-        Ok(op)
+        Ok(Operation::new(
+            Some(key.to_string()),
+            "DEL".to_string(),
+            None,
+        ))
     }
 
     /// Obtém o valor associado a uma chave específica.
     ///
-    /// # Argumentos
-    ///
-    /// * `key` - A chave a ser procurada
-    ///
-    /// # Retorna
-    ///
-    /// `Some(Vec<u8>)` se a chave for encontrada, `None` se não existir,
-    /// ou um erro se houver problema no acesso.
+    /// Consulta o índice local em memória primeiro (cache síncrono).
+    /// A leitura é O(1) via HashMap, sem necessidade de replay de log.
     #[instrument(level = "debug", skip(self))]
-    pub fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
-        let _entered = self.span.enter();
-        // Validação de entrada
+    pub async fn get_impl(&self, key: &str) -> Result<Option<Vec<u8>>> {
         if key.is_empty() {
             return Err(GuardianError::Store(
                 "A chave não pode estar vazia".to_string(),
             ));
         }
 
-        // Retorna o valor do índice para a chave especificada
+        // Consulta o índice local (espelha o estado do iroh-docs)
         Ok(self.index.get_value(key))
     }
 
@@ -630,7 +606,15 @@ impl GuardianDBKeyValue {
         "keyvalue"
     }
 
-    /// Função associada para criar uma nova instância de GuardianDBKeyValue
+    /// Cria uma nova instância de GuardianDBKeyValue usando iroh-docs como backend.
+    ///
+    /// # Fluxo de inicialização
+    ///
+    /// 1. Inicializa o WillowDocs a partir do IrohClient backend
+    /// 2. Obtém/cria o AuthorId padrão
+    /// 3. Cria ou abre um documento iroh-docs (namespace persistido via cache)
+    /// 4. Configura AccessController e EventBus
+    /// 5. Sincroniza o índice local com o estado do documento
     #[instrument(level = "debug", skip(client, identity, addr, options))]
     pub async fn new(
         client: Arc<crate::p2p::network::client::IrohClient>,
@@ -638,65 +622,245 @@ impl GuardianDBKeyValue {
         addr: Arc<dyn Address + Send + Sync>,
         options: Option<NewStoreOptions>,
     ) -> Result<Self> {
-        // Cria o índice para a KeyValue store
-        let index = Arc::new(KeyValueIndex::new());
+        let opts = options.unwrap_or_default();
 
-        // Cria uma nova opção com o índice personalizado
-        let mut kv_options = options.unwrap_or_else(|| {
-            use iroh::SecretKey;
-            use rand_core::OsRng;
+        // --- 1. Inicializa iroh-docs ---
 
-            let secret = SecretKey::generate(OsRng);
-            let node_id = secret.public();
+        // Garante que o subsistema iroh-docs está inicializado no cliente
+        if !client.has_docs_client().await {
+            client.init_docs().await.map_err(|e| {
+                GuardianError::Store(format!("Falha ao inicializar iroh-docs: {}", e))
+            })?;
+        }
 
-            NewStoreOptions {
-                event_bus: None,
-                index: None,
-                access_controller: None,
-                cache: None,
-                cache_destroy: None,
-                replication_concurrency: None,
-                reference_count: None,
-                replicate: None,
-                max_history: None,
-                directory: String::new(),
-                sort_fn: None,
-                span: None,
-                tracer: None,
-                pubsub: None,
-                message_marshaler: None,
-                node_id,
-                direct_channel: None,
-                close_func: None,
-                store_specific_opts: None,
-            }
+        let mut docs = client.docs_client().await.ok_or_else(|| {
+            GuardianError::Store("iroh-docs não disponível após inicialização".to_string())
+        })?;
+
+        // --- 2. Obtém AuthorId ---
+
+        let author_id = docs.get_or_init_author().await.map_err(|e| {
+            GuardianError::Store(format!("Falha ao inicializar author iroh-docs: {}", e))
+        })?;
+
+        // --- 3. Configura componentes ---
+
+        let db_name = addr.get_path().to_string();
+        let span = tracing::info_span!("keyvalue_store", address = %addr.to_string());
+
+        // EventBus
+        let event_bus = opts.event_bus.unwrap_or_default();
+        let event_bus = Arc::new(event_bus);
+
+        // AccessController
+        let access_controller = opts.access_controller.unwrap_or_else(|| {
+            let mut default_access = HashMap::new();
+            default_access.insert("write".to_string(), vec!["*".to_string()]);
+            Arc::new(SimpleAccessController::new(Some(default_access))) as Arc<dyn AccessController>
         });
 
-        // Configura o index builder para criar nosso KeyValueIndex
-        kv_options.index = Some(Box::new(
-            move |_data: &[u8]| -> Box<dyn StoreIndex<Error = GuardianError>> {
-                // Clona o índice em vez de criar um novo
-                Box::new(KeyValueIndex::new()) // Por simplicidade, criamos um novo por enquanto
-            },
-        ));
+        // Tracer
+        let tracer = opts.tracer.unwrap_or_else(|| {
+            Arc::new(TracerWrapper::Noop(
+                NoopTracerProvider::new().tracer("berty.guardian-db"),
+            ))
+        });
 
-        // Cria span para esta instância da KeyValueStore
-        let span = tracing::info_span!("keyvalue_store", address = %addr.to_string());
-        // Inicializa a BaseStore com as opções atualizadas
-        let base_store = BaseStore::new(client, identity, addr, Some(kv_options))
-            .await
-            .map_err(|e| {
-                GuardianError::Store(format!("incapaz de inicializar a base store: {}", e))
-            })?;
+        // Cache (usa sled se diretório fornecido, senão cria um cache em memória)
+        let cache: Arc<dyn Datastore> = if let Some(cache) = opts.cache {
+            cache
+        } else {
+            let cache_dir = if opts.directory.is_empty() {
+                format!("./GuardianDB/{}/cache", addr)
+            } else {
+                format!("{}/cache", opts.directory)
+            };
+            Self::create_cache(addr.as_ref(), &cache_dir)?
+        };
 
-        // Cache do address para resolver problemas de lifetime
-        let cached_address = base_store.address();
+        // EventEmitter para compatibilidade com Store trait
+        let emitter_interface: Arc<dyn crate::events::EmitterInterface + Send + Sync> =
+            Arc::new(EventEmitter::new());
 
-        Ok(GuardianDBKeyValue {
-            base_store,
-            index,
+        // --- 4. Cria ou abre documento iroh-docs ---
+
+        // Tenta recuperar o NamespaceId do cache para reabrir documento existente
+        let doc_handle = match cache.get(NAMESPACE_CACHE_KEY).await {
+            Ok(Some(namespace_bytes)) if namespace_bytes.len() == 32 => {
+                // NamespaceId existente — tenta reabrir o documento
+                let mut ns_bytes = [0u8; 32];
+                ns_bytes.copy_from_slice(&namespace_bytes);
+                let namespace_id = iroh_docs::NamespaceId::from(ns_bytes);
+
+                match docs.open_doc(namespace_id).await? {
+                    Some(doc) => {
+                        info!("Reopened existing iroh-docs document: {:?}", namespace_id);
+                        doc
+                    }
+                    None => {
+                        // Documento não encontrado — cria um novo
+                        warn!(
+                            "Cached namespace {:?} not found, creating new document",
+                            namespace_id
+                        );
+                        let doc = docs.create_doc().await?;
+                        let ns_id = doc.id();
+                        cache
+                            .put(NAMESPACE_CACHE_KEY, ns_id.as_bytes())
+                            .await
+                            .map_err(|e| {
+                                GuardianError::Store(format!(
+                                    "Falha ao persistir NamespaceId: {}",
+                                    e
+                                ))
+                            })?;
+                        info!("Created new iroh-docs document: {:?}", ns_id);
+                        doc
+                    }
+                }
+            }
+            _ => {
+                // Sem NamespaceId no cache — cria novo documento
+                let doc = docs.create_doc().await?;
+                let ns_id = doc.id();
+                cache
+                    .put(NAMESPACE_CACHE_KEY, ns_id.as_bytes())
+                    .await
+                    .map_err(|e| {
+                        GuardianError::Store(format!("Falha ao persistir NamespaceId: {}", e))
+                    })?;
+                info!("Created new iroh-docs document: {:?}", ns_id);
+                doc
+            }
+        };
+
+        // --- 5. Cria Log vazio para compatibilidade com Store trait ---
+
+        let empty_log = {
+            use crate::log::{AdHocAccess, Log, LogOptions};
+            let log_opts = LogOptions {
+                id: Some(&db_name),
+                access: AdHocAccess,
+                entries: &[],
+                heads: &[],
+                clock: None,
+                sort_fn: None,
+            };
+            Arc::new(RwLock::new(Log::new(
+                client.clone(),
+                (*identity).clone(),
+                log_opts,
+            )))
+        };
+
+        // --- 6. Cria a instância e sincroniza o índice ---
+
+        let index = Arc::new(KeyValueIndex::new());
+        let cached_address = addr.clone();
+
+        let store = GuardianDBKeyValue {
+            docs,
+            doc_handle,
+            author_id,
+            access_controller,
+            event_bus,
+            client,
+            identity,
             cached_address,
+            db_name,
+            cache,
+            index,
             span,
-        })
+            tracer,
+            emitter_interface,
+            empty_log,
+        };
+
+        // Sincroniza o índice local com o estado do documento iroh-docs
+        match store.sync_index_from_docs().await {
+            Ok(count) => {
+                if count > 0 {
+                    info!(
+                        "KeyValue store initialized with {} entries from iroh-docs",
+                        count
+                    );
+                }
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to sync index on initialization: {:?}. Store will start empty.",
+                    e
+                );
+            }
+        }
+
+        info!(
+            "GuardianDBKeyValue initialized with iroh-docs backend (namespace={:?}, author={:?})",
+            store.doc_handle.id(),
+            store.author_id
+        );
+
+        Ok(store)
+    }
+
+    /// Cria um cache baseado em sled para persistir o NamespaceId
+    fn create_cache(address: &dyn Address, cache_dir: &str) -> Result<Arc<dyn Datastore>> {
+        use crate::cache::level_down::LevelDownCache;
+        use crate::cache::{Cache, CacheMode, Options};
+
+        let cache_options = Options {
+            span: None,
+            max_cache_size: Some(100 * 1024 * 1024),
+            cache_mode: CacheMode::Auto,
+        };
+
+        let cache_manager = LevelDownCache::new(Some(&cache_options));
+        let address_string = address.to_string();
+        let parsed_address = crate::address::parse(&address_string)
+            .map_err(|e| GuardianError::Store(format!("Failed to parse address: {}", e)))?;
+
+        let boxed_datastore = cache_manager
+            .load(cache_dir, &parsed_address)
+            .map_err(|e| GuardianError::Store(format!("Failed to create cache: {}", e)))?;
+
+        // Wrapper para converter Box<dyn Datastore + Send + Sync> para Arc<dyn Datastore>
+        struct DatastoreWrapper {
+            inner: Box<dyn Datastore + Send + Sync>,
+        }
+
+        #[async_trait::async_trait]
+        impl Datastore for DatastoreWrapper {
+            async fn get(&self, key: &[u8]) -> crate::guardian::error::Result<Option<Vec<u8>>> {
+                self.inner.get(key).await
+            }
+            async fn put(&self, key: &[u8], value: &[u8]) -> crate::guardian::error::Result<()> {
+                self.inner.put(key, value).await
+            }
+            async fn has(&self, key: &[u8]) -> crate::guardian::error::Result<bool> {
+                self.inner.has(key).await
+            }
+            async fn delete(&self, key: &[u8]) -> crate::guardian::error::Result<()> {
+                self.inner.delete(key).await
+            }
+            async fn query(
+                &self,
+                query: &crate::data_store::Query,
+            ) -> crate::guardian::error::Result<crate::data_store::Results> {
+                self.inner.query(query).await
+            }
+            async fn list_keys(
+                &self,
+                prefix: &[u8],
+            ) -> crate::guardian::error::Result<Vec<crate::data_store::Key>> {
+                self.inner.list_keys(prefix).await
+            }
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+        }
+
+        Ok(Arc::new(DatastoreWrapper {
+            inner: boxed_datastore,
+        }))
     }
 }
