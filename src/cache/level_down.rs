@@ -2,7 +2,7 @@ use crate::address::Address;
 use crate::cache::{Cache, Options};
 use crate::data_store::{Datastore, Key, Order, Query, ResultItem, Results};
 use crate::guardian::error::{GuardianError, Result};
-use sled::{Config, Db, IVec};
+use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -11,9 +11,12 @@ use std::{
 use tracing::{Span, debug, instrument};
 
 pub const IN_MEMORY_DIRECTORY: &str = ":memory:";
+
+const LEVEL_DOWN_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("level_down");
+
 pub struct WrappedCache {
     id: String,
-    db: Db,
+    db: Database,
     manager_map: Weak<Mutex<HashMap<String, Arc<WrappedCache>>>>,
     #[allow(dead_code)]
     span: Span,
@@ -27,12 +30,10 @@ impl WrappedCache {
         _ctx: &mut dyn core::any::Any,
         key: &Key,
     ) -> std::result::Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-        match self
-            .db
-            .get(key.as_bytes())
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
-        {
-            Some(v) => Ok(v.to_vec()),
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(LEVEL_DOWN_TABLE)?;
+        match table.get(key.as_bytes().as_slice())? {
+            Some(v) => Ok(v.value().to_vec()),
             None => Err(format!("key not found: {}", key).into()),
         }
     }
@@ -42,9 +43,9 @@ impl WrappedCache {
         _ctx: &mut dyn core::any::Any,
         key: &Key,
     ) -> std::result::Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-        self.db
-            .contains_key(key.as_bytes())
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(LEVEL_DOWN_TABLE)?;
+        Ok(table.get(key.as_bytes().as_slice())?.is_some())
     }
 
     pub fn get_size(
@@ -52,12 +53,12 @@ impl WrappedCache {
         _ctx: &mut dyn core::any::Any,
         key: &Key,
     ) -> std::result::Result<usize, Box<dyn std::error::Error + Send + Sync>> {
-        let v = self
-            .db
-            .get(key.as_bytes())
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(LEVEL_DOWN_TABLE)?;
+        let v = table
+            .get(key.as_bytes().as_slice())?
             .ok_or_else(|| format!("key not found: {}", key))?;
-        Ok(v.len())
+        Ok(v.value().len())
     }
 
     pub fn query(
@@ -65,40 +66,61 @@ impl WrappedCache {
         _ctx: &mut dyn core::any::Any,
         q: &Query,
     ) -> std::result::Result<Results, Box<dyn std::error::Error + Send + Sync>> {
-        let iter: Box<dyn Iterator<Item = sled::Result<(IVec, IVec)>>> =
-            if let Some(prefix_key) = &q.prefix {
-                // Converte Key para bytes para usar como prefixo
-                let prefix_bytes = prefix_key.as_bytes();
-                Box::new(self.db.scan_prefix(prefix_bytes))
-            } else {
-                Box::new(self.db.iter())
-            };
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(LEVEL_DOWN_TABLE)?;
 
-        // coleta (ordenado asc pelo sled por padrão)
         let mut items: Results = Vec::new();
         let mut count = 0;
-
-        // Aplica offset se especificado
         let skip_count = q.offset.unwrap_or(0);
         let mut skipped = 0;
 
-        for kv in iter {
-            let (k, v) = kv.map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+        if let Some(prefix_key) = &q.prefix {
+            let prefix_bytes = prefix_key.as_bytes();
+            let iter = table.range(prefix_bytes.as_slice()..)?;
 
-            // Aplica offset
-            if skipped < skip_count {
-                skipped += 1;
-                continue;
+            for entry_result in iter {
+                let entry = entry_result?;
+                let key_bytes = entry.0.value();
+                if !key_bytes.starts_with(&prefix_bytes) {
+                    break;
+                }
+
+                if skipped < skip_count {
+                    skipped += 1;
+                    continue;
+                }
+
+                let key_str = String::from_utf8(key_bytes.to_vec()).unwrap_or_default();
+                items.push(ResultItem::new(Key::new(key_str), entry.1.value().to_vec()));
+                count += 1;
+
+                if let Some(n) = q.limit
+                    && count >= n
+                {
+                    break;
+                }
             }
+        } else {
+            let iter = table.iter()?;
 
-            let key_str = String::from_utf8(k.to_vec()).unwrap_or_default();
-            items.push(ResultItem::new(Key::new(key_str), v.to_vec()));
-            count += 1;
+            for entry_result in iter {
+                let entry = entry_result?;
 
-            if let Some(n) = q.limit
-                && count >= n
-            {
-                break;
+                if skipped < skip_count {
+                    skipped += 1;
+                    continue;
+                }
+
+                let key_bytes = entry.0.value();
+                let key_str = String::from_utf8(key_bytes.to_vec()).unwrap_or_default();
+                items.push(ResultItem::new(Key::new(key_str), entry.1.value().to_vec()));
+                count += 1;
+
+                if let Some(n) = q.limit
+                    && count >= n
+                {
+                    break;
+                }
             }
         }
 
@@ -116,9 +138,12 @@ impl WrappedCache {
         key: &Key,
         value: &[u8],
     ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.db
-            .insert(key.as_bytes(), value)
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(LEVEL_DOWN_TABLE)?;
+            table.insert(key.as_bytes().as_slice(), value)?;
+        }
+        write_txn.commit()?;
         Ok(())
     }
 
@@ -127,9 +152,12 @@ impl WrappedCache {
         _ctx: &mut dyn core::any::Any,
         key: &Key,
     ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.db
-            .remove(key.as_bytes())
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(LEVEL_DOWN_TABLE)?;
+            table.remove(key.as_bytes().as_slice())?;
+        }
+        write_txn.commit()?;
         Ok(())
     }
 
@@ -138,9 +166,7 @@ impl WrappedCache {
         _ctx: &mut dyn core::any::Any,
         _key: &Key,
     ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.db
-            .flush()
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+        // Data is already persisted via write transactions in redb.
         Ok(())
     }
 
@@ -156,13 +182,15 @@ impl WrappedCache {
             m.remove(&self.id);
         }
 
-        self.db
-            .flush()
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+        // Data is already persisted via write transactions in redb.
         *closed = true;
         Ok(())
     }
 }
+
+// Send + Sync is safe because redb::Database is thread-safe
+unsafe impl Send for WrappedCache {}
+unsafe impl Sync for WrappedCache {}
 
 // Wrapper para adaptar WrappedCache ao trait Datastore
 pub struct DatastoreWrapper {
@@ -286,19 +314,22 @@ impl LevelDownCache {
         debug!("opening cache db: path={}", key_path.as_str());
 
         let db = if directory == IN_MEMORY_DIRECTORY {
-            Config::new()
-                .temporary(true)
-                .open()
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
+            Database::builder().create_with_backend(redb::backends::InMemoryBackend::new())?
         } else {
             if let Some(parent) = Path::new(&key_path).parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            Config::new()
-                .path(&key_path)
-                .open()
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
+            Database::create(&key_path)?
         };
+
+        // Ensure table exists
+        {
+            let write_txn = db.begin_write()?;
+            {
+                let _ = write_txn.open_table(LEVEL_DOWN_TABLE)?;
+            }
+            write_txn.commit()?;
+        }
 
         let wrapped = Arc::new(WrappedCache {
             id: key_path.clone(),
@@ -345,7 +376,7 @@ impl LevelDownCache {
         }
 
         if directory != IN_MEMORY_DIRECTORY && Path::new(&key_path).exists() {
-            std::fs::remove_dir_all(&key_path)?;
+            std::fs::remove_file(&key_path)?;
         }
 
         Ok(())
