@@ -414,7 +414,7 @@ impl Log {
         for h in &self.heads {
             t_max = max(t_max, h.clock().time());
         }
-        self.clock = LamportClock::new(&self.id).set_time(t_max);
+        self.clock = LamportClock::new(self.clock.id()).set_time(t_max);
 
         Some(self)
     }
@@ -559,6 +559,17 @@ impl Log {
         &self.clock
     }
 
+    /// Updates the Lamport clock time to the maximum time found across all heads.
+    /// This should be called after loading entries via `add_entry()` to ensure the
+    /// clock is properly synchronized for future appends.
+    pub fn sync_clock_from_heads(&mut self) {
+        let mut t_max = self.clock.time();
+        for h in &self.heads {
+            t_max = max(t_max, h.clock().time());
+        }
+        self.clock = LamportClock::new(self.clock.id()).set_time(t_max);
+    }
+
     pub fn values(&self) -> Vec<Arc<Entry>> {
         let mut es = self.traverse(&self.heads, None, None);
         es.reverse();
@@ -566,7 +577,7 @@ impl Log {
     }
 
     pub fn heads(&self) -> Vec<Arc<Entry>> {
-        let mut hs = self.heads.to_owned();
+        let mut hs = Log::dedup(&self.heads);
         hs.sort_by(|a, b| (self.sort_fn)(a, b));
         hs.reverse();
         hs
@@ -617,7 +628,7 @@ impl Log {
         amount: Option<usize>,
         end_hash: Option<Hash>,
     ) -> Vec<Arc<Entry>> {
-        let mut stack = roots.to_owned();
+        let mut stack = Log::dedup(roots);
         stack.sort_by(|a, b| (self.sort_fn)(a, b));
         stack.reverse();
         let mut traversed = HashSet::<Hash>::new();
