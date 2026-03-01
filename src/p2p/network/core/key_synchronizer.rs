@@ -3,7 +3,7 @@
 /// Sincronização robusta de chaves entre peers,
 /// garantindo consistência criptográfica e prevenindo ataques de replay.
 use crate::guardian::error::{GuardianError, Result};
-use crate::keystore::SledKeystore;
+use crate::keystore::RedbKeystore;
 use crate::log::identity_provider::Keystore;
 use crate::p2p::network::config::ClientConfig;
 use chrono::{DateTime, Utc};
@@ -142,7 +142,7 @@ pub struct KeySynchronizer {
     #[allow(dead_code)]
     client_config: ClientConfig,
     /// Keystore local
-    local_keystore: Arc<SledKeystore>,
+    local_keystore: Arc<RedbKeystore>,
     /// Keypair principal do nó (Ed25519)
     node_signing_key: SigningKey,
     /// NodeID do nó
@@ -170,7 +170,7 @@ impl KeySynchronizer {
             .map(|p| p.join("keystore"))
             .unwrap_or_else(|| std::env::temp_dir().join("guardian_keystore"));
 
-        let local_keystore = Arc::new(SledKeystore::new(Some(keystore_path))?);
+        let local_keystore = Arc::new(RedbKeystore::new(Some(keystore_path))?);
 
         // Carregar ou gerar keypair principal
         let node_signing_key = Self::load_or_generate_keypair(&local_keystore).await?;
@@ -206,7 +206,7 @@ impl KeySynchronizer {
     }
 
     /// Carrega ou gera keypair principal
-    async fn load_or_generate_keypair(keystore: &SledKeystore) -> Result<SigningKey> {
+    async fn load_or_generate_keypair(keystore: &RedbKeystore) -> Result<SigningKey> {
         const MAIN_KEYPAIR_KEY: &str = "main_node_keypair";
 
         // Tentar carregar keypair existente
