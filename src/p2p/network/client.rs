@@ -376,13 +376,24 @@ impl IrohClient {
         // Obtém o store do backend
         let store = self.backend.get_store_for_blobs().await?;
 
-        // Cria cliente com store compartilhado
-        let client = crate::p2p::network::core::blobs::BlobStore::new(store);
+        // Obtém o endpoint para download P2P de blobs
+        let endpoint_arc = self.backend.get_endpoint().await?;
+        let endpoint_lock = endpoint_arc.read().await;
+        let endpoint = endpoint_lock.as_ref().cloned();
+        drop(endpoint_lock);
+
+        // Cria cliente com store compartilhado + P2P download
+        let client = if let Some(ep) = endpoint {
+            info!("iroh-blobs client inicializado com store compartilhado + P2P download");
+            crate::p2p::network::core::blobs::BlobStore::new_with_endpoint(store, ep)
+        } else {
+            info!("iroh-blobs client inicializado com store compartilhado (sem P2P)");
+            crate::p2p::network::core::blobs::BlobStore::new(store)
+        };
 
         let mut blobs_guard = self.blobs_client.write().await;
         *blobs_guard = Some(client);
 
-        info!("iroh-blobs client inicializado com store compartilhado");
         Ok(())
     }
 
