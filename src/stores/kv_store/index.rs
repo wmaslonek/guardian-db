@@ -1,11 +1,15 @@
 use crate::guardian::error::GuardianError;
 use crate::log::{Log, entry::Entry};
-use crate::stores::operation::Operation;
 use crate::traits::StoreIndex;
 use parking_lot::RwLock;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
+
 /// KvIndex mantém um índice de chave-valor em memória para a KvStore.
+///
+/// Na arquitetura iroh-docs, este índice é um espelho local do estado
+/// do documento iroh-docs. O `update_index` é um no-op pois o índice
+/// é atualizado diretamente pelas operações put/delete.
 pub struct KvIndex {
     index: Arc<RwLock<HashMap<String, Vec<u8>>>>,
 }
@@ -28,91 +32,41 @@ impl KvIndex {
 impl StoreIndex for KvIndex {
     type Error = GuardianError;
 
-    /// Verifica se uma chave existe no índice.
     fn contains_key(&self, key: &str) -> std::result::Result<bool, Self::Error> {
         let index = self.index.read();
         Ok(index.contains_key(key))
     }
 
-    /// Retorna uma cópia dos dados para uma chave específica como bytes.
     fn get_bytes(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, Self::Error> {
         let index = self.index.read();
         Ok(index.get(key).cloned())
     }
 
-    /// Retorna todas as chaves disponíveis no índice.
     fn keys(&self) -> std::result::Result<Vec<String>, Self::Error> {
         let index = self.index.read();
         Ok(index.keys().cloned().collect())
     }
 
-    /// Retorna o número de entradas no índice.
     fn len(&self) -> std::result::Result<usize, Self::Error> {
         let index = self.index.read();
         Ok(index.len())
     }
 
-    /// Verifica se o índice está vazio.
     fn is_empty(&self) -> std::result::Result<bool, Self::Error> {
         let index = self.index.read();
         Ok(index.is_empty())
     }
-    /// Atualiza o índice processando as entradas do log de operações (oplog).
+
+    /// No-op para iroh-docs — o índice local é atualizado diretamente
+    /// pelas operações put/delete no GuardianDBKeyValue.
     fn update_index(
         &mut self,
-        oplog: &Log,
+        _oplog: &Log,
         _entries: &[Entry],
     ) -> std::result::Result<(), Self::Error> {
-        let mut handled = HashSet::new();
-
-        // Usa um "write lock" para garantir acesso exclusivo durante a atualização.
-        let mut index = self.index.write();
-
-        // Itera sobre as entradas do log em ordem reversa para processar
-        // as operações mais recentes primeiro.
-        for entry in oplog.values().iter().rev() {
-            // Payload agora é Vec<u8>, verificamos se não está vazio
-            if !entry.payload.is_empty() {
-                match crate::guardian::serializer::deserialize::<Operation>(&entry.payload) {
-                    Ok(op_result) => {
-                        // Pula entradas sem chave.
-                        let key = match op_result.key() {
-                            Some(k) => k,
-                            None => continue,
-                        };
-
-                        // Processa cada chave apenas uma vez.
-                        if !handled.contains(key) {
-                            handled.insert(key.clone());
-
-                            match op_result.op() {
-                                "PUT" => {
-                                    let value = op_result.value();
-                                    if !value.is_empty() {
-                                        index.insert(key.clone(), value.to_vec());
-                                    }
-                                }
-                                "DEL" => {
-                                    index.remove(key);
-                                }
-                                _ => { /* ignora outras operações */ }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        return Err(GuardianError::Store(format!(
-                            "Erro ao parsear operação: {}",
-                            e
-                        )));
-                    }
-                }
-            }
-        }
-
         Ok(())
     }
 
-    /// Limpa todos os dados do índice.
     fn clear(&mut self) -> std::result::Result<(), Self::Error> {
         let mut index = self.index.write();
         index.clear();
