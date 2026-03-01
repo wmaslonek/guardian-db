@@ -951,25 +951,27 @@ impl BaseStore {
         // Fecha o cache adequadamente se for um tipo que suporte fechamento
         debug!("Closing cache");
 
-        // Para caches SledDatastore, chama o método close() para flush e cleanup
-        if let Some(sled_cache) = self
+        // Para caches RedbDatastore, chama o método flush() para compact e cleanup
+        if let Some(redb_cache) = self
             .cache()
             .as_any()
-            .downcast_ref::<crate::cache::SledDatastore>()
+            .downcast_ref::<crate::cache::RedbDatastore>()
         {
-            if let Err(e) = sled_cache.close() {
-                warn!("Failed to close SledDatastore cache: {}", e);
+            if let Err(e) = redb_cache.flush() {
+                warn!("Failed to flush RedbDatastore cache: {}", e);
             } else {
-                debug!("SledDatastore cache closed successfully");
+                debug!("RedbDatastore cache flushed successfully");
             }
-        } else if let Some(_wrapper) = self
+        } else if let Some(handle) = self
             .cache()
             .as_any()
-            .downcast_ref::<crate::cache::level_down::DatastoreWrapper>()
+            .downcast_ref::<crate::cache::RedbDatastoreHandle>()
         {
-            // Para DatastoreWrapper, o Arc será dropado automaticamente
-            // mas podemos forçar um flush final se necessário
-            debug!("DatastoreWrapper cache - relying on automatic cleanup");
+            if let Err(e) = handle.flush() {
+                warn!("Failed to flush RedbDatastoreHandle cache: {}", e);
+            } else {
+                debug!("RedbDatastoreHandle cache flushed successfully");
+            }
         } else {
             debug!("Cache type doesn't require explicit closing - relying on Arc drop");
         }
@@ -1093,6 +1095,7 @@ impl BaseStore {
         let cache_keys = [
             "_localHeads",
             "_remoteHeads",
+            "_allEntries",
             "queue",
             "snapshot",
             "replication_progress",
@@ -1117,11 +1120,20 @@ impl BaseStore {
         }
 
         // Para caches que suportam flush completo, força a persistência
-        if let Some(sled_cache) = cache.as_any().downcast_ref::<crate::cache::SledDatastore>() {
-            if let Err(e) = sled_cache.close() {
+        if let Some(redb_cache) = cache.as_any().downcast_ref::<crate::cache::RedbDatastore>() {
+            if let Err(e) = redb_cache.flush() {
                 warn!("Failed to flush cache during reset: {}", e);
             } else {
                 debug!("Cache successfully flushed during reset");
+            }
+        } else if let Some(handle) = cache
+            .as_any()
+            .downcast_ref::<crate::cache::RedbDatastoreHandle>()
+        {
+            if let Err(e) = handle.flush() {
+                warn!("Failed to flush cache handle during reset: {}", e);
+            } else {
+                debug!("Cache handle successfully flushed during reset");
             }
         }
 
@@ -1430,27 +1442,20 @@ impl BaseStore {
                         store.recalculate_replication_max(1000); // Máximo padrão de 1000 entradas
 
                         // Verifica se há cache que precisa ser persistido e força flush
-                        match store.cache().as_any().downcast_ref::<crate::cache::SledDatastore>() {
-                            Some(sled_cache) => {
-                                if let Err(e) = sled_cache.close() {
-                                    warn!("Failed to flush cache during periodic maintenance: {}", e);
-                                } else {
-                                    debug!("Cache successfully flushed during periodic maintenance");
-                                }
+                        if let Some(redb_cache) = store.cache().as_any().downcast_ref::<crate::cache::RedbDatastore>() {
+                            if let Err(e) = redb_cache.flush() {
+                                warn!("Failed to flush cache during periodic maintenance: {}", e);
+                            } else {
+                                debug!("Cache successfully flushed during periodic maintenance");
                             }
-                            None => {
-                                // Para outros tipos de cache, tentamos fechar através do wrapper
-                                debug!("Cache type doesn't support direct flushing - using wrapper approach");
-                                // Se for DatastoreWrapper (LevelDown), usa métodos específicos
-                                if let Some(_wrapper) = store.cache().as_any()
-                                    .downcast_ref::<crate::cache::level_down::DatastoreWrapper>()
-                                {
-                                    // Para DatastoreWrapper, o flush é feito internamente
-                                    debug!("DatastoreWrapper cache - periodic sync handled internally");
-                                } else {
-                                    debug!("Unknown cache type - no periodic flush available");
-                                }
+                        } else if let Some(handle) = store.cache().as_any().downcast_ref::<crate::cache::RedbDatastoreHandle>() {
+                            if let Err(e) = handle.flush() {
+                                warn!("Failed to flush cache handle during periodic maintenance: {}", e);
+                            } else {
+                                debug!("Cache handle successfully flushed during periodic maintenance");
                             }
+                        } else {
+                            debug!("Cache type doesn't support direct flushing");
                         }
 
                         // Atualiza estatísticas do índice se necessário
@@ -1594,6 +1599,22 @@ impl BaseStore {
 
         let cache = self.cache();
         cache.put("_remoteHeads".as_bytes(), &heads_bytes).await?;
+
+        // Salva TODAS as entradas do oplog no cache para persistência completa
+        let all_entries = self.with_oplog(|oplog| {
+            oplog
+                .values()
+                .iter()
+                .map(|arc_entry| (**arc_entry).clone())
+                .collect::<Vec<Entry>>()
+        });
+        if let Ok(all_entries_bytes) = crate::guardian::serializer::serialize(&all_entries)
+            && let Err(e) = cache
+                .put("_allEntries".as_bytes(), &all_entries_bytes)
+                .await
+        {
+            warn!("Failed to cache all entries after replication: {}", e);
+        }
 
         let log_length = self.with_oplog(|oplog| oplog.len());
 
@@ -1770,12 +1791,10 @@ impl BaseStore {
         let arc_entry = Arc::new(entry.clone());
         let entries_slice = std::slice::from_ref(&arc_entry);
 
-        // Cria um ID único para o log temporário baseado no hash da entrada
-        let temp_log_id = format!("temp_log_{}", entry.hash());
-
-        // Configura as opções do log com a entrada como entrada e head
+        // Usa o mesmo ID da store para que oplog.join() aceite a fusão
+        // (Log::join retorna None quando self.id != other.id)
         let log_options = LogOptions::new()
-            .id(&temp_log_id)
+            .id(&self.id)
             .entries(entries_slice)
             .heads(entries_slice) // A entrada também é um head neste log temporário
             .sort_fn(self.sort_fn); // Usa a mesma função de ordenação da store
@@ -1792,7 +1811,7 @@ impl BaseStore {
 
         debug!(
             "Successfully created temporary log '{}' with {} entries",
-            temp_log_id,
+            self.id,
             temp_log.len()
         );
 
@@ -1909,6 +1928,24 @@ impl BaseStore {
                 // Emite ready com as heads processadas
                 self.sync_observer.emit_ready(verified_heads.clone()).await;
             }
+
+            // Persiste todas as entradas do oplog no cache após sync
+            let all_entries = self.with_oplog(|oplog| {
+                oplog
+                    .values()
+                    .iter()
+                    .map(|arc_entry| (**arc_entry).clone())
+                    .collect::<Vec<Entry>>()
+            });
+            if let Ok(all_entries_bytes) = crate::guardian::serializer::serialize(&all_entries) {
+                let cache = self.cache();
+                if let Err(e) = cache
+                    .put("_allEntries".as_bytes(), &all_entries_bytes)
+                    .await
+                {
+                    warn!("Failed to cache all entries after sync: {}", e);
+                }
+            }
         }
 
         Ok(())
@@ -1973,6 +2010,26 @@ impl BaseStore {
             .put("_localHeads".as_bytes(), &local_heads_bytes)
             .await
             .map_err(|e| GuardianError::Store(format!("Failed to cache local heads: {}", e)))?;
+
+        // Salva TODAS as entradas do oplog no cache para persistência completa
+        let all_entries = self.with_oplog(|oplog| {
+            oplog
+                .values()
+                .iter()
+                .map(|arc_entry| (**arc_entry).clone())
+                .collect::<Vec<Entry>>()
+        });
+        let all_entries_bytes =
+            crate::guardian::serializer::serialize(&all_entries).map_err(|e| {
+                GuardianError::Store(format!(
+                    "Failed to serialize all entries for caching: {}",
+                    e
+                ))
+            })?;
+        cache
+            .put("_allEntries".as_bytes(), &all_entries_bytes)
+            .await
+            .map_err(|e| GuardianError::Store(format!("Failed to cache all entries: {}", e)))?;
 
         // Emite evento de escrita
         let write_event = EventWrite {
@@ -2999,6 +3056,7 @@ impl BaseStore {
         // Carrega heads do cache
         let mut heads = Vec::new();
         let cache = self.cache();
+
         BaseStore::load_heads_from_cache_key(&cache, "_localHeads", &mut heads).await?;
         BaseStore::load_heads_from_cache_key(&cache, "_remoteHeads", &mut heads).await?;
 
@@ -3014,7 +3072,27 @@ impl BaseStore {
             warn!("Failed to emit EventLoad: {}", e);
         }
 
-        if heads.is_empty() {
+        // Tenta carregar todas as entradas do cache (persistência completa)
+        let mut all_entries: Vec<Entry> = Vec::new();
+        match cache.get("_allEntries".as_bytes()).await {
+            Ok(Some(bytes)) => {
+                match crate::guardian::serializer::deserialize::<Vec<Entry>>(&bytes) {
+                    Ok(entries) => {
+                        all_entries = entries;
+                    }
+                    Err(e) => {
+                        warn!("Failed to deserialize _allEntries: {}", e);
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                warn!("Error getting _allEntries from cache: {}", e);
+            }
+        }
+
+        // Se não há entradas completas nem heads, a store está vazia
+        if heads.is_empty() && all_entries.is_empty() {
             // Emite evento Ready via SyncObserver
             self.sync_observer.emit_ready(Vec::new()).await;
 
@@ -3029,22 +3107,47 @@ impl BaseStore {
             return Ok(());
         }
 
-        debug!("Loading {} heads", heads.len());
+        // Usa todas as entradas se disponíveis, caso contrário usa os heads
+        let entries_to_load = if !all_entries.is_empty() {
+            all_entries
+        } else {
+            heads.clone()
+        };
 
-        // Emite evento de progresso para cada head carregado
-        for (i, head) in heads.iter().enumerate() {
+        debug!("Loading {} entries into oplog", entries_to_load.len());
+
+        // Insere as entradas no oplog para que list() possa retorná-las
+        // Usa add_entry() ao invés de join() para aceitar entradas de outros peers.
+        // O método join() usa diff() que verifica entry.id() == oplog.id, o que
+        // exclui entradas de outros peers (que têm IDs diferentes).
+        let loaded_count = self.log_and_index.with_oplog_mut(|oplog| {
+            let mut count = 0;
+            for entry in &entries_to_load {
+                if oplog.add_entry(entry.clone()) {
+                    count += 1;
+                }
+            }
+            // Atualiza o relógio Lamport para o tempo máximo das heads carregadas
+            oplog.sync_clock_from_heads();
+            count
+        });
+
+        debug!("Loaded {} new entries into oplog", loaded_count);
+
+        // Emite evento de progresso para cada entry carregada
+        for (i, entry) in entries_to_load.iter().enumerate() {
             // Emite progresso via SyncObserver
             self.sync_observer
-                .emit_progress(*head.hash(), head.clone(), i + 1, heads.len())
+                .emit_progress(*entry.hash(), entry.clone(), i + 1, entries_to_load.len())
                 .await;
 
             // Emite progresso legado
             let load_progress_event = EventLoadProgress {
                 address: self.address.clone(),
-                hash: *head.hash(),
-                entry: head.clone(),
+                hash: *entry.hash(),
+                entry: entry.clone(),
                 progress: (i + 1) as i32,
-                max: heads.len() as i32,
+                max: entries_to_load.len() as i32,
             };
             if let Err(e) = self.emitters.evt_load_progress.emit(load_progress_event) {
                 warn!("Failed to emit EventLoadProgress: {}", e);
