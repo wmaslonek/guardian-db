@@ -15,8 +15,226 @@
 //! ```bash
 //! cargo run --example p2p_chat_tui
 //! ```
+//!
+//! # GuardianDB Architecture & Resource Usage
+//!
+//! This example demonstrates how to build a full P2P chat application on top of
+//! GuardianDB. Below is a map of every guardian-db resource used, where it is
+//! used, and why.
+//!
+//! ## 1. Networking Layer — `IrohClient`
+//!
+//! **Import:** `guardian_db::p2p::network::client::IrohClient`
+//!
+//! `IrohClient` is the low-level P2P networking node powered by iroh. It is
+//! created once during `ChatState::new()` with a `ClientConfig` that enables:
+//!
+//! - **Pub/Sub (gossip):** `enable_pubsub = true` — used for broadcasting
+//!   messages to all peers subscribed to the same topic (essential for group
+//!   chat).
+//! - **mDNS discovery:** `enable_discovery_mdns = true` — discovers peers on
+//!   the local network without a relay server.
+//! - **n0 discovery:** `enable_discovery_n0 = true` — discovers peers via the
+//!   n0 relay infrastructure for internet-wide connectivity.
+//! - **Data store path:** per-user directory (`./chat_data/<username>`) for
+//!   iroh's internal state (keys, peer info, blob data).
+//! - **Gossip config:** `max_message_size = 50 MB` — allows large payloads
+//!   (file metadata, group invites) over gossip.
+//!
+//! The client exposes:
+//! - `client.node_id()` → the unique `NodeId` identity for this peer.
+//! - `client.backend()` → shared backend reference passed to `GuardianDB`.
+//! - `client.blobs_client()` → optional `BlobStore` for content-addressed
+//!   file storage (see §5).
+//!
+//! ## 2. Database Core — `GuardianDB`
+//!
+//! **Import:** `guardian_db::guardian::GuardianDB`
+//!
+//! `GuardianDB` is the central orchestrator. Created once with
+//! `NewGuardianDBOptions`:
+//!
+//! - `directory` → per-user on-disk database path (`./chat_db/<username>`).
+//! - `backend` → the iroh backend from `IrohClient`, linking the DB to the
+//!   P2P network.
+//!
+//! From this single `GuardianDB` instance the app creates all other stores:
+//!
+//! - `db.log(name, opts)` → creates/opens an **EventLog** store.
+//! - `db.key_value(name, opts)` → creates/opens a **KeyValue** store.
+//! - `db.event_bus()` → access the **EventBus** for reactive sync
+//!   notifications.
+//!
+//! ## 3. EventLog Stores — Chat Message History
+//!
+//! **Trait:** `guardian_db::traits::EventLogStore`
+//! **Wrapper:** `guardian_db::guardian::EventLogStoreWrapper`
+//!
+//! EventLogs are append-only, CRDT-based logs that automatically replicate
+//! between peers. Each log is identified by a unique name and stores
+//! serialized `ChatMessage` entries (via postcard binary format).
+//!
+//! ### 3a. Direct Message (DM) Logs
+//!
+//! Created in `ChatState::get_or_create_dm_log()`. The log name is
+//! deterministic and based on both participants' NodeIDs (sorted
+//! lexicographically): `"dm-<short_a>-<short_b>"`. This ensures both
+//! peers converge on the same log name regardless of who initiates.
+//!
+//! - **Options:** `create = true`, `store_type = "eventlog"`,
+//!   `replicate = true`.
+//! - **Write:** `log.add(msg.to_bytes())` — appends a chat message.
+//! - **Read:** `log.list(None)` — lists all entries; each entry's
+//!   `.value()` is deserialized into `ChatMessage`.
+//! - **Load history:** `log.load(usize::MAX)` — loads persisted entries
+//!   from disk on startup.
+//!
+//! Used by: `send_dm()`, `send_raw_dm()`, `store_file_dm()`,
+//! `send_typing_dm()`, `get_dm_messages()`.
+//!
+//! ### 3b. Group Chat Logs
+//!
+//! Created in `ChatState::get_or_create_group_log()`. The log name is
+//! derived from the group ID: `"grp-<id_prefix>"`.
+//!
+//! Same options and API as DM logs. All group members write to and read
+//! from the same replicated log.
+//!
+//! Used by: `send_group_message()`, `store_file_group()`,
+//! `send_typing_group()`, `get_group_messages()`.
+//!
+//! ### 3c. Peer Connection via EventLogStoreWrapper
+//!
+//! `EventLogStoreWrapper` exposes `connect_to_peer(NodeId)`, which
+//! establishes a direct replication channel to a specific peer for the
+//! underlying log. This is used in:
+//!
+//! - `connect_to_contact()` — initiates DM sync when opening a chat.
+//! - `sync_group_members()` — connects to all group members for
+//!   replication.
+//! - Background retry task — periodically retries connection to peers
+//!   that were offline.
+//!
+//! The wrapper is obtained via `log.as_any().downcast_ref::<EventLogStoreWrapper>()`.
+//!
+//! ## 4. KeyValue Stores — P2P-Synced Settings & Metadata
+//!
+//! **Trait:** `guardian_db::traits::KeyValueStore`
+//!
+//! Three KV stores are created with `replicate = true`, meaning their
+//! content is also synced across peers:
+//!
+//! | Store name        | Purpose                             | Key examples                        |
+//! |-------------------|--------------------------------------|-------------------------------------|
+//! | `chat-settings`   | User profile, pending syncs, saved  | `"profile"`, `"pending_sync:<id>"`, |
+//! |                   | file tracking                        | `"saved_file:<key>"`                |
+//! | `chat-contacts`   | Contact list                         | `"contact:<node_id>"`               |
+//! | `chat-groups`     | Group definitions & membership       | `"group:<group_id>"`                |
+//!
+//! **API used:**
+//! - `kv.put(key, bytes)` — upsert a value.
+//! - `kv.all()` → `HashMap<String, Vec<u8>>` — read all entries.
+//! - `kv.delete(key)` — remove an entry.
+//!
+//! On startup, data is loaded from KV stores first. If empty, a **migration**
+//! from the legacy filesystem JSON files is performed automatically (the JSON
+//! files are kept for backward compatibility).
+//!
+//! ## 5. BlobStore — Content-Addressed File Transfers
+//!
+//! **Import:** `guardian_db::p2p::network::core::BlobStore`
+//!
+//! `BlobStore` wraps iroh-blobs, a content-addressed storage layer using
+//! BLAKE3 hashes. Used for sending and receiving files in chat.
+//!
+//! ### Sending a file (`prepare_file_for_blob()`):
+//! 1. Read file bytes from disk.
+//! 2. `blob_store.add_document(Bytes)` → stores data locally, returns
+//!    `BlobHash` (BLAKE3).
+//! 3. A `FileReference { blob_hash, file_name, file_size }` is created
+//!    and sent as a chat message (metadata only — no binary payload in
+//!    the event log).
+//!
+//! ### Receiving a file (`save_received_file_from_blob()`):
+//! 1. Parse the `FileReference` from the incoming chat message.
+//! 2. `blob_store.get_or_download(&hash, &[sender_node_id])` — fetches
+//!    the blob locally or downloads it from the sender peer via P2P.
+//! 3. Write the bytes to `./chat_profiles/<user>/received_files/`.
+//!
+//! ## 6. EventBus — Reactive Sync Notifications
+//!
+//! **Import:** `guardian_db::guardian::core::EventExchangeHeads`
+//! **Import:** `guardian_db::reactive_synchronizer::SyncEvent`
+//!
+//! The `EventBus` (`db.event_bus()`) provides a pub/sub mechanism for
+//! internal DB events. Two event types are subscribed to in
+//! `spawn_background_tasks()`:
+//!
+//! ### 6a. `EventExchangeHeads`
+//! Emitted when a direct replication channel exchanges CRDT heads with a
+//! peer. The event carries `event.peer` (who synced) and
+//! `event.message.heads` (which log heads were exchanged). This is the
+//! primary trigger for updating the UI with new messages and marking
+//! contacts as "online".
+//!
+//! ### 6b. `SyncEvent`
+//! Emitted for gossip-based syncs that bypass the direct channel path.
+//! Critical for group chat where messages arrive via gossip topic
+//! subscriptions rather than direct peer connections.
+//! `SyncEvent::Ready { heads, .. }` with non-empty heads signals new
+//! data and triggers a message refresh.
+//!
+//! ## 7. Traits Used
+//!
+//! | Trait              | Import path                           | Used for                       |
+//! |--------------------|---------------------------------------|--------------------------------|
+//! | `BaseGuardianDB`   | `guardian_db::traits::BaseGuardianDB` | `db.log()`, `db.key_value()`,  |
+//! |                    |                                       | `db.event_bus()`               |
+//! | `EventLogStore`    | `guardian_db::traits::EventLogStore`   | `.add()`, `.list()`, `.load()`,|
+//! |                    |                                       | `.as_any()`                    |
+//! | `KeyValueStore`    | `guardian_db::traits::KeyValueStore`   | `.put()`, `.all()`, `.delete()`|
+//! | `CreateDBOptions`  | `guardian_db::traits::CreateDBOptions` | Options for store creation     |
+//!
+//! ## 8. Error Handling
+//!
+//! **Import:** `guardian_db::guardian::error::{GuardianError, Result}`
+//!
+//! All guardian-db operations return `Result<T, GuardianError>`. This
+//! example propagates errors to the TUI notification bar via
+//! `app.notify_error()`.
+//!
+//! ## 9. Data Flow Summary
+//!
+//! ```text
+//! ┌────────────────────────────────────────────────────────────┐
+//! │                      TUI (Ratatui)                         │
+//! │  Screens: Login, Main, DmChat, GroupChat, AddContact, ...  │
+//! └──────────────────────┬─────────────────────────────────────┘
+//!                        │
+//!                        ▼
+//! ┌──────────────────────────────────────────┐
+//! │             ChatState (Backend)           │
+//! │  - manages contacts, groups, messages     │
+//! │  - owns GuardianDB + BlobStore            │
+//! └──────┬──────────┬──────────┬─────────────┘
+//!        │          │          │
+//!        ▼          ▼          ▼
+//!   ┌─────────┐ ┌────────┐ ┌──────────┐
+//!   │EventLogs│ │KV Store│ │BlobStore │
+//!   │(dm/grp) │ │(3 dbs) │ │(files)   │
+//!   └────┬────┘ └───┬────┘ └────┬─────┘
+//!        │          │           │
+//!        └──────────┴───────────┘
+//!                   │
+//!                   ▼
+//!        ┌─────────────────────┐
+//!        │   IrohClient (P2P)  │
+//!        │  gossip / direct    │
+//!        │  mDNS + n0 relay    │
+//!        └─────────────────────┘
+//! ```
 
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use bytes::Bytes;
 use guardian_db::{
     guardian::{
         EventLogStoreWrapper, GuardianDB,
@@ -26,10 +244,13 @@ use guardian_db::{
     p2p::network::{
         client::IrohClient,
         config::{ClientConfig, GossipConfig},
+        core::BlobStore,
     },
-    traits::{BaseGuardianDB, CreateDBOptions, EventLogStore},
+    reactive_synchronizer::SyncEvent,
+    traits::{BaseGuardianDB, CreateDBOptions, EventLogStore, KeyValueStore},
 };
 use iroh::NodeId;
+use iroh_blobs::Hash as BlobHash;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
     Frame,
@@ -179,14 +400,13 @@ impl Group {
     }
 }
 
-/// File size limit: 5 MB
-const MAX_FILE_SIZE: u64 = 5 * 1024 * 1024;
-
+/// File reference stored in chat messages (metadata only — actual bytes in iroh-blobs)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct FileAttachment {
+struct FileReference {
+    /// BLAKE3 hash hex string referencing the blob in iroh-blobs
+    blob_hash: String,
     file_name: String,
     file_size: u64,
-    file_data: String, // base64-encoded
 }
 
 static TRANSFER_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -221,7 +441,7 @@ enum FileOpTarget {
 
 struct PendingFileOp {
     file_path: Option<String>,
-    attachment: Option<FileAttachment>,
+    file_ref: Option<FileReference>,
     file_name: Option<String>,
     transfer_id: u64,
     step: FileOpStep,
@@ -267,13 +487,18 @@ impl ChatMessage {
     fn new_file(
         from_node_id: String,
         from_username: String,
-        attachment: &FileAttachment,
+        file_ref: &FileReference,
         target: String,
     ) -> Self {
+        // Store file reference as "file://<hash>|<name>|<size>" — compact, no binary payload
+        let content = format!(
+            "file://{}|{}|{}",
+            file_ref.blob_hash, file_ref.file_name, file_ref.file_size
+        );
         Self {
             from_node_id,
             from_username,
-            content: serde_json::to_string(attachment).unwrap(),
+            content,
             timestamp: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -328,9 +553,21 @@ impl ChatMessage {
         self.message_type == "typing"
     }
 
-    fn file_attachment(&self) -> Option<FileAttachment> {
+    fn file_reference(&self) -> Option<FileReference> {
         if self.is_file() {
-            serde_json::from_str(&self.content).ok()
+            // Parse "file://<hash>|<name>|<size>"
+            let stripped = self.content.strip_prefix("file://")?;
+            let parts: Vec<&str> = stripped.splitn(3, '|').collect();
+            if parts.len() == 3 {
+                let file_size = parts[2].parse::<u64>().ok()?;
+                Some(FileReference {
+                    blob_hash: parts[0].to_string(),
+                    file_name: parts[1].to_string(),
+                    file_size,
+                })
+            } else {
+                None
+            }
         } else {
             None
         }
@@ -349,11 +586,11 @@ impl ChatMessage {
     }
 
     fn to_bytes(&self) -> Vec<u8> {
-        serde_json::to_vec(self).unwrap()
+        postcard::to_allocvec(self).unwrap()
     }
 
     fn from_bytes(data: &[u8]) -> Option<Self> {
-        serde_json::from_slice(data).ok()
+        postcard::from_bytes(data).ok()
     }
 }
 
@@ -427,32 +664,6 @@ fn find_existing_profiles() -> Vec<String> {
     profiles
 }
 
-fn messages_dir(username: &str) -> PathBuf {
-    profiles_dir().join(username).join("messages")
-}
-
-fn messages_path(username: &str, log_name: &str) -> PathBuf {
-    messages_dir(username).join(format!("{}.json", log_name))
-}
-
-fn load_messages_from_file(username: &str, log_name: &str) -> Vec<ChatMessage> {
-    let data = match fs::read_to_string(messages_path(username, log_name)) {
-        Ok(d) => d,
-        Err(_) => return vec![],
-    };
-    serde_json::from_str::<Vec<ChatMessage>>(&data).unwrap_or_default()
-}
-
-fn save_messages_to_file(username: &str, log_name: &str, messages: &[ChatMessage]) {
-    let path = messages_path(username, log_name);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).ok();
-    }
-    if let Ok(data) = serde_json::to_string_pretty(messages) {
-        fs::write(&path, data).ok();
-    }
-}
-
 fn pending_sync_path(username: &str) -> PathBuf {
     profiles_dir().join(username).join("pending_sync.json")
 }
@@ -465,17 +676,6 @@ fn load_pending_sync(username: &str) -> HashSet<String> {
     serde_json::from_str::<Vec<String>>(&data)
         .map(|v| v.into_iter().collect())
         .unwrap_or_default()
-}
-
-fn save_pending_sync(username: &str, pending: &HashSet<String>) {
-    let path = pending_sync_path(username);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).ok();
-    }
-    let list: Vec<&String> = pending.iter().collect();
-    if let Ok(data) = serde_json::to_string_pretty(&list) {
-        fs::write(&path, data).ok();
-    }
 }
 
 fn groups_path(username: &str) -> PathBuf {
@@ -496,19 +696,11 @@ fn load_saved_files(username: &str) -> HashSet<String> {
         .unwrap_or_default()
 }
 
-fn save_saved_files(username: &str, saved: &HashSet<String>) {
-    let path = saved_files_path(username);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).ok();
-    }
-    let list: Vec<&String> = saved.iter().collect();
-    if let Ok(data) = serde_json::to_string_pretty(&list) {
-        fs::write(&path, data).ok();
-    }
-}
-
-fn file_save_key(msg: &ChatMessage, file_name: &str) -> String {
-    format!("{}_{}_{}", msg.timestamp, msg.from_node_id, file_name)
+fn file_save_key(msg: &ChatMessage, file_ref: &FileReference) -> String {
+    format!(
+        "{}_{}_{}",
+        msg.timestamp, msg.from_node_id, file_ref.blob_hash
+    )
 }
 
 fn load_groups(username: &str) -> Vec<Group> {
@@ -531,32 +723,6 @@ fn save_groups(username: &str, groups: &[Group]) {
     };
     if let Ok(data) = serde_json::to_string_pretty(&file) {
         fs::write(&path, data).ok();
-    }
-}
-
-fn cleanup_mixed_messages(
-    username: &str,
-    my_node_id: &str,
-    contacts: &[Contact],
-    groups: &[Group],
-) {
-    for contact in contacts {
-        let log_name = dm_log_name(my_node_id, &contact.node_id);
-        let mut msgs = load_messages_from_file(username, &log_name);
-        let before = msgs.len();
-        msgs.retain(|m| m.belongs_to_dm());
-        if msgs.len() < before {
-            save_messages_to_file(username, &log_name, &msgs);
-        }
-    }
-    for group in groups {
-        let log_name = group.log_name();
-        let mut msgs = load_messages_from_file(username, &log_name);
-        let before = msgs.len();
-        msgs.retain(|m| !m.target.starts_with("dm-"));
-        if msgs.len() < before {
-            save_messages_to_file(username, &log_name, &msgs);
-        }
     }
 }
 
@@ -599,7 +765,11 @@ fn open_folder(path: &std::path::Path) {
     }
 }
 
-fn prepare_file_attachment(file_path: &str) -> Result<(FileAttachment, String)> {
+/// Reads a file and stores it in iroh-blobs, returning a FileReference with the BLAKE3 hash.
+async fn prepare_file_for_blob(
+    file_path: &str,
+    blob_store: &BlobStore,
+) -> Result<(FileReference, String)> {
     let path = std::path::Path::new(file_path);
     if !path.exists() {
         return Err(GuardianError::Store(format!(
@@ -609,33 +779,40 @@ fn prepare_file_attachment(file_path: &str) -> Result<(FileAttachment, String)> 
     }
     let metadata = fs::metadata(path)
         .map_err(|e| GuardianError::Store(format!("Error reading metadata: {}", e)))?;
-    if metadata.len() > MAX_FILE_SIZE {
-        return Err(GuardianError::Store(format!(
-            "File too large ({} > {} limit)",
-            format_file_size(metadata.len()),
-            format_file_size(MAX_FILE_SIZE)
-        )));
-    }
     let file_name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "file".to_string());
     let data =
         fs::read(path).map_err(|e| GuardianError::Store(format!("Error reading file: {}", e)))?;
-    let encoded = BASE64.encode(&data);
-    let attachment = FileAttachment {
+    let file_size = metadata.len();
+
+    // Store in iroh-blobs — returns BLAKE3 hash
+    let hash = blob_store
+        .add_document(Bytes::from(data))
+        .await
+        .map_err(|e| GuardianError::Store(format!("Error storing in blob store: {}", e)))?;
+
+    let file_ref = FileReference {
+        blob_hash: hex::encode(hash.as_bytes()),
         file_name: file_name.clone(),
-        file_size: metadata.len(),
-        file_data: encoded,
+        file_size,
     };
-    Ok((attachment, file_name))
+    Ok((file_ref, file_name))
 }
 
-fn save_received_file(username: &str, attachment: &FileAttachment) -> Option<PathBuf> {
+/// Downloads a file from iroh-blobs by hash and saves it to the received_files directory.
+/// If the blob is not available locally, attempts P2P download from the sender peer.
+async fn save_received_file_from_blob(
+    username: &str,
+    file_ref: &FileReference,
+    blob_store: &BlobStore,
+    sender_node_id: &str,
+) -> Option<PathBuf> {
     let dir = received_files_dir(username);
     fs::create_dir_all(&dir).ok()?;
 
-    let safe_name = std::path::Path::new(&attachment.file_name)
+    let safe_name = std::path::Path::new(&file_ref.file_name)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "file".to_string());
@@ -661,8 +838,22 @@ fn save_received_file(username: &str, attachment: &FileAttachment) -> Option<Pat
         }
     }
 
-    let data = BASE64.decode(&attachment.file_data).ok()?;
-    fs::write(&path, data).ok()?;
+    // Decode hex hash and fetch from blob store (with P2P download fallback)
+    let hash_bytes = hex::decode(&file_ref.blob_hash).ok()?;
+    if hash_bytes.len() != 32 {
+        return None;
+    }
+    let mut arr = [0u8; 32];
+    arr.copy_from_slice(&hash_bytes);
+    let blob_hash = BlobHash::from(arr);
+
+    // Try local first, then P2P download from sender
+    let providers: Vec<NodeId> = sender_node_id.parse::<NodeId>().ok().into_iter().collect();
+    let data = blob_store
+        .get_or_download(&blob_hash, &providers)
+        .await
+        .ok()?;
+    fs::write(&path, &data).ok()?;
     Some(path)
 }
 
@@ -713,6 +904,7 @@ fn contact_status_info(last_seen: Option<u64>) -> (String, Color) {
 
 struct ChatState {
     db: Arc<GuardianDB>,
+    blob_store: Option<BlobStore>,
     profile: UserProfile,
     contacts: Vec<Contact>,
     groups: Vec<Group>,
@@ -726,6 +918,10 @@ struct ChatState {
     pending_sync: Arc<Mutex<HashSet<String>>>,
     saved_files: HashSet<String>,
     typing_states: Arc<StdMutex<HashMap<String, (String, Instant)>>>,
+    // KV Stores for P2P-synced persistence
+    kv_settings: Arc<dyn KeyValueStore<Error = GuardianError>>,
+    kv_contacts: Arc<dyn KeyValueStore<Error = GuardianError>>,
+    kv_groups: Arc<dyn KeyValueStore<Error = GuardianError>>,
 }
 
 impl ChatState {
@@ -746,12 +942,48 @@ impl ChatState {
         let node_id = client.node_id();
         info!("Chat started - Node ID: {}", node_id);
 
-        let profile = match load_profile(&username) {
-            Some(p) => {
-                info!("Profile loaded: {}", p.username);
+        let db_options = NewGuardianDBOptions {
+            directory: Some(format!("./chat_db/{}", username).into()),
+            backend: Some(client.backend().clone()),
+            ..Default::default()
+        };
+
+        let db = Arc::new(GuardianDB::new(client.clone(), Some(db_options)).await?);
+        let blob_store = client.blobs_client().await;
+        if blob_store.is_some() {
+            info!("✓ iroh-blobs ready for file transfers");
+        } else {
+            info!("⚠ iroh-blobs not available — file transfers disabled");
+        }
+
+        // Create KV stores for P2P-synced persistence
+        let kv_opts = CreateDBOptions {
+            create: Some(true),
+            store_type: Some("keyvalue".to_string()),
+            replicate: Some(true),
+            ..Default::default()
+        };
+        let kv_settings = db.key_value("chat-settings", Some(kv_opts.clone())).await?;
+        let kv_contacts = db.key_value("chat-contacts", Some(kv_opts.clone())).await?;
+        let kv_groups = db.key_value("chat-groups", Some(kv_opts)).await?;
+        info!("✓ KV stores initialized (settings, contacts, groups)");
+
+        // Load profile from KV store, falling back to filesystem for migration
+        let profile = {
+            let kv_all = kv_settings.all();
+            if let Some(bytes) = kv_all.get("profile") {
+                let p: UserProfile = postcard::from_bytes(bytes)
+                    .map_err(|e| GuardianError::Store(format!("Failed to parse profile: {}", e)))?;
+                info!("Profile loaded from KV store: {}", p.username);
                 p
-            }
-            None => {
+            } else if let Some(p) = load_profile(&username) {
+                // Migrate from filesystem to KV
+                info!("Migrating profile from filesystem to KV store");
+                if let Ok(bytes) = postcard::to_allocvec(&p) {
+                    kv_settings.put("profile", bytes).await.ok();
+                }
+                p
+            } else {
                 let p = UserProfile {
                     username: username.clone(),
                     node_id: node_id.to_string(),
@@ -760,35 +992,139 @@ impl ChatState {
                         .unwrap()
                         .as_secs(),
                 };
-                save_profile(&p);
+                if let Ok(bytes) = postcard::to_allocvec(&p) {
+                    kv_settings.put("profile", bytes).await.ok();
+                }
+                save_profile(&p); // Keep filesystem copy for backward compat
                 info!("New profile created: {}", p.username);
                 p
             }
         };
 
-        let db_options = NewGuardianDBOptions {
-            directory: Some(format!("./chat_db/{}", username).into()),
-            backend: Some(client.backend().clone()),
-            ..Default::default()
+        // Load contacts from KV store, falling back to filesystem for migration
+        let contacts = {
+            let kv_all = kv_contacts.all();
+            let kv_contacts_list: Vec<Contact> = kv_all
+                .iter()
+                .filter(|(k, _)| k.starts_with("contact:"))
+                .filter_map(|(_, v)| postcard::from_bytes(v).ok())
+                .collect();
+            if !kv_contacts_list.is_empty() {
+                info!("Loaded {} contacts from KV store", kv_contacts_list.len());
+                kv_contacts_list
+            } else {
+                let fs_contacts = load_contacts(&username);
+                if !fs_contacts.is_empty() {
+                    info!(
+                        "Migrating {} contacts from filesystem to KV store",
+                        fs_contacts.len()
+                    );
+                    for c in &fs_contacts {
+                        if let Ok(bytes) = postcard::to_allocvec(c) {
+                            kv_contacts
+                                .put(&format!("contact:{}", c.node_id), bytes)
+                                .await
+                                .ok();
+                        }
+                    }
+                }
+                fs_contacts
+            }
         };
 
-        let db = Arc::new(GuardianDB::new(client, Some(db_options)).await?);
-        let contacts = load_contacts(&username);
-        let groups = load_groups(&username);
+        // Load groups from KV store, falling back to filesystem for migration
+        let groups = {
+            let kv_all = kv_groups.all();
+            let kv_groups_list: Vec<Group> = kv_all
+                .iter()
+                .filter(|(k, _)| k.starts_with("group:"))
+                .filter_map(|(_, v)| postcard::from_bytes(v).ok())
+                .collect();
+            if !kv_groups_list.is_empty() {
+                info!("Loaded {} groups from KV store", kv_groups_list.len());
+                kv_groups_list
+            } else {
+                let fs_groups = load_groups(&username);
+                if !fs_groups.is_empty() {
+                    info!(
+                        "Migrating {} groups from filesystem to KV store",
+                        fs_groups.len()
+                    );
+                    for g in &fs_groups {
+                        if let Ok(bytes) = postcard::to_allocvec(g) {
+                            kv_groups.put(&format!("group:{}", g.id), bytes).await.ok();
+                        }
+                    }
+                }
+                fs_groups
+            }
+        };
+
+        // Load pending_sync from KV store, falling back to filesystem
+        let pending_sync = {
+            let kv_all = kv_settings.all();
+            let kv_pending: HashSet<String> = kv_all
+                .keys()
+                .filter_map(|k| k.strip_prefix("pending_sync:").map(|s| s.to_string()))
+                .collect();
+            if !kv_pending.is_empty() {
+                kv_pending
+            } else {
+                let fs_pending = load_pending_sync(&username);
+                if !fs_pending.is_empty() {
+                    info!("Migrating pending_sync from filesystem to KV store");
+                    for peer_id in &fs_pending {
+                        kv_settings
+                            .put(&format!("pending_sync:{}", peer_id), b"1".to_vec())
+                            .await
+                            .ok();
+                    }
+                }
+                fs_pending
+            }
+        };
+
+        // Load saved_files from KV store, falling back to filesystem
+        let saved_files = {
+            let kv_all = kv_settings.all();
+            let kv_saved: HashSet<String> = kv_all
+                .keys()
+                .filter_map(|k| k.strip_prefix("saved_file:").map(|s| s.to_string()))
+                .collect();
+            if !kv_saved.is_empty() {
+                kv_saved
+            } else {
+                let fs_saved = load_saved_files(&username);
+                if !fs_saved.is_empty() {
+                    info!("Migrating saved_files from filesystem to KV store");
+                    for key in &fs_saved {
+                        kv_settings
+                            .put(&format!("saved_file:{}", key), b"1".to_vec())
+                            .await
+                            .ok();
+                    }
+                }
+                fs_saved
+            }
+        };
 
         Ok(Self {
             db,
+            blob_store,
             profile,
             contacts,
             groups,
             dm_logs: Arc::new(Mutex::new(HashMap::new())),
             local_messages: HashMap::new(),
-            pending_sync: Arc::new(Mutex::new(load_pending_sync(&username))),
+            pending_sync: Arc::new(Mutex::new(pending_sync)),
             node_id,
             has_new_messages: Arc::new(AtomicBool::new(false)),
             last_sync_peer: Arc::new(Mutex::new(None)),
-            saved_files: load_saved_files(&username),
+            saved_files,
             typing_states: Arc::new(StdMutex::new(HashMap::new())),
+            kv_settings,
+            kv_contacts,
+            kv_groups,
         })
     }
 
@@ -815,38 +1151,11 @@ impl ChatState {
             debug!("Warning loading log '{}' history: {}", log_name, e);
         }
 
-        let my_node_id = self.profile.node_id.clone();
-        let local_msgs = load_messages_from_file(&self.profile.username, &log_name);
-        if !local_msgs.is_empty() {
-            let existing = log.list(None).await.unwrap_or_default();
-            let existing_msgs: Vec<ChatMessage> = existing
-                .iter()
-                .filter_map(|e| ChatMessage::from_bytes(e.value()))
-                .collect();
-
-            for msg in &local_msgs {
-                if msg.from_node_id != my_node_id {
-                    continue;
-                }
-                if !msg.belongs_to_dm() {
-                    continue;
-                }
-                let already = existing_msgs.iter().any(|em| {
-                    em.timestamp == msg.timestamp
-                        && em.from_node_id == msg.from_node_id
-                        && em.content == msg.content
-                });
-                if !already {
-                    let _ = log.add(msg.to_bytes()).await;
-                }
-            }
-        }
-
         dm_logs.insert(log_name, log.clone());
         Ok(log)
     }
 
-    async fn send_dm(&mut self, contact_node_id: &str, content: String) -> Result<()> {
+    async fn send_dm(&mut self, contact_node_id: &str, content: String) -> Result<ChatMessage> {
         let log_name = dm_log_name(&self.profile.node_id, contact_node_id);
         let msg = ChatMessage::new(
             self.profile.node_id.clone(),
@@ -857,65 +1166,59 @@ impl ChatState {
         let log = self.get_or_create_dm_log(contact_node_id).await?;
         log.add(msg.to_bytes()).await?;
 
-        let msgs = self
-            .local_messages
-            .entry(log_name.clone())
-            .or_insert_with(|| load_messages_from_file(&self.profile.username, &log_name));
-        msgs.push(msg);
-        save_messages_to_file(&self.profile.username, &log_name, msgs);
+        let msgs = self.local_messages.entry(log_name.clone()).or_default();
+        msgs.push(msg.clone());
 
         {
             let mut pending = self.pending_sync.lock().await;
             pending.insert(contact_node_id.to_string());
-            save_pending_sync(&self.profile.username, &pending);
+            self.kv_settings
+                .put(&format!("pending_sync:{}", contact_node_id), b"1".to_vec())
+                .await
+                .ok();
         }
-        Ok(())
+        Ok(msg)
     }
 
     async fn store_file_dm(
         &mut self,
         contact_node_id: &str,
-        attachment: &FileAttachment,
+        file_ref: &FileReference,
     ) -> Result<()> {
         let log_name = dm_log_name(&self.profile.node_id, contact_node_id);
         let msg = ChatMessage::new_file(
             self.profile.node_id.clone(),
             self.profile.username.clone(),
-            attachment,
+            file_ref,
             log_name.clone(),
         );
         let log = self.get_or_create_dm_log(contact_node_id).await?;
         log.add(msg.to_bytes()).await?;
-        let msgs = self
-            .local_messages
-            .entry(log_name.clone())
-            .or_insert_with(|| load_messages_from_file(&self.profile.username, &log_name));
+        let msgs = self.local_messages.entry(log_name.clone()).or_default();
         msgs.push(msg);
-        save_messages_to_file(&self.profile.username, &log_name, msgs);
         {
             let mut pending = self.pending_sync.lock().await;
             pending.insert(contact_node_id.to_string());
-            save_pending_sync(&self.profile.username, &pending);
+            self.kv_settings
+                .put(&format!("pending_sync:{}", contact_node_id), b"1".to_vec())
+                .await
+                .ok();
         }
         Ok(())
     }
 
-    async fn store_file_group(&mut self, group: &Group, attachment: &FileAttachment) -> Result<()> {
+    async fn store_file_group(&mut self, group: &Group, file_ref: &FileReference) -> Result<()> {
         let log_name = group.log_name();
         let msg = ChatMessage::new_file(
             self.profile.node_id.clone(),
             self.profile.username.clone(),
-            attachment,
+            file_ref,
             log_name.clone(),
         );
         let log = self.get_or_create_group_log(group).await?;
         log.add(msg.to_bytes()).await?;
-        let msgs = self
-            .local_messages
-            .entry(log_name.clone())
-            .or_insert_with(|| load_messages_from_file(&self.profile.username, &log_name));
+        let msgs = self.local_messages.entry(log_name.clone()).or_default();
         msgs.push(msg);
-        save_messages_to_file(&self.profile.username, &log_name, msgs);
         Ok(())
     }
 
@@ -925,7 +1228,6 @@ impl ChatState {
         limit: usize,
     ) -> Result<Vec<ChatMessage>> {
         let log_name = dm_log_name(&self.profile.node_id, contact_node_id);
-        let username = self.profile.username.clone();
 
         let log = self.get_or_create_dm_log(contact_node_id).await?;
         let entries = log.list(None).await?;
@@ -945,7 +1247,7 @@ impl ChatState {
                 for msg in &all_parsed {
                     if msg.is_typing()
                         && msg.from_node_id != self.profile.node_id
-                        && now_secs.saturating_sub(msg.timestamp) < 5
+                        && now_secs.saturating_sub(msg.timestamp) < 3
                     {
                         typing.insert(
                             msg.from_node_id.clone(),
@@ -959,14 +1261,7 @@ impl ChatState {
         let store_messages: Vec<ChatMessage> =
             all_parsed.into_iter().filter(|m| !m.is_typing()).collect();
 
-        let local = self
-            .local_messages
-            .entry(log_name.clone())
-            .or_insert_with(|| {
-                let mut loaded = load_messages_from_file(&username, &log_name);
-                loaded.retain(|m| m.belongs_to_dm());
-                loaded
-            });
+        let local = self.local_messages.entry(log_name.clone()).or_default();
 
         let mut changed = false;
         for sm in &store_messages {
@@ -982,40 +1277,57 @@ impl ChatState {
         }
         if changed {
             local.sort_by_key(|m| m.timestamp);
-            save_messages_to_file(&username, &log_name, local);
+            local.dedup_by(|a, b| {
+                a.timestamp == b.timestamp
+                    && a.from_node_id == b.from_node_id
+                    && a.content == b.content
+            });
         }
 
         let start = local.len().saturating_sub(limit);
         Ok(local[start..].to_vec())
     }
 
-    fn add_contact(&mut self, node_id: String, display_name: String) -> bool {
+    async fn add_contact(&mut self, node_id: String, display_name: String) -> bool {
         if node_id == self.profile.node_id {
             return false;
         }
         if self.contacts.iter().any(|c| c.node_id == node_id) {
             return false;
         }
-        self.contacts.push(Contact {
-            node_id,
+        let contact = Contact {
+            node_id: node_id.clone(),
             display_name,
             added_at: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_secs(),
             last_seen: None,
-        });
+        };
+        if let Ok(bytes) = postcard::to_allocvec(&contact) {
+            self.kv_contacts
+                .put(&format!("contact:{}", node_id), bytes)
+                .await
+                .ok();
+        }
+        self.contacts.push(contact);
         save_contacts(&self.profile.username, &self.contacts);
         true
     }
 
-    fn update_contact_last_seen(&mut self, node_id: &str) {
+    async fn update_contact_last_seen(&mut self, node_id: &str) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
         if let Some(c) = self.contacts.iter_mut().find(|c| c.node_id == node_id) {
             c.last_seen = Some(now);
+            if let Ok(bytes) = postcard::to_allocvec(c) {
+                self.kv_contacts
+                    .put(&format!("contact:{}", node_id), bytes)
+                    .await
+                    .ok();
+            }
             save_contacts(&self.profile.username, &self.contacts);
         }
     }
@@ -1029,11 +1341,14 @@ impl ChatState {
 
         if let Some(wrapper) = log.as_any().downcast_ref::<EventLogStoreWrapper>() {
             wrapper.connect_to_peer(peer_id).await?;
-            self.update_contact_last_seen(contact_node_id);
+            self.update_contact_last_seen(contact_node_id).await;
             {
                 let mut pending = self.pending_sync.lock().await;
                 if pending.remove(contact_node_id) {
-                    save_pending_sync(&self.profile.username, &pending);
+                    self.kv_settings
+                        .delete(&format!("pending_sync:{}", contact_node_id))
+                        .await
+                        .ok();
                 }
             }
             info!("Connected to contact: {}", contact_node_id);
@@ -1050,16 +1365,15 @@ impl ChatState {
         let log = self.get_or_create_dm_log(contact_node_id).await?;
         log.add(msg.to_bytes()).await?;
         let log_name = dm_log_name(&self.profile.node_id, contact_node_id);
-        let msgs = self
-            .local_messages
-            .entry(log_name.clone())
-            .or_insert_with(|| load_messages_from_file(&self.profile.username, &log_name));
+        let msgs = self.local_messages.entry(log_name.clone()).or_default();
         msgs.push(msg);
-        save_messages_to_file(&self.profile.username, &log_name, msgs);
         {
             let mut pending = self.pending_sync.lock().await;
             pending.insert(contact_node_id.to_string());
-            save_pending_sync(&self.profile.username, &pending);
+            self.kv_settings
+                .put(&format!("pending_sync:{}", contact_node_id), b"1".to_vec())
+                .await
+                .ok();
         }
         Ok(())
     }
@@ -1075,7 +1389,7 @@ impl ChatState {
         self.send_raw_dm(contact_node_id, invite).await
     }
 
-    fn process_group_invites(&mut self, messages: &[ChatMessage]) {
+    async fn process_group_invites(&mut self, messages: &[ChatMessage]) {
         let mut changed = false;
         for msg in messages {
             if msg.message_type == "group_invite"
@@ -1088,7 +1402,19 @@ impl ChatState {
                             changed = true;
                         }
                     }
+                    if changed && let Ok(bytes) = postcard::to_allocvec(existing) {
+                        self.kv_groups
+                            .put(&format!("group:{}", existing.id), bytes)
+                            .await
+                            .ok();
+                    }
                 } else {
+                    if let Ok(bytes) = postcard::to_allocvec(&incoming) {
+                        self.kv_groups
+                            .put(&format!("group:{}", incoming.id), bytes)
+                            .await
+                            .ok();
+                    }
                     self.groups.push(incoming);
                     changed = true;
                 }
@@ -1099,12 +1425,36 @@ impl ChatState {
         }
     }
 
-    fn check_local_files_for_invites(&mut self) {
+    async fn check_local_files_for_invites(&mut self) {
+        // Check all loaded DM logs for invites, not just contacts.
+        // This ensures invites from non-contacts (e.g., a group creator who
+        // added us but isn't in our contacts yet) are also detected.
+        let dm_log_names: Vec<String> = {
+            let dm_logs = self.dm_logs.lock().await;
+            dm_logs
+                .keys()
+                .filter(|k| k.starts_with("dm-"))
+                .cloned()
+                .collect()
+        };
+        for log_name in &dm_log_names {
+            let msgs = self
+                .local_messages
+                .get(log_name)
+                .cloned()
+                .unwrap_or_default();
+            self.process_group_invites(&msgs).await;
+        }
+        // Also check contacts (their DMs may not be loaded yet)
         let contact_ids: Vec<String> = self.contacts.iter().map(|c| c.node_id.clone()).collect();
         for contact_node_id in &contact_ids {
             let log_name = dm_log_name(&self.profile.node_id, contact_node_id);
-            let msgs = load_messages_from_file(&self.profile.username, &log_name);
-            self.process_group_invites(&msgs);
+            let msgs = self
+                .local_messages
+                .get(&log_name)
+                .cloned()
+                .unwrap_or_default();
+            self.process_group_invites(&msgs).await;
         }
     }
 
@@ -1132,38 +1482,11 @@ impl ChatState {
             debug!("Warning loading group '{}' history: {}", log_name, e);
         }
 
-        let my_node_id = self.profile.node_id.clone();
-        let local_msgs = load_messages_from_file(&self.profile.username, &log_name);
-        if !local_msgs.is_empty() {
-            let existing = log.list(None).await.unwrap_or_default();
-            let existing_msgs: Vec<ChatMessage> = existing
-                .iter()
-                .filter_map(|e| ChatMessage::from_bytes(e.value()))
-                .collect();
-
-            for msg in &local_msgs {
-                if msg.from_node_id != my_node_id {
-                    continue;
-                }
-                if msg.target.starts_with("dm-") {
-                    continue;
-                }
-                let already = existing_msgs.iter().any(|em| {
-                    em.timestamp == msg.timestamp
-                        && em.from_node_id == msg.from_node_id
-                        && em.content == msg.content
-                });
-                if !already {
-                    let _ = log.add(msg.to_bytes()).await;
-                }
-            }
-        }
-
         dm_logs.insert(log_name, log.clone());
         Ok(log)
     }
 
-    async fn send_group_message(&mut self, group: &Group, content: String) -> Result<()> {
+    async fn send_group_message(&mut self, group: &Group, content: String) -> Result<ChatMessage> {
         let msg = ChatMessage::new(
             self.profile.node_id.clone(),
             self.profile.username.clone(),
@@ -1174,13 +1497,9 @@ impl ChatState {
         log.add(msg.to_bytes()).await?;
 
         let log_name = group.log_name();
-        let msgs = self
-            .local_messages
-            .entry(log_name.clone())
-            .or_insert_with(|| load_messages_from_file(&self.profile.username, &log_name));
-        msgs.push(msg);
-        save_messages_to_file(&self.profile.username, &log_name, msgs);
-        Ok(())
+        let msgs = self.local_messages.entry(log_name.clone()).or_default();
+        msgs.push(msg.clone());
+        Ok(msg)
     }
 
     async fn send_typing_dm(&mut self, contact_node_id: &str) -> Result<()> {
@@ -1212,7 +1531,6 @@ impl ChatState {
         limit: usize,
     ) -> Result<Vec<ChatMessage>> {
         let log_name = group.log_name();
-        let username = self.profile.username.clone();
 
         let log = self.get_or_create_group_log(group).await?;
         let entries = log.list(None).await?;
@@ -1236,7 +1554,7 @@ impl ChatState {
                 for msg in &all_parsed {
                     if msg.is_typing()
                         && msg.from_node_id != self.profile.node_id
-                        && now_secs.saturating_sub(msg.timestamp) < 5
+                        && now_secs.saturating_sub(msg.timestamp) < 3
                     {
                         typing.insert(
                             msg.from_node_id.clone(),
@@ -1250,14 +1568,7 @@ impl ChatState {
         let store_messages: Vec<ChatMessage> =
             all_parsed.into_iter().filter(|m| !m.is_typing()).collect();
 
-        let local = self
-            .local_messages
-            .entry(log_name.clone())
-            .or_insert_with(|| {
-                let mut loaded = load_messages_from_file(&username, &log_name);
-                loaded.retain(|m| !m.target.starts_with("dm-"));
-                loaded
-            });
+        let local = self.local_messages.entry(log_name.clone()).or_default();
 
         let mut changed = false;
         for sm in &store_messages {
@@ -1273,7 +1584,11 @@ impl ChatState {
         }
         if changed {
             local.sort_by_key(|m| m.timestamp);
-            save_messages_to_file(&username, &log_name, local);
+            local.dedup_by(|a, b| {
+                a.timestamp == b.timestamp
+                    && a.from_node_id == b.from_node_id
+                    && a.content == b.content
+            });
         }
 
         let start = local.len().saturating_sub(limit);
@@ -1295,7 +1610,7 @@ impl ChatState {
                 if let Some(wrapper) = log.as_any().downcast_ref::<EventLogStoreWrapper>() {
                     match wrapper.connect_to_peer(peer_id).await {
                         Ok(()) => {
-                            self.update_contact_last_seen(&member.node_id);
+                            self.update_contact_last_seen(&member.node_id).await;
                             ok += 1;
                         }
                         Err(_) => {
@@ -1312,7 +1627,7 @@ impl ChatState {
         (ok, fail)
     }
 
-    fn create_group(&mut self, name: String, member_indices: &[usize]) -> Group {
+    async fn create_group(&mut self, name: String, member_indices: &[usize]) -> Group {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -1344,12 +1659,18 @@ impl ChatState {
             created_at: now,
         };
 
+        if let Ok(bytes) = postcard::to_allocvec(&group) {
+            self.kv_groups
+                .put(&format!("group:{}", group.id), bytes)
+                .await
+                .ok();
+        }
         self.groups.push(group.clone());
         save_groups(&self.profile.username, &self.groups);
         group
     }
 
-    fn add_member_to_group(&mut self, group_idx: usize, contact_idx: usize) -> bool {
+    async fn add_member_to_group(&mut self, group_idx: usize, contact_idx: usize) -> bool {
         let contact = &self.contacts[contact_idx];
         let group = &self.groups[group_idx];
         if group.members.iter().any(|m| m.node_id == contact.node_id) {
@@ -1364,6 +1685,13 @@ impl ChatState {
                 .as_secs(),
         };
         self.groups[group_idx].members.push(member);
+        if let Ok(bytes) = postcard::to_allocvec(&self.groups[group_idx]) {
+            let gid = self.groups[group_idx].id.clone();
+            self.kv_groups
+                .put(&format!("group:{}", gid), bytes)
+                .await
+                .ok();
+        }
         save_groups(&self.profile.username, &self.groups);
         true
     }
@@ -1581,7 +1909,7 @@ impl App {
         if !self.pending_file_ops.is_empty() {
             let PendingFileOp {
                 file_path,
-                attachment,
+                file_ref,
                 file_name,
                 transfer_id,
                 step,
@@ -1594,49 +1922,55 @@ impl App {
                             self.file_transfers.iter_mut().find(|t| t.id == transfer_id)
                         {
                             t.progress = 0.3;
-                            t.phase = "Reading file...".into();
+                            t.phase = "Storing in blob store...".into();
                         }
-                        match prepare_file_attachment(&fp) {
-                            Ok((att, fname)) => {
-                                if let Some(t) =
-                                    self.file_transfers.iter_mut().find(|t| t.id == transfer_id)
-                                {
-                                    t.file_name = fname.clone();
-                                    t.file_size = att.file_size;
-                                    t.progress = 0.6;
-                                    t.phase = "Sending...".into();
+                        let blob_store = self.state.as_ref().and_then(|s| s.blob_store.clone());
+                        if let Some(bs) = blob_store {
+                            match prepare_file_for_blob(&fp, &bs).await {
+                                Ok((fr, fname)) => {
+                                    if let Some(t) =
+                                        self.file_transfers.iter_mut().find(|t| t.id == transfer_id)
+                                    {
+                                        t.file_name = fname.clone();
+                                        t.file_size = fr.file_size;
+                                        t.progress = 0.6;
+                                        t.phase = "Sending reference...".into();
+                                    }
+                                    self.pending_file_ops.insert(
+                                        0,
+                                        PendingFileOp {
+                                            file_path: None,
+                                            file_ref: Some(fr),
+                                            file_name: Some(fname),
+                                            transfer_id,
+                                            step: FileOpStep::UploadSend,
+                                            target,
+                                        },
+                                    );
                                 }
-                                self.pending_file_ops.insert(
-                                    0,
-                                    PendingFileOp {
-                                        file_path: None,
-                                        attachment: Some(att),
-                                        file_name: Some(fname),
-                                        transfer_id,
-                                        step: FileOpStep::UploadSend,
-                                        target,
-                                    },
-                                );
+                                Err(e) => {
+                                    self.notify_error(format!("Error: {}", e));
+                                    self.file_transfers.retain(|t| t.id != transfer_id);
+                                }
                             }
-                            Err(e) => {
-                                self.notify_error(format!("Error: {}", e));
-                                self.file_transfers.retain(|t| t.id != transfer_id);
-                            }
+                        } else {
+                            self.notify_error("Blob store not available".into());
+                            self.file_transfers.retain(|t| t.id != transfer_id);
                         }
                     }
                 }
                 FileOpStep::UploadSend => {
-                    if let (Some(att), Some(fname)) = (attachment, file_name) {
-                        let size_str = format_file_size(att.file_size);
+                    if let (Some(fr), Some(fname)) = (file_ref, file_name) {
+                        let size_str = format_file_size(fr.file_size);
                         let result = if let Some(state) = self.state.as_mut() {
                             match &target {
                                 FileOpTarget::Dm { contact_idx } => {
                                     let cid = state.contacts[*contact_idx].node_id.clone();
-                                    state.store_file_dm(&cid, &att).await
+                                    state.store_file_dm(&cid, &fr).await
                                 }
                                 FileOpTarget::Group { group_idx } => {
                                     let group = state.groups[*group_idx].clone();
-                                    state.store_file_group(&group, &att).await
+                                    state.store_file_group(&group, &fr).await
                                 }
                             }
                         } else {
@@ -1668,7 +2002,7 @@ impl App {
         if let Some(state) = &self.state
             && let Ok(mut typing) = state.typing_states.lock()
         {
-            typing.retain(|_, (_, t)| t.elapsed() < std::time::Duration::from_secs(4));
+            typing.retain(|_, (_, t)| t.elapsed() < std::time::Duration::from_secs(2));
         }
 
         // Check for sync events
@@ -1678,11 +2012,11 @@ impl App {
             if state.has_new_messages.swap(false, Ordering::Relaxed) {
                 let peer_id = state.last_sync_peer.lock().await.take();
                 if let Some(ref peer_id) = peer_id {
-                    state.update_contact_last_seen(peer_id);
+                    state.update_contact_last_seen(peer_id).await;
 
                     let groups_before = state.groups.len();
                     if let Ok(msgs) = state.get_dm_messages(peer_id, 200).await {
-                        state.process_group_invites(&msgs);
+                        state.process_group_invites(&msgs).await;
                     }
                     new_groups_count = state.groups.len().saturating_sub(groups_before);
 
@@ -1695,10 +2029,19 @@ impl App {
 
                     sync_notification = Some(format!("🔔 Sync from {}", contact_name));
                 }
+
+                // Also check ALL DM logs for group invites (handles gossip-based
+                // syncs where last_sync_peer may be None)
+                let groups_before2 = state.groups.len();
+                state.check_local_files_for_invites().await;
+                new_groups_count += state.groups.len().saturating_sub(groups_before2);
+
+                // Force immediate message refresh after sync
+                self.last_poll = Instant::now() - std::time::Duration::from_secs(10);
             }
 
             // Periodically check all DMs for group invites (catches missed syncs)
-            state.check_local_files_for_invites();
+            state.check_local_files_for_invites().await;
         }
         if let Some(notif) = sync_notification {
             self.notify(notif);
@@ -1715,17 +2058,13 @@ impl App {
                 match &self.screen {
                     Screen::DmChat { contact_idx } => {
                         let contact_id = state.contacts[*contact_idx].node_id.clone();
-                        if let Ok(msgs) = state.get_dm_messages(&contact_id, 100).await
-                            && msgs.len() != self.chat_messages.len()
-                        {
+                        if let Ok(msgs) = state.get_dm_messages(&contact_id, 100).await {
                             new_msgs = Some(msgs);
                         }
                     }
                     Screen::GroupChat { group_idx } => {
                         let group = state.groups[*group_idx].clone();
-                        if let Ok(msgs) = state.get_group_messages(&group, 100).await
-                            && msgs.len() != self.chat_messages.len()
-                        {
+                        if let Ok(msgs) = state.get_group_messages(&group, 100).await {
                             new_msgs = Some(msgs);
                         }
                     }
@@ -1733,30 +2072,44 @@ impl App {
                 }
             }
             if let Some(msgs) = new_msgs {
-                self.auto_save_files(&msgs);
+                let had_new = msgs.len() > self.chat_messages.len();
+                self.auto_save_files(&msgs).await;
                 self.chat_messages = msgs;
-                self.chat_scroll = 0;
+                if had_new {
+                    self.chat_scroll = 0;
+                }
             }
         }
     }
 
-    fn auto_save_files(&mut self, messages: &[ChatMessage]) {
+    async fn auto_save_files(&mut self, messages: &[ChatMessage]) {
         let mut new_notifications: Vec<String> = Vec::new();
         let mut new_transfers: Vec<FileTransfer> = Vec::new();
         if let Some(state) = self.state.as_mut() {
             for msg in messages {
                 if msg.is_file()
                     && msg.from_node_id != state.profile.node_id
-                    && let Some(att) = msg.file_attachment()
+                    && let Some(file_ref) = msg.file_reference()
                 {
-                    let key = file_save_key(msg, &att.file_name);
+                    let key = file_save_key(msg, &file_ref);
                     if !state.saved_files.contains(&key) {
                         let transfer_id = next_transfer_id();
-                        if let Some(path) = save_received_file(&state.profile.username, &att) {
+                        let saved = if let Some(bs) = &state.blob_store {
+                            save_received_file_from_blob(
+                                &state.profile.username,
+                                &file_ref,
+                                bs,
+                                &msg.from_node_id,
+                            )
+                            .await
+                        } else {
+                            None
+                        };
+                        if let Some(path) = saved {
                             new_transfers.push(FileTransfer {
                                 id: transfer_id,
-                                file_name: att.file_name.clone(),
-                                file_size: att.file_size,
+                                file_name: file_ref.file_name.clone(),
+                                file_size: file_ref.file_size,
                                 progress: 1.0,
                                 phase: "Done!".into(),
                                 direction: TransferDirection::Download,
@@ -1764,13 +2117,19 @@ impl App {
                                 completed_at: Some(Instant::now()),
                             });
                             new_notifications.push(format!(
-                                "📥 {} salvo em {}",
-                                att.file_name,
+                                "📥 {} saved at {}",
+                                file_ref.file_name,
                                 path.display()
                             ));
+                            // Only mark as saved when download actually succeeded
+                            state
+                                .kv_settings
+                                .put(&format!("saved_file:{}", key), b"1".to_vec())
+                                .await
+                                .ok();
+                            state.saved_files.insert(key);
                         }
-                        state.saved_files.insert(key);
-                        save_saved_files(&state.profile.username, &state.saved_files);
+                        // If download failed, don't mark as saved — will retry next poll
                     }
                 }
             }
@@ -2071,7 +2430,7 @@ fn render_main(frame: &mut Frame, area: Rect, app: &App) {
         .border_style(Style::default().fg(Color::Green));
 
     if let Some(state) = &app.state {
-        let created = chrono::DateTime::<chrono::Utc>::from(
+        let created = chrono::DateTime::<chrono::Local>::from(
             UNIX_EPOCH + Duration::from_secs(state.profile.created_at),
         );
 
@@ -2323,7 +2682,7 @@ fn render_chat(frame: &mut Frame, area: Rect, app: &App) {
                     let contact_id = &state.contacts[*contact_idx].node_id;
                     typing
                         .get(contact_id)
-                        .filter(|(_, t)| now.duration_since(*t) < std::time::Duration::from_secs(4))
+                        .filter(|(_, t)| now.duration_since(*t) < std::time::Duration::from_secs(2))
                         .map(|(name, _)| vec![name.as_str()])
                         .unwrap_or_default()
                 }
@@ -2334,7 +2693,7 @@ fn render_chat(frame: &mut Frame, area: Rect, app: &App) {
                         .filter(|(id, (_, t))| {
                             *id != &state.profile.node_id
                                 && group.members.iter().any(|m| &m.node_id == *id)
-                                && now.duration_since(*t) < std::time::Duration::from_secs(4)
+                                && now.duration_since(*t) < std::time::Duration::from_secs(2)
                         })
                         .map(|(_, (name, _))| name.as_str())
                         .collect()
@@ -2459,14 +2818,14 @@ fn render_chat(frame: &mut Frame, area: Rect, app: &App) {
 
 fn render_message_line<'a>(msg: &ChatMessage, my_node_id: &str) -> Line<'a> {
     let datetime =
-        chrono::DateTime::<chrono::Utc>::from(UNIX_EPOCH + Duration::from_secs(msg.timestamp));
+        chrono::DateTime::<chrono::Local>::from(UNIX_EPOCH + Duration::from_secs(msg.timestamp));
     let time_str = datetime.format("%H:%M:%S").to_string();
 
     let is_mine = msg.from_node_id == my_node_id;
     let name_color = if is_mine { Color::Green } else { Color::Cyan };
 
     if msg.is_file() {
-        if let Some(att) = msg.file_attachment() {
+        if let Some(file_ref) = msg.file_reference() {
             Line::from(vec![
                 Span::styled(
                     format!(" [{}] ", time_str),
@@ -2478,13 +2837,13 @@ fn render_message_line<'a>(msg: &ChatMessage, my_node_id: &str) -> Line<'a> {
                 ),
                 Span::raw(": 📎 "),
                 Span::styled(
-                    att.file_name.clone(),
+                    file_ref.file_name.clone(),
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!(" ({})", format_file_size(att.file_size)),
+                    format!(" ({})", format_file_size(file_ref.file_size)),
                     Style::default().fg(Color::DarkGray),
                 ),
             ])
@@ -3042,7 +3401,7 @@ fn render_view_profile(frame: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let created = chrono::DateTime::<chrono::Utc>::from(
+    let created = chrono::DateTime::<chrono::Local>::from(
         UNIX_EPOCH + Duration::from_secs(state.profile.created_at),
     );
 
@@ -3299,7 +3658,7 @@ async fn handle_key_select_contact(app: &mut App, key: KeyEvent) {
                 for n in notifs {
                     app.notify(n);
                 }
-                app.auto_save_files(&app.chat_messages.clone());
+                app.auto_save_files(&app.chat_messages.clone()).await;
                 app.screen = Screen::DmChat { contact_idx: idx };
             }
         }
@@ -3352,7 +3711,7 @@ async fn handle_key_select_group(app: &mut App, key: KeyEvent) {
                 for n in notifs {
                     app.notify(n);
                 }
-                app.auto_save_files(&app.chat_messages.clone());
+                app.auto_save_files(&app.chat_messages.clone()).await;
                 app.screen = Screen::GroupChat { group_idx: idx };
             }
         }
@@ -3504,7 +3863,7 @@ async fn handle_key_chat(app: &mut App, key: KeyEvent) {
                             });
                             app.pending_file_ops.push(PendingFileOp {
                                 file_path: Some(file_path.to_string()),
-                                attachment: None,
+                                file_ref: None,
                                 file_name: None,
                                 transfer_id,
                                 step: FileOpStep::UploadPrepare,
@@ -3514,8 +3873,11 @@ async fn handle_key_chat(app: &mut App, key: KeyEvent) {
                     }
                 }
                 msg => {
+                    let mut send_error: Option<String> = None;
+                    let mut sent_msg: Option<ChatMessage> = None;
                     if let Some(state) = app.state.as_mut() {
-                        let result = match &app.screen.clone() {
+                        let screen = app.screen.clone();
+                        let result = match &screen {
                             Screen::DmChat { contact_idx } => {
                                 let cid = state.contacts[*contact_idx].node_id.clone();
                                 state.send_dm(&cid, msg.to_string()).await
@@ -3524,14 +3886,26 @@ async fn handle_key_chat(app: &mut App, key: KeyEvent) {
                                 let group = state.groups[*group_idx].clone();
                                 state.send_group_message(&group, msg.to_string()).await
                             }
-                            _ => Ok(()),
+                            _ => Ok(ChatMessage::new(
+                                String::new(),
+                                String::new(),
+                                String::new(),
+                                String::new(),
+                            )),
                         };
-                        if let Err(e) = result {
-                            app.notify_error(format!("Error sending: {}", e));
+                        match result {
+                            Ok(m) => sent_msg = Some(m),
+                            Err(e) => send_error = Some(format!("Error sending: {}", e)),
                         }
                     }
-                    // Force refresh
-                    app.last_poll = Instant::now() - std::time::Duration::from_secs(10);
+                    if let Some(err) = send_error {
+                        app.notify_error(err);
+                    }
+                    // Push sent message directly to UI — no dependency on log.list()
+                    if let Some(m) = sent_msg {
+                        app.chat_messages.push(m);
+                    }
+                    app.last_poll = Instant::now();
                     app.chat_scroll = 0;
                 }
             }
@@ -3541,8 +3915,8 @@ async fn handle_key_chat(app: &mut App, key: KeyEvent) {
             ..
         } => {
             app.input_insert(c);
-            // Send typing indicator (throttled to every 2 seconds)
-            if app.last_typing_sent.elapsed() >= std::time::Duration::from_secs(2) {
+            // Send typing indicator (throttled to every 1.5 seconds)
+            if app.last_typing_sent.elapsed() >= std::time::Duration::from_millis(1500) {
                 app.last_typing_sent = Instant::now();
                 let screen = app.screen.clone();
                 if let Some(state) = app.state.as_mut() {
@@ -3642,7 +4016,7 @@ async fn handle_key_add_contact(app: &mut App, key: KeyEvent) {
                 let node_id = app.add_contact_node_id.clone();
                 let mut notifs: Vec<(String, bool)> = Vec::new();
                 if let Some(state) = app.state.as_mut()
-                    && state.add_contact(node_id.clone(), name.clone())
+                    && state.add_contact(node_id.clone(), name.clone()).await
                 {
                     notifs.push((format!("✓ Contact '{}' added!", name), false));
                     match state.connect_to_contact(&node_id).await {
@@ -3744,7 +4118,7 @@ async fn handle_key_create_group(app: &mut App, key: KeyEvent) {
 
                 let mut notif_msg = String::new();
                 if let Some(state) = app.state.as_mut() {
-                    let group = state.create_group(name.clone(), &members);
+                    let group = state.create_group(name.clone(), &members).await;
                     notif_msg = format!(
                         "✓ Group '{}' created with {} members!",
                         name,
@@ -3850,7 +4224,7 @@ async fn handle_key_add_member(app: &mut App, key: KeyEvent) {
                 let name = name.clone();
                 let mut notif: Option<(String, bool)> = None;
                 if let Some(state) = app.state.as_mut() {
-                    if state.add_member_to_group(group_idx, contact_idx) {
+                    if state.add_member_to_group(group_idx, contact_idx).await {
                         notif = Some((format!("✓ '{}' added to group!", name), false));
 
                         let group = state.groups[group_idx].clone();
@@ -3892,7 +4266,7 @@ fn spawn_background_tasks(state: &ChatState) {
     let has_new_messages = state.has_new_messages.clone();
     let last_sync_peer = state.last_sync_peer.clone();
     let pending_sync_bg = state.pending_sync.clone();
-    let username_bg = state.profile.username.clone();
+    let kv_settings_bg = state.kv_settings.clone();
 
     tokio::spawn(async move {
         let mut receiver = match event_bus.subscribe::<EventExchangeHeads>().await {
@@ -3916,7 +4290,10 @@ fn spawn_background_tasks(state: &ChatState) {
                     {
                         let mut pending = pending_sync_bg.lock().await;
                         if pending.remove(&peer_str) {
-                            save_pending_sync(&username_bg, &pending);
+                            kv_settings_bg
+                                .delete(&format!("pending_sync:{}", peer_str))
+                                .await
+                                .ok();
                         }
                     }
                     *last_sync_peer.lock().await = Some(peer_str);
@@ -3933,8 +4310,41 @@ fn spawn_background_tasks(state: &ChatState) {
     let db = state.db.clone();
     let dm_logs_bg = state.dm_logs.clone();
     let profile_node_id = state.profile.node_id.clone();
-    let profile_username = state.profile.username.clone();
     let pending_sync = state.pending_sync.clone();
+    let kv_settings_retry = state.kv_settings.clone();
+    let kv_groups_bg = state.kv_groups.clone();
+
+    // SyncEvent monitoring: detects gossip-based syncs that don't go through
+    // the DirectChannel path (and thus don't emit EventExchangeHeads).
+    // This is critical for group chat where messages arrive via gossip topic.
+    {
+        let event_bus = state.db.event_bus();
+        let has_new_messages = state.has_new_messages.clone();
+
+        tokio::spawn(async move {
+            let mut receiver = match event_bus.subscribe::<SyncEvent>().await {
+                Ok(r) => r,
+                Err(e) => {
+                    error!("Failed to subscribe to SyncEvent: {}", e);
+                    return;
+                }
+            };
+
+            loop {
+                match receiver.recv().await {
+                    Ok(SyncEvent::Ready { ref heads, .. }) if !heads.is_empty() => {
+                        debug!("SyncEvent::Ready with {} heads", heads.len());
+                        has_new_messages.store(true, Ordering::Relaxed);
+                    }
+                    Ok(_) => {} // Ignore Started, Progress, Error, empty Ready
+                    Err(e) => {
+                        error!("Error receiving SyncEvent: {}", e);
+                        sleep(Duration::from_secs(1)).await;
+                    }
+                }
+            }
+        });
+    }
 
     tokio::spawn(async move {
         sleep(Duration::from_secs(5)).await;
@@ -3975,30 +4385,6 @@ fn spawn_background_tasks(state: &ChatState) {
                     }
                 };
 
-                let local_msgs = load_messages_from_file(&profile_username, &log_name);
-                let existing = log.list(None).await.unwrap_or_default();
-                let existing_msgs: Vec<ChatMessage> = existing
-                    .iter()
-                    .filter_map(|e| ChatMessage::from_bytes(e.value()))
-                    .collect();
-
-                for msg in &local_msgs {
-                    if msg.from_node_id != profile_node_id {
-                        continue;
-                    }
-                    if !msg.belongs_to_dm() {
-                        continue;
-                    }
-                    let already = existing_msgs.iter().any(|em| {
-                        em.timestamp == msg.timestamp
-                            && em.from_node_id == msg.from_node_id
-                            && em.content == msg.content
-                    });
-                    if !already {
-                        let _ = log.add(msg.to_bytes()).await;
-                    }
-                }
-
                 if let Ok(peer_id) = contact_node_id.parse::<NodeId>()
                     && let Some(wrapper) = log.as_any().downcast_ref::<EventLogStoreWrapper>()
                 {
@@ -4006,7 +4392,10 @@ fn spawn_background_tasks(state: &ChatState) {
                         Ok(()) => {
                             let mut pending = pending_sync.lock().await;
                             pending.remove(contact_node_id);
-                            save_pending_sync(&profile_username, &pending);
+                            kv_settings_retry
+                                .delete(&format!("pending_sync:{}", contact_node_id))
+                                .await
+                                .ok();
                             info!(
                                 "✓ Pending message delivered to {}",
                                 &contact_node_id[..contact_node_id.len().min(16)]
@@ -4022,8 +4411,13 @@ fn spawn_background_tasks(state: &ChatState) {
                 }
             }
 
-            // Also sync group logs
-            let groups = load_groups(&profile_username);
+            // Also sync group logs — load groups from KV store
+            let groups: Vec<Group> = kv_groups_bg
+                .all()
+                .iter()
+                .filter(|(k, _)| k.starts_with("group:"))
+                .filter_map(|(_, v)| postcard::from_bytes(v).ok())
+                .collect();
             for group in &groups {
                 let grp_log_name = group.log_name();
                 let grp_log = {
@@ -4049,29 +4443,6 @@ fn spawn_background_tasks(state: &ChatState) {
                         }
                     }
                 };
-
-                let local_msgs = load_messages_from_file(&profile_username, &grp_log_name);
-                let existing = grp_log.list(None).await.unwrap_or_default();
-                let existing_msgs: Vec<ChatMessage> = existing
-                    .iter()
-                    .filter_map(|e| ChatMessage::from_bytes(e.value()))
-                    .collect();
-                for msg in &local_msgs {
-                    if msg.from_node_id != profile_node_id {
-                        continue;
-                    }
-                    if msg.target.starts_with("dm-") {
-                        continue;
-                    }
-                    let already = existing_msgs.iter().any(|em| {
-                        em.timestamp == msg.timestamp
-                            && em.from_node_id == msg.from_node_id
-                            && em.content == msg.content
-                    });
-                    if !already {
-                        let _ = grp_log.add(msg.to_bytes()).await;
-                    }
-                }
 
                 for member in &group.members {
                     if member.node_id == profile_node_id {
@@ -4140,13 +4511,7 @@ async fn run_app(
 
             match ChatState::new(username).await {
                 Ok(mut state) => {
-                    cleanup_mixed_messages(
-                        &state.profile.username,
-                        &state.profile.node_id,
-                        &state.contacts,
-                        &state.groups,
-                    );
-                    state.check_local_files_for_invites();
+                    state.check_local_files_for_invites().await;
                     spawn_background_tasks(&state);
                     app.state = Some(state);
                     app.screen = Screen::Main;
