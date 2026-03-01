@@ -2,7 +2,7 @@ use crate::address::{Address, GuardianDBAddress};
 use crate::cache::level_down::LevelDownCache;
 use crate::db_manifest;
 use crate::guardian::error::{GuardianError, Result};
-use crate::keystore::SledKeystore;
+use crate::keystore::RedbKeystore;
 use crate::log::identity::Identity;
 pub use crate::log::identity_provider::Keystore;
 use crate::p2p::Emitter;
@@ -340,9 +340,11 @@ impl GuardianDB {
                 Some(directory.join(node_id.to_string()).join("keystore"))
             };
 
-            // Cria o keystore usando nossa implementação SledKeystore
-            let keystore = SledKeystore::new(sled_path)
-                .map_err(|e| GuardianError::Other(format!("Falha ao criar o keystore: {}", e)))?;
+            // Cria o keystore usando nossa implementação RedbKeystore
+            let keystore =
+                Arc::new(RedbKeystore::new(sled_path).map_err(|e| {
+                    GuardianError::Other(format!("Falha ao criar o keystore: {}", e))
+                })?);
 
             // Cria a closure de fechamento
             let keystore_clone = keystore.clone();
@@ -370,10 +372,43 @@ impl GuardianDB {
                 GuardianError::Other("Keystore é necessário para criar uma identidade".to_string())
             })?;
 
-            // Criar uma identidade usando o DefaultIdentificator que gera chaves e assinaturas válidas
-            use crate::log::identity::{DefaultIdentificator, Identificator};
-            let mut identificator = DefaultIdentificator::new();
-            identificator.create(&id)
+            // Try to load persisted identity from the data directory
+            let identity_path = directory.join("identity.json");
+            if identity_path.exists() {
+                match std::fs::read_to_string(&identity_path) {
+                    Ok(data) => match serde_json::from_str::<Identity>(&data) {
+                        Ok(id) => {
+                            tracing::debug!("Loaded persisted identity from {:?}", identity_path);
+                            id
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to deserialize identity file, creating new: {}",
+                                e
+                            );
+                            use crate::log::identity::{DefaultIdentificator, Identificator};
+                            let mut identificator = DefaultIdentificator::new();
+                            let new_id = identificator.create(&id);
+                            Self::save_identity_to_file(&identity_path, &new_id);
+                            new_id
+                        }
+                    },
+                    Err(e) => {
+                        tracing::warn!("Failed to read identity file, creating new: {}", e);
+                        use crate::log::identity::{DefaultIdentificator, Identificator};
+                        let mut identificator = DefaultIdentificator::new();
+                        let new_id = identificator.create(&id);
+                        Self::save_identity_to_file(&identity_path, &new_id);
+                        new_id
+                    }
+                }
+            } else {
+                use crate::log::identity::{DefaultIdentificator, Identificator};
+                let mut identificator = DefaultIdentificator::new();
+                let new_id = identificator.create(&id);
+                Self::save_identity_to_file(&identity_path, &new_id);
+                new_id
+            }
         };
 
         options.identity = Some(identity.clone());
@@ -530,6 +565,28 @@ impl GuardianDB {
         }
 
         Ok(instance)
+    }
+
+    /// Persists the identity to a JSON file so it can be reloaded across sessions
+    fn save_identity_to_file(path: &Path, identity: &Identity) {
+        if let Some(parent) = path.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            tracing::warn!("Failed to create identity directory: {}", e);
+            return;
+        }
+        match serde_json::to_string_pretty(identity) {
+            Ok(data) => {
+                if let Err(e) = std::fs::write(path, data) {
+                    tracing::warn!("Failed to write identity file: {}", e);
+                } else {
+                    tracing::debug!("Identity persisted to {:?}", path);
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to serialize identity: {}", e);
+            }
+        }
     }
 
     /// Retorna o tracer para telemetria e monitoramento.
@@ -695,20 +752,33 @@ impl GuardianDB {
                 sync_store!(event_log_store, "eventlog");
             }
 
-            // Tenta fazer downcast para KeyValueStore
-            if let Some(kv_store) = store
+            // KeyValueStore usa iroh-docs (Willow range sync) — não precisa de exchange_heads
+            if store
                 .as_any()
                 .downcast_ref::<crate::stores::kv_store::GuardianDBKeyValue>()
+                .is_some()
             {
-                sync_store!(kv_store, "keyvalue");
+                tracing::info!(
+                    peer = %peer_id,
+                    store_type = "keyvalue",
+                    "[SYNC] KeyValueStore usa iroh-docs Willow sync — sync automático"
+                );
+                return Ok(());
             }
 
             // Tenta fazer downcast para DocumentStore
-            if let Some(doc_store) = store
+            // DocumentStore usa iroh-docs Willow sync — sync automático
+            if store
                 .as_any()
-                .downcast_ref::<crate::stores::document_store::GuardianDBDocumentStore>(
-            ) {
-                sync_store!(doc_store, "document");
+                .downcast_ref::<crate::stores::document_store::GuardianDBDocumentStore>()
+                .is_some()
+            {
+                tracing::info!(
+                    peer = %peer_id,
+                    store_type = "document",
+                    "[SYNC] DocumentStore usa iroh-docs Willow sync — sync automático"
+                );
+                return Ok(());
             }
         }
 
@@ -1056,7 +1126,7 @@ impl GuardianDB {
             .await?;
 
         // Verifica se o banco de dados já existe localmente.
-        let have_db = self.have_local_data(&db_address).await;
+        let have_db = self.have_local_data_in(&db_address, &directory).await;
 
         if have_db && !options.overwrite.unwrap_or(false) {
             return Err(GuardianError::DatabaseAlreadyExists(db_address.to_string()));
@@ -1095,6 +1165,7 @@ impl GuardianDB {
             .directory
             .clone()
             .unwrap_or_else(|| self.directory.to_string_lossy().to_string());
+        options.directory = Some(directory.clone());
 
         // Valida o endereço. Se for inválido, tenta criar um novo banco de dados se a opção `create` for verdadeira.
         if crate::address::is_valid(db_address).is_err() {
@@ -1137,7 +1208,9 @@ impl GuardianDB {
         self.load_cache(directory_path.as_path(), &parsed_address)
             .await?;
 
-        if options.local_only.unwrap_or(false) && !self.have_local_data(&parsed_address).await {
+        if options.local_only.unwrap_or(false)
+            && !self.have_local_data_in(&parsed_address, &directory).await
+        {
             return Err(GuardianError::NotFound(format!(
                 "O banco de dados não existe localmente: {}",
                 db_address
@@ -1150,7 +1223,7 @@ impl GuardianDB {
             options.store_type.clone().unwrap()
         } else {
             // Lê o manifesto para determinar o tipo do banco de dados
-            if self.have_local_data(&parsed_address).await {
+            if self.have_local_data_in(&parsed_address, &directory).await {
                 // Se temos dados locais, primeiro tenta ler do cache local
                 tracing::debug!(
                     "Dados encontrados localmente, tentando ler do cache antes do iroh"
@@ -1343,12 +1416,16 @@ impl GuardianDB {
     }
 
     /// Verifica se o manifesto de um banco de dados existe no cache local.
-    pub async fn have_local_data(&self, db_address: &GuardianDBAddress) -> bool {
+    pub async fn have_local_data_in(
+        &self,
+        db_address: &GuardianDBAddress,
+        directory: &str,
+    ) -> bool {
         let _cache_key = format!("{}/_manifest", db_address);
 
         // Verificar se os dados existem no cache
         let cache = self.cache.read();
-        let directory_str = "./GuardianDB"; // Diretório padrão
+        let directory_str = directory;
 
         // Tenta carregar o cache e verificar se o manifesto existe
         match cache.load_internal(directory_str, db_address) {
@@ -1671,7 +1748,7 @@ impl GuardianDB {
             max_history: None,
             directory: options
                 .directory
-                .unwrap_or_else(|| "./GuardianDB".to_string()),
+                .unwrap_or_else(|| self.directory.to_string_lossy().to_string()),
             sort_fn: None,
             span: None,   // Será configurado pela BaseStore
             tracer: None, // Será configurado pela BaseStore
@@ -2078,28 +2155,24 @@ impl GuardianDB {
             });
         }
 
-        // KeyValueStore - tenta acessar BaseStore interno
+        // KeyValueStore — usa Store trait diretamente (iroh-docs backend)
         if let Some(kv_store) = store
             .as_any()
             .downcast_ref::<crate::stores::kv_store::GuardianDBKeyValue>()
         {
-            // Acessa o BaseStore interno que tem sync(&self)
-            let base_store = kv_store.basestore();
-            return base_store.sync(heads).await.map_err(|e| {
+            return kv_store.sync(heads).await.map_err(|e| {
                 GuardianError::Store(format!("Erro na sincronização KeyValueStore: {}", e))
             });
         }
 
-        // DocumentStore - tenta acessar BaseStore interno
-        if let Some(doc_store) = store
+        // DocumentStore - usa iroh-docs Willow sync automático
+        if store
             .as_any()
-            .downcast_ref::<crate::stores::document_store::GuardianDBDocumentStore>(
-        ) {
-            // Acessa o BaseStore interno que tem sync(&self)
-            let base_store = doc_store.basestore();
-            return base_store.sync(heads).await.map_err(|e| {
-                GuardianError::Store(format!("Erro na sincronização DocumentStore: {}", e))
-            });
+            .downcast_ref::<crate::stores::document_store::GuardianDBDocumentStore>()
+            .is_some()
+        {
+            // iroh-docs gerencia sync via Willow — heads não são necessárias
+            return Ok(());
         }
 
         // Se nenhum downcast funcionou, retorna erro
@@ -2135,24 +2208,23 @@ impl GuardianDB {
             return Ok(log.len());
         }
 
-        // KeyValueStore - tenta acessar BaseStore interno
+        // KeyValueStore — usa Store trait diretamente (iroh-docs backend)
         if let Some(kv_store) = store
             .as_any()
             .downcast_ref::<crate::stores::kv_store::GuardianDBKeyValue>()
         {
-            let base_store = kv_store.basestore();
-            let op_log = base_store.op_log();
+            let op_log = kv_store.op_log();
             let log = op_log.read();
             return Ok(log.len());
         }
 
-        // DocumentStore - tenta acessar BaseStore interno
+        // DocumentStore - usa iroh-docs, retorna tamanho do índice local
         if let Some(doc_store) = store
             .as_any()
             .downcast_ref::<crate::stores::document_store::GuardianDBDocumentStore>(
         ) {
-            let base_store = doc_store.basestore();
-            let op_log = base_store.op_log();
+            // iroh-docs não usa OpLog — retorna o número de entradas do índice local
+            let op_log = doc_store.op_log();
             let log = op_log.read();
             return Ok(log.len());
         }
@@ -2276,12 +2348,12 @@ impl GuardianDB {
                 .as_any()
                 .downcast_ref::<crate::stores::kv_store::GuardianDBKeyValue>()
             {
-                kv_store.basestore().access_controller()
+                kv_store.access_controller()
             } else if let Some(doc_store) = store
                 .as_any()
                 .downcast_ref::<crate::stores::document_store::GuardianDBDocumentStore>(
             ) {
-                doc_store.basestore().access_controller()
+                doc_store.access_controller()
             } else if let Some(base_store) = store
                 .as_any()
                 .downcast_ref::<crate::stores::base_store::BaseStore>()
@@ -2881,11 +2953,11 @@ impl GuardianDB {
                 } else if let Some(kv_store) = store.as_any()
                     .downcast_ref::<crate::stores::kv_store::GuardianDBKeyValue>()
                 {
-                    kv_store.basestore().op_log().read().has(head_hash)
+                    kv_store.op_log().read().has(head_hash)
                 } else if let Some(doc_store) = store.as_any()
                     .downcast_ref::<crate::stores::document_store::GuardianDBDocumentStore>()
                 {
-                    doc_store.basestore().op_log().read().has(head_hash)
+                    doc_store.op_log().read().has(head_hash)
                 } else if let Some(base_store) = store.as_any()
                     .downcast_ref::<crate::stores::base_store::BaseStore>()
                 {
