@@ -85,17 +85,17 @@ GuardianDB orchestrates three main Iroh primitives to deliver a complete databas
 **2. Iroh-Docs:** The mutable layer. Manages key-value storage and synchronization using Last-Write-Wins (LWW) conflict resolution.<br>
 **3. Iroh-Gossip:** The ephemeral layer. Handles transient messages and signals between peers.
 
-### ⚠️Migration in Progress: Pure Iroh
-We are currently in the final stages of a major architectural shift:
+### ✅ Migration Complete: Pure Iroh
+The migration to a fully Iroh-native architecture is complete:
 
-**KV Store and Document Store:** Are being migrated to run exclusively on Iroh-Docs. This moves CRDT logic to the protocol layer, enabling instant synchronization using Willow's range-based reconciliation.<br>
-**Event Log Store (Chat/Feed):** We kept the original ipfs-log logic (DAG structure) for strict ordering, but completely refactored the engine:
+**KV Store and Document Store:** Now run exclusively on Iroh-Docs. All CRDT logic lives at the protocol layer, enabling instant synchronization using Willow's range-based reconciliation.<br>
+**Event Log Store (Chat/Feed):** Retains the original ipfs-log logic (DAG structure) for strict ordering, but the engine has been completely refactored:
 
-**No IPFS:** Disconnected from IPFS Blockstore.<br>
-**No JSON:** We replaced JSON with binary serialization (Postcard).<br>
-**No CIDs:** All linking logic was migrated to 32-byte BLAKE3 hashes.
+**No IPFS:** Fully disconnected from the IPFS Blockstore.<br>
+**No JSON:** Replaced with binary serialization (Postcard).<br>
+**No CIDs:** All linking logic uses 32-byte BLAKE3 hashes.
 
-This hybrid approach gives us the best of both worlds: Iroh's speed for key-value data and the auditability of a causal log for transaction history.
+This hybrid approach gives us the best of both worlds: Iroh's speed for key-value and document data, and the auditability of a causal log for transaction history.
 
 <details>
 <summary>
@@ -104,7 +104,7 @@ Current Architecture
 <br />
 
 ```
-GuardianDB v0.14.0
+GuardianDB v0.16.0
 ├── Core Database
 │   ├── GuardianDB (guardian/mod.rs)         # Main database API facade
 │   ├── BaseGuardianDB (guardian/core.rs)    # Core implementation
@@ -119,7 +119,7 @@ GuardianDB v0.14.0
 │   └── Operations                      # Store operations & parsing
 │
 ├── Networking Layer (p2p/)
-│   ├── IrohClient (network/client.rs)  # Native Iroh IPFS Client
+│   ├── IrohClient (network/client.rs)  # Native Iroh Client
 │   ├── Network Core (network/core/)    # IrohBackend
 │   │   ├── BatchProcessor              # Batch operation handling
 │   │   ├── Blobs                       # Blob storage management
@@ -197,9 +197,10 @@ Event Log Store
 <br />
 
 ```rust
-use guardian_db::{GuardianDB, NewGuardianDBOptions, CreateDBOptions};
+use guardian_db::guardian::GuardianDB;
+use guardian_db::guardian::core::NewGuardianDBOptions;
+use guardian_db::traits::{CreateDBOptions, EventLogStore, Store};
 use guardian_db::p2p::network::client::IrohClient;
-use guardian_db::traits::{EventLogStore, Store};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -208,7 +209,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create GuardianDB instance
     let options = NewGuardianDBOptions {
-        directory: Some("./guardian_data".to_string()),
+        directory: Some("./guardian_data".into()),
         ..Default::default()
     };
     let db = GuardianDB::new(client, Some(options)).await?;
@@ -247,9 +248,10 @@ Key-Value Store
 <br />
 
 ```rust
-use guardian_db::{GuardianDB, NewGuardianDBOptions, CreateDBOptions};
-use guardian_db::p2p::network::client::IrohClient;
+use guardian_db::guardian::GuardianDB;
+use guardian_db::guardian::core::NewGuardianDBOptions;
 use guardian_db::traits::KeyValueStore;
+use guardian_db::p2p::network::client::IrohClient;
 
 #[tokio::main] 
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -257,7 +259,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = IrohClient::development().await?;
     
     let options = NewGuardianDBOptions {
-        directory: Some("./guardian_data".to_string()),
+        directory: Some("./guardian_data".into()),
         ..Default::default()
     };
     
@@ -268,7 +270,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // CRUD operations - all operations are automatically replicated
     kv.put("app_name", "GuardianDB".as_bytes().to_vec()).await?;
-    kv.put("version", "0.14.0".as_bytes().to_vec()).await?;
+    kv.put("version", "0.16.0".as_bytes().to_vec()).await?;
     kv.put("language", "Rust".as_bytes().to_vec()).await?;
 
     // Get values - queries the local CRDT index
@@ -306,7 +308,9 @@ Document Store
 <br />
 
 ```rust
-use guardian_db::{GuardianDB, NewGuardianDBOptions, CreateDBOptions};
+use guardian_db::guardian::GuardianDB;
+use guardian_db::guardian::core::NewGuardianDBOptions;
+use guardian_db::traits::{CreateDBOptions, Document, AsyncDocumentFilter};
 use guardian_db::p2p::network::client::IrohClient;
 use serde_json::json;
 
@@ -316,7 +320,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = IrohClient::development().await?;
     
     let options = NewGuardianDBOptions {
-        directory: Some("./guardian_data".to_string()),
+        directory: Some("./guardian_data".into()),
         ..Default::default()
     };
     
@@ -329,14 +333,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     };
     
-    let mut docs = db.docs("my-document-store", Some(doc_options)).await?;
+    let docs = db.docs("my-document-store", Some(doc_options)).await?;
 
     // Add JSON documents (requires _id field)
     let project_doc = json!({
         "_id": "guardian-db",
         "name": "GuardianDB", 
         "type": "database",
-        "version": "0.14.0",
+        "version": "0.16.0",
         "language": "Rust",
         "features": ["decentralized", "peer-to-peer", "CRDT", "Iroh"]
     });
@@ -349,14 +353,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "protocols": ["gossip", "docs", "blobs"]
     });
 
-    // Store documents
-    docs.put(project_doc).await?;
-    docs.put(network_doc).await?;
+    // Store documents (wrap in Box for the Document type)
+    docs.put(Box::new(project_doc)).await?;
+    docs.put(Box::new(network_doc)).await?;
 
-    // Query documents by type using closure filter
-    let database_docs = docs.query(|doc| {
-        Ok(doc.get("type").and_then(|v| v.as_str()) == Some("database"))
-    })?;
+    // Query documents by type using async filter
+    let filter: AsyncDocumentFilter = Box::pin(|doc: &Document| {
+        let is_match = doc
+            .downcast_ref::<serde_json::Value>()
+            .and_then(|v| v.get("type"))
+            .and_then(|v| v.as_str())
+            == Some("database");
+        Box::pin(async move {
+            Ok(is_match) as Result<bool, Box<dyn std::error::Error + Send + Sync>>
+        })
+    });
+    let database_docs = docs.query(filter).await?;
 
     println!("Found {} database documents", database_docs.len());
     
@@ -368,9 +380,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     docs.delete("iroh-network").await?;
 
     // Put multiple documents in batch
-    let batch_docs = vec![
-        json!({"_id": "doc1", "name": "Document 1"}),
-        json!({"_id": "doc2", "name": "Document 2"}),
+    let batch_docs: Vec<Document> = vec![
+        Box::new(json!({"_id": "doc1", "name": "Document 1"})),
+        Box::new(json!({"_id": "doc2", "name": "Document 2"})),
     ];
     docs.put_batch(batch_docs).await?;
 
