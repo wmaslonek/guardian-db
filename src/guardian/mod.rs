@@ -20,14 +20,71 @@ pub struct GuardianDB {
 impl GuardianDB {
     /// Cria uma nova instância do GuardianDB
     pub async fn new(client: IrohClient, options: Option<NewGuardianDBOptions>) -> Result<Self> {
-        // Usar DefaultIdentificator para criar uma identidade válida com assinaturas criptográficas
         use crate::log::identity::{DefaultIdentificator, Identificator};
 
-        let mut identificator = DefaultIdentificator::new();
-        let identity = identificator.create(&client.node_id().to_string());
+        // Determine the data directory for persisting the identity
+        let directory = options
+            .as_ref()
+            .and_then(|o| o.directory.clone())
+            .unwrap_or_else(|| std::path::PathBuf::from("./GuardianDB"));
+
+        let identity_path = directory.join("identity.json");
+
+        // Try to load a previously saved identity, otherwise create and persist a new one
+        let identity = if identity_path.exists() {
+            match std::fs::read_to_string(&identity_path) {
+                Ok(data) => match serde_json::from_str::<crate::log::identity::Identity>(&data) {
+                    Ok(id) => {
+                        tracing::debug!("Loaded persisted identity from {:?}", identity_path);
+                        id
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to deserialize identity file, creating new: {}", e);
+                        let mut identificator = DefaultIdentificator::new();
+                        let id = identificator.create(&client.node_id().to_string());
+                        Self::save_identity(&identity_path, &id);
+                        id
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!("Failed to read identity file, creating new: {}", e);
+                    let mut identificator = DefaultIdentificator::new();
+                    let id = identificator.create(&client.node_id().to_string());
+                    Self::save_identity(&identity_path, &id);
+                    id
+                }
+            }
+        } else {
+            let mut identificator = DefaultIdentificator::new();
+            let id = identificator.create(&client.node_id().to_string());
+            Self::save_identity(&identity_path, &id);
+            id
+        };
 
         let base = BaseGuardianDB::new_guardian_db(client, identity, options).await?;
         Ok(GuardianDB { base })
+    }
+
+    /// Persists the identity to a JSON file so it can be reloaded across sessions
+    fn save_identity(path: &std::path::Path, identity: &crate::log::identity::Identity) {
+        if let Some(parent) = path.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            tracing::warn!("Failed to create identity directory: {}", e);
+            return;
+        }
+        match serde_json::to_string_pretty(identity) {
+            Ok(data) => {
+                if let Err(e) = std::fs::write(path, data) {
+                    tracing::warn!("Failed to write identity file: {}", e);
+                } else {
+                    tracing::debug!("Identity persisted to {:?}", path);
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to serialize identity: {}", e);
+            }
+        }
     }
 
     /// Cria um EventLogStore
@@ -48,7 +105,19 @@ impl GuardianDB {
         tracing::debug!(address = address, "GuardianDB::log - Criando EventLogStore");
 
         // Usa create() diretamente para nomes simples (sem hash válido)
-        let store = self.base.create(address, "eventlog", Some(opts)).await?;
+        // Se já existir, abre o existente usando o endereço completo para preservar o histórico
+        let store = match self
+            .base
+            .create(address, "eventlog", Some(opts.clone()))
+            .await
+        {
+            Ok(store) => store,
+            Err(GuardianError::DatabaseAlreadyExists(existing_addr)) => {
+                tracing::debug!(address = address, full_addr = %existing_addr, "EventLogStore já existe, abrindo existente");
+                self.base.open(&existing_addr, opts).await?
+            }
+            Err(e) => return Err(e),
+        };
 
         tracing::debug!(
             address = address,
@@ -85,7 +154,19 @@ impl GuardianDB {
         }
 
         // Usa create() diretamente para nomes simples
-        let store = self.base.create(address, "keyvalue", Some(opts)).await?;
+        // Se já existir, abre o existente usando o endereço completo para preservar os dados
+        let store = match self
+            .base
+            .create(address, "keyvalue", Some(opts.clone()))
+            .await
+        {
+            Ok(store) => store,
+            Err(GuardianError::DatabaseAlreadyExists(existing_addr)) => {
+                tracing::debug!(address = address, full_addr = %existing_addr, "KeyValueStore já existe, abrindo existente");
+                self.base.open(&existing_addr, opts).await?
+            }
+            Err(e) => return Err(e),
+        };
 
         // Para KeyValueStore, criamos um wrapper genérico
         if store.store_type() == "keyvalue" {
@@ -1137,10 +1218,12 @@ impl DocumentStore for DocumentStoreWrapper {
         &self,
         document: Document,
     ) -> std::result::Result<crate::stores::operation::Operation, Self::Error> {
-        // Extrai a chave do documento (campo _id se for JSON)
+        // Extrai a chave do documento (tenta _id primeiro, depois id como fallback)
         let key = if let Some(json_val) = document.downcast_ref::<serde_json::Value>() {
             json_val
                 .get("_id")
+                .or_else(|| json_val.get("id"))
+                .or_else(|| json_val.get("key"))
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
         } else {
@@ -1159,7 +1242,7 @@ impl DocumentStore for DocumentStoreWrapper {
             format!("{:?}", document).into_bytes()
         };
 
-        // Cria uma operação PUT para documento com chave extraída do _id
+        // Cria uma operação PUT para documento com chave extraída
         let operation =
             crate::stores::operation::Operation::new(key, "PUT".to_string(), Some(data));
 
@@ -1186,51 +1269,38 @@ impl DocumentStore for DocumentStoreWrapper {
         &self,
         values: Vec<Document>,
     ) -> std::result::Result<crate::stores::operation::Operation, Self::Error> {
-        // Serializa múltiplos documentos
-        let mut batch_data = Vec::new();
-        for document in values {
-            let data = if let Some(bytes) = document.downcast_ref::<Vec<u8>>() {
-                bytes.clone()
-            } else {
-                format!("{:?}", document).into_bytes()
-            };
-            batch_data.extend(data);
-            batch_data.push(b'\n'); // Separador
+        if values.is_empty() {
+            return Err(GuardianError::InvalidArgument(
+                "Nada para adicionar à store".to_string(),
+            ));
         }
 
-        // Cria uma operação PUT_BATCH
-        let operation = crate::stores::operation::Operation::new(
-            None,
-            "PUT_BATCH".to_string(),
-            Some(batch_data),
-        );
+        let mut last_operation = None;
+        for document in values {
+            let op = self.put(document).await?;
+            last_operation = Some(op);
+        }
 
-        self.add_operation(operation.clone(), None).await?;
-        Ok(operation)
+        Ok(last_operation.unwrap())
     }
 
     async fn put_all(
         &self,
         values: Vec<Document>,
     ) -> std::result::Result<crate::stores::operation::Operation, Self::Error> {
-        // Similar ao put_batch, mas com operação PUT_ALL
-        let mut batch_data = Vec::new();
-        for document in values {
-            let data = if let Some(bytes) = document.downcast_ref::<Vec<u8>>() {
-                bytes.clone()
-            } else {
-                format!("{:?}", document).into_bytes()
-            };
-            batch_data.extend(data);
-            batch_data.push(b'\n'); // Separador
+        if values.is_empty() {
+            return Err(GuardianError::InvalidArgument(
+                "Nada para adicionar à store".to_string(),
+            ));
         }
 
-        // Cria uma operação PUT_ALL
-        let operation =
-            crate::stores::operation::Operation::new(None, "PUT_ALL".to_string(), Some(batch_data));
+        let mut last_operation = None;
+        for document in values {
+            let op = self.put(document).await?;
+            last_operation = Some(op);
+        }
 
-        self.add_operation(operation.clone(), None).await?;
-        Ok(operation)
+        Ok(last_operation.unwrap())
     }
 
     async fn get(
