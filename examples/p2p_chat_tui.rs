@@ -910,7 +910,6 @@ struct ChatState {
     groups: Vec<Group>,
     #[allow(clippy::type_complexity)]
     dm_logs: Arc<Mutex<HashMap<String, Arc<dyn EventLogStore<Error = GuardianError>>>>>,
-    local_messages: HashMap<String, Vec<ChatMessage>>,
     #[allow(dead_code)]
     node_id: NodeId,
     has_new_messages: Arc<AtomicBool>,
@@ -1115,7 +1114,6 @@ impl ChatState {
             contacts,
             groups,
             dm_logs: Arc::new(Mutex::new(HashMap::new())),
-            local_messages: HashMap::new(),
             pending_sync: Arc::new(Mutex::new(pending_sync)),
             node_id,
             has_new_messages: Arc::new(AtomicBool::new(false)),
@@ -1166,9 +1164,6 @@ impl ChatState {
         let log = self.get_or_create_dm_log(contact_node_id).await?;
         log.add(msg.to_bytes()).await?;
 
-        let msgs = self.local_messages.entry(log_name.clone()).or_default();
-        msgs.push(msg.clone());
-
         {
             let mut pending = self.pending_sync.lock().await;
             pending.insert(contact_node_id.to_string());
@@ -1194,8 +1189,6 @@ impl ChatState {
         );
         let log = self.get_or_create_dm_log(contact_node_id).await?;
         log.add(msg.to_bytes()).await?;
-        let msgs = self.local_messages.entry(log_name.clone()).or_default();
-        msgs.push(msg);
         {
             let mut pending = self.pending_sync.lock().await;
             pending.insert(contact_node_id.to_string());
@@ -1217,8 +1210,6 @@ impl ChatState {
         );
         let log = self.get_or_create_group_log(group).await?;
         log.add(msg.to_bytes()).await?;
-        let msgs = self.local_messages.entry(log_name.clone()).or_default();
-        msgs.push(msg);
         Ok(())
     }
 
@@ -1227,10 +1218,11 @@ impl ChatState {
         contact_node_id: &str,
         limit: usize,
     ) -> Result<Vec<ChatMessage>> {
-        let log_name = dm_log_name(&self.profile.node_id, contact_node_id);
-
         let log = self.get_or_create_dm_log(contact_node_id).await?;
         let entries = log.list(None).await?;
+        // Use CRDT-ordered entries directly — EventLog preserves causal ordering
+        // which is correct across peers with unsynchronized clocks.
+        // Sorting by timestamp breaks ordering when clocks differ.
         let all_parsed: Vec<ChatMessage> = entries
             .iter()
             .filter_map(|entry| ChatMessage::from_bytes(entry.value()))
@@ -1258,34 +1250,11 @@ impl ChatState {
             }
         }
 
-        let store_messages: Vec<ChatMessage> =
+        let messages: Vec<ChatMessage> =
             all_parsed.into_iter().filter(|m| !m.is_typing()).collect();
 
-        let local = self.local_messages.entry(log_name.clone()).or_default();
-
-        let mut changed = false;
-        for sm in &store_messages {
-            let already_exists = local.iter().any(|lm| {
-                lm.timestamp == sm.timestamp
-                    && lm.from_node_id == sm.from_node_id
-                    && lm.content == sm.content
-            });
-            if !already_exists {
-                local.push(sm.clone());
-                changed = true;
-            }
-        }
-        if changed {
-            local.sort_by_key(|m| m.timestamp);
-            local.dedup_by(|a, b| {
-                a.timestamp == b.timestamp
-                    && a.from_node_id == b.from_node_id
-                    && a.content == b.content
-            });
-        }
-
-        let start = local.len().saturating_sub(limit);
-        Ok(local[start..].to_vec())
+        let start = messages.len().saturating_sub(limit);
+        Ok(messages[start..].to_vec())
     }
 
     async fn add_contact(&mut self, node_id: String, display_name: String) -> bool {
@@ -1364,9 +1333,6 @@ impl ChatState {
     async fn send_raw_dm(&mut self, contact_node_id: &str, msg: ChatMessage) -> Result<()> {
         let log = self.get_or_create_dm_log(contact_node_id).await?;
         log.add(msg.to_bytes()).await?;
-        let log_name = dm_log_name(&self.profile.node_id, contact_node_id);
-        let msgs = self.local_messages.entry(log_name.clone()).or_default();
-        msgs.push(msg);
         {
             let mut pending = self.pending_sync.lock().await;
             pending.insert(contact_node_id.to_string());
@@ -1426,35 +1392,25 @@ impl ChatState {
     }
 
     async fn check_local_files_for_invites(&mut self) {
-        // Check all loaded DM logs for invites, not just contacts.
+        // Check all loaded DM logs for invites, reading directly from EventLog.
         // This ensures invites from non-contacts (e.g., a group creator who
         // added us but isn't in our contacts yet) are also detected.
-        let dm_log_names: Vec<String> = {
+        let dm_logs_snapshot: Vec<(String, Arc<dyn EventLogStore<Error = GuardianError>>)> = {
             let dm_logs = self.dm_logs.lock().await;
             dm_logs
-                .keys()
-                .filter(|k| k.starts_with("dm-"))
-                .cloned()
+                .iter()
+                .filter(|(k, _)| k.starts_with("dm-"))
+                .map(|(k, v)| (k.clone(), v.clone()))
                 .collect()
         };
-        for log_name in &dm_log_names {
-            let msgs = self
-                .local_messages
-                .get(log_name)
-                .cloned()
-                .unwrap_or_default();
-            self.process_group_invites(&msgs).await;
-        }
-        // Also check contacts (their DMs may not be loaded yet)
-        let contact_ids: Vec<String> = self.contacts.iter().map(|c| c.node_id.clone()).collect();
-        for contact_node_id in &contact_ids {
-            let log_name = dm_log_name(&self.profile.node_id, contact_node_id);
-            let msgs = self
-                .local_messages
-                .get(&log_name)
-                .cloned()
-                .unwrap_or_default();
-            self.process_group_invites(&msgs).await;
+        for (_log_name, log) in &dm_logs_snapshot {
+            if let Ok(entries) = log.list(None).await {
+                let msgs: Vec<ChatMessage> = entries
+                    .iter()
+                    .filter_map(|entry| ChatMessage::from_bytes(entry.value()))
+                    .collect();
+                self.process_group_invites(&msgs).await;
+            }
         }
     }
 
@@ -1495,10 +1451,6 @@ impl ChatState {
         );
         let log = self.get_or_create_group_log(group).await?;
         log.add(msg.to_bytes()).await?;
-
-        let log_name = group.log_name();
-        let msgs = self.local_messages.entry(log_name.clone()).or_default();
-        msgs.push(msg.clone());
         Ok(msg)
     }
 
@@ -1534,6 +1486,8 @@ impl ChatState {
 
         let log = self.get_or_create_group_log(group).await?;
         let entries = log.list(None).await?;
+        // Use CRDT-ordered entries directly — causal ordering is correct
+        // even when peers have unsynchronized clocks.
         let all_parsed: Vec<ChatMessage> = entries
             .iter()
             .filter_map(|entry| ChatMessage::from_bytes(entry.value()))
@@ -1565,34 +1519,11 @@ impl ChatState {
             }
         }
 
-        let store_messages: Vec<ChatMessage> =
+        let messages: Vec<ChatMessage> =
             all_parsed.into_iter().filter(|m| !m.is_typing()).collect();
 
-        let local = self.local_messages.entry(log_name.clone()).or_default();
-
-        let mut changed = false;
-        for sm in &store_messages {
-            let already_exists = local.iter().any(|lm| {
-                lm.timestamp == sm.timestamp
-                    && lm.from_node_id == sm.from_node_id
-                    && lm.content == sm.content
-            });
-            if !already_exists {
-                local.push(sm.clone());
-                changed = true;
-            }
-        }
-        if changed {
-            local.sort_by_key(|m| m.timestamp);
-            local.dedup_by(|a, b| {
-                a.timestamp == b.timestamp
-                    && a.from_node_id == b.from_node_id
-                    && a.content == b.content
-            });
-        }
-
-        let start = local.len().saturating_sub(limit);
-        Ok(local[start..].to_vec())
+        let start = messages.len().saturating_sub(limit);
+        Ok(messages[start..].to_vec())
     }
 
     async fn sync_group_members(&mut self, group: &Group) -> (usize, usize) {
@@ -2053,6 +1984,25 @@ impl App {
         // Refresh chat messages periodically
         if self.last_poll.elapsed() >= std::time::Duration::from_secs(2) {
             self.last_poll = Instant::now();
+
+            // While in an active chat, attempt reconnection to peers every poll
+            // cycle. This dramatically reduces latency on different networks
+            // where n0 relay discovery may take several seconds.
+            if let Some(state) = self.state.as_mut() {
+                match &self.screen {
+                    Screen::DmChat { contact_idx } => {
+                        let contact_id = state.contacts[*contact_idx].node_id.clone();
+                        // Fire-and-forget reconnection attempt
+                        let _ = state.connect_to_contact(&contact_id).await;
+                    }
+                    Screen::GroupChat { group_idx } => {
+                        let group = state.groups[*group_idx].clone();
+                        state.sync_group_members(&group).await;
+                    }
+                    _ => {}
+                }
+            }
+
             let mut new_msgs: Option<Vec<ChatMessage>> = None;
             if let Some(state) = self.state.as_mut() {
                 match &self.screen {
@@ -3874,7 +3824,6 @@ async fn handle_key_chat(app: &mut App, key: KeyEvent) {
                 }
                 msg => {
                     let mut send_error: Option<String> = None;
-                    let mut sent_msg: Option<ChatMessage> = None;
                     if let Some(state) = app.state.as_mut() {
                         let screen = app.screen.clone();
                         let result = match &screen {
@@ -3893,19 +3842,15 @@ async fn handle_key_chat(app: &mut App, key: KeyEvent) {
                                 String::new(),
                             )),
                         };
-                        match result {
-                            Ok(m) => sent_msg = Some(m),
-                            Err(e) => send_error = Some(format!("Error sending: {}", e)),
+                        if let Err(e) = result {
+                            send_error = Some(format!("Error sending: {}", e));
                         }
                     }
                     if let Some(err) = send_error {
                         app.notify_error(err);
                     }
-                    // Push sent message directly to UI — no dependency on log.list()
-                    if let Some(m) = sent_msg {
-                        app.chat_messages.push(m);
-                    }
-                    app.last_poll = Instant::now();
+                    // Trigger immediate rebuild from EventLog to maintain CRDT ordering
+                    app.last_poll = Instant::now() - std::time::Duration::from_secs(10);
                     app.chat_scroll = 0;
                 }
             }
@@ -4457,7 +4402,7 @@ fn spawn_background_tasks(state: &ChatState) {
                 }
             }
 
-            sleep(Duration::from_secs(30)).await;
+            sleep(Duration::from_secs(10)).await;
         }
     });
 }
