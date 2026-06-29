@@ -8,6 +8,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **PostgreSQL compatibility layer** — standard PostgreSQL clients (`psql`,
+  node-postgres, **TypeORM** with `type: "postgres"`, DBeaver) connect to
+  GuardianDB over the PostgreSQL wire protocol and run ordinary SQL with no
+  GuardianDB-specific client code.
+  - New workspace crates (independent of the iroh stack): `guardian-relational`
+    (PostgreSQL type system, value model, serializable catalog, storage trait,
+    BTree indexes, SQLSTATE errors), `guardian-sql` (sqlparser-based
+    parser/planner/executor for DDL, DML with RETURNING/ON CONFLICT, SELECT with
+    joins/aggregates/subqueries/CTEs/set-ops, expressions, local-atomic
+    transactions, parameter binding, and `information_schema`/`pg_catalog`
+    introspection), and `guardian-pgwire` (wire-protocol server on
+    `127.0.0.1:15432` with simple + extended query, prepared statements and
+    SQLSTATE errors).
+  - `sql` feature of `guardian-db` adds `guardian_db::sql`, a
+    `RelationalStorage` adapter over a replicated GuardianDB document store,
+    preserving the local-first / P2P model (verified on a real iroh node).
+  - `examples/postgres-typeorm` (runnable TypeORM app with migration/seed/
+    queries/transactions), `packages/guardian-typeorm` (`GuardianDataSource`),
+    and `tests/postgres-compat` (node-postgres + TypeORM conformance, 16 tests).
+  - `docs/postgres-compat.md` with consistency/transaction/replication semantics
+    and a compatibility matrix; `crates/guardian-sql/tests/conformance.rs`
+    pins documented gaps (clean-failure and `#[ignore]` tests).
+
+
 - **Optional ODM layer (`odm` feature)** for TypeORM/Mongoose-style document modeling on top of `DocumentStore`, without replacing GuardianDB's decentralized Iroh Docs/Willow storage model.
   - Added `guardian-db-derive` with `#[derive(Model)]`, `#[primary_key]`, `#[unique]`, `#[index]`, `#[model(collection = "...")]`, `#[model(timestamps)]`, flexible schemas, and schema version metadata.
   - Added typed and dynamic collection APIs with `insert_one`, batch `insert`, `find_one`, `find`, `find_by_id`, and first-match `update`.

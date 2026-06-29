@@ -287,6 +287,41 @@ The implemented guarantees are intentionally local to a collection instance. Gua
 
 See [`docs/odm.md`](docs/odm.md) for the full design notes and caveats.
 
+## PostgreSQL Compatibility (TypeORM, psql, node-postgres)
+
+GuardianDB ships a **PostgreSQL-compatible relational layer** on top of its
+document model. Standard PostgreSQL clients — `psql`, node-postgres, **TypeORM**
+(`type: "postgres"`), DBeaver — connect over the PostgreSQL wire protocol and
+run ordinary SQL (DDL, DML, joins, aggregates, transactions, migrations), with
+no GuardianDB-specific client code.
+
+```bash
+cargo run -p guardian-pgwire        # PostgreSQL gateway on 127.0.0.1:15432
+psql 'postgres://guardian:guardian@127.0.0.1:15432/app'
+```
+
+```ts
+import { DataSource } from "typeorm";
+const ds = new DataSource({
+  type: "postgres", host: "127.0.0.1", port: 15432,
+  username: "guardian", password: "guardian", database: "app",
+  synchronize: true, entities: [User, Post, Org],
+});
+await ds.initialize();   // schema sync, migrations, repositories, QueryBuilder, transactions
+```
+
+Three new crates implement this (independent of the iroh stack, so they compile
+and test fast): `guardian-relational` (types, catalog, storage trait),
+`guardian-sql` (parser/planner/executor, `information_schema`/`pg_catalog`), and
+`guardian-pgwire` (wire-protocol server). The `sql` feature of this crate maps
+the relational storage onto a replicated GuardianDB document store, preserving
+the local-first / P2P model.
+
+- Full guide & compatibility matrix: [`docs/postgres-compat.md`](docs/postgres-compat.md)
+- Example TypeORM app: [`examples/postgres-typeorm`](examples/postgres-typeorm)
+- Native driver: [`packages/guardian-typeorm`](packages/guardian-typeorm)
+- Conformance tests: [`tests/postgres-compat`](tests/postgres-compat)
+
 ## Store Types
 
 <details>

@@ -29,10 +29,6 @@ impl RowSchema {
         self.fields.len()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.fields.is_empty()
-    }
-
     /// Resolve a (possibly table-qualified) column reference to its index.
     pub fn resolve(&self, table: Option<&str>, column: &str) -> Result<usize> {
         let mut found: Option<usize> = None;
