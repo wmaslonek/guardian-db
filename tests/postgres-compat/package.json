@@ -1,0 +1,23 @@
+{
+  "name": "guardiandb-postgres-compat-tests",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PostgreSQL wire-protocol and TypeORM conformance tests for GuardianDB",
+  "type": "commonjs",
+  "scripts": {
+    "test": "node --import tsx --test node-postgres.test.ts typeorm.test.ts",
+    "test:pg": "node --import tsx --test node-postgres.test.ts",
+    "test:typeorm": "node --import tsx --test typeorm.test.ts"
+  },
+  "dependencies": {
+    "pg": "^8.11.0",
+    "reflect-metadata": "^0.2.2",
+    "typeorm": "^0.3.20"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/pg": "^8.11.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0"
+  }
+}

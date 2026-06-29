@@ -170,12 +170,9 @@ impl Exec {
         let distinct = matches!(select.distinct, Some(Distinct::Distinct));
 
         if !group_exprs.is_empty() || has_aggregate {
-            let mut rowset = self.exec_grouped(select, &filtered, &group_exprs, outer)?;
+            let mut rowset = self.exec_grouped(select, &filtered, &group_exprs, outer, order_by)?;
             if distinct {
                 rowset.rows = dedupe(std::mem::take(&mut rowset.rows));
-            }
-            if let Some(ob) = order_by {
-                self.apply_order_by(&mut rowset, ob, outer)?;
             }
             Ok(rowset)
         } else {
@@ -743,6 +740,7 @@ impl Exec {
         input: &RowSet,
         group_exprs: &[Expr],
         outer: &[Frame],
+        order_by: Option<&OrderBy>,
     ) -> Result<RowSet> {
         // Partition input rows into groups keyed by the group expressions.
         let mut groups: Vec<(Vec<String>, Vec<usize>)> = Vec::new();
@@ -777,7 +775,12 @@ impl Exec {
                 .collect(),
         );
 
-        let mut out_rows = Vec::new();
+        let order_exprs: &[sqlparser::ast::OrderByExpr] = match order_by.map(|o| &o.kind) {
+            Some(OrderByKind::Expressions(e)) => e,
+            _ => &[],
+        };
+        // (order keys, output tuple) per surviving group, for sorting.
+        let mut out_rows: Vec<(Vec<SqlValue>, Tuple)> = Vec::new();
         for (_key, members) in &groups {
             let group_rows: Vec<&Tuple> = members.iter().map(|&i| &input.rows[i]).collect();
             // Compute each aggregate over the group.
@@ -816,9 +819,55 @@ impl Exec {
                     }
                 }
             }
-            out_rows.push(tuple);
+            // ORDER BY keys: positional / output alias / expression over the
+            // group representative (aggregates and group columns resolvable).
+            let mut keys = Vec::with_capacity(order_exprs.len());
+            for ob in order_exprs {
+                let key = if let Expr::Value(v) = &ob.expr {
+                    match &v.value {
+                        sqlparser::ast::Value::Number(n, _) => n
+                            .parse::<usize>()
+                            .ok()
+                            .and_then(|p| tuple.get(p.wrapping_sub(1)).cloned())
+                            .map(Ok)
+                            .unwrap_or_else(|| self.eval_agg(&ob.expr, &frames, &aggs)),
+                        _ => self.eval_agg(&ob.expr, &frames, &aggs),
+                    }
+                } else if let Expr::Identifier(ident) = &ob.expr {
+                    match out_schema.fields.iter().position(|f| f.name == ident_name(ident)) {
+                        Some(i) => Ok(tuple[i].clone()),
+                        None => self.eval_agg(&ob.expr, &frames, &aggs),
+                    }
+                } else {
+                    self.eval_agg(&ob.expr, &frames, &aggs)
+                }?;
+                keys.push(key);
+            }
+            out_rows.push((keys, tuple));
         }
-        Ok(RowSet { schema: out_schema, rows: out_rows })
+
+        if !order_exprs.is_empty() {
+            let directions: Vec<(bool, bool)> = order_exprs
+                .iter()
+                .map(|o| {
+                    let asc = o.options.asc.unwrap_or(true);
+                    (asc, o.options.nulls_first.unwrap_or(!asc))
+                })
+                .collect();
+            out_rows.sort_by(|a, b| {
+                for (i, (asc, nf)) in directions.iter().enumerate() {
+                    let ord = compare_sort(&a.0[i], &b.0[i], *asc, *nf);
+                    if ord != Ordering::Equal {
+                        return ord;
+                    }
+                }
+                Ordering::Equal
+            });
+        }
+        Ok(RowSet {
+            schema: out_schema,
+            rows: out_rows.into_iter().map(|(_, t)| t).collect(),
+        })
     }
 
     fn projection_columns_grouped(&self, select: &Select, input: &RowSchema) -> Result<Vec<OutCol>> {

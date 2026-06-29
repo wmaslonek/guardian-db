@@ -1,0 +1,22 @@
+{
+  "name": "guardiandb-postgres-typeorm-example",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TypeORM application running against GuardianDB via the PostgreSQL gateway",
+  "type": "commonjs",
+  "scripts": {
+    "demo": "node --import tsx src/demo.ts",
+    "migration:run": "typeorm-ts-node-commonjs migration:run -d src/data-source.ts",
+    "migration:revert": "typeorm-ts-node-commonjs migration:revert -d src/data-source.ts"
+  },
+  "dependencies": {
+    "pg": "^8.11.0",
+    "reflect-metadata": "^0.2.2",
+    "typeorm": "^0.3.20"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0"
+  }
+}

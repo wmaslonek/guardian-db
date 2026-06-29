@@ -24,6 +24,12 @@ async fn main() -> std::io::Result<()> {
     let mut addr = DEFAULT_ADDR.to_string();
     let mut database = "app".to_string();
     let mut username = "guardian".to_string();
+    // Reserved for the GuardianDB-backed gateway (see the `sql` feature in the
+    // guardian-db crate). Accepted here so embedders can pass them uniformly;
+    // the in-memory gateway ignores them.
+    let mut data_path: Option<String> = None;
+    let mut consistency = "local".to_string();
+    let mut peers: Vec<String> = Vec::new();
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -31,6 +37,13 @@ async fn main() -> std::io::Result<()> {
             "--addr" | "-a" => addr = args.next().unwrap_or(addr),
             "--database" | "-d" => database = args.next().unwrap_or(database),
             "--username" | "-u" => username = args.next().unwrap_or(username),
+            "--path" | "-p" => data_path = args.next(),
+            "--consistency" | "-c" => consistency = args.next().unwrap_or(consistency),
+            "--peer" => {
+                if let Some(p) = args.next() {
+                    peers.push(p);
+                }
+            }
             "--help" | "-h" => {
                 println!(
                     "guardian-pgwire — PostgreSQL gateway for GuardianDB\n\n\
@@ -47,6 +60,12 @@ async fn main() -> std::io::Result<()> {
 
     tracing::info!("GuardianDB PostgreSQL gateway listening on {addr} (database \"{database}\")");
     tracing::info!("connect: psql 'postgres://{username}:***@{addr}/{database}'");
+    if data_path.is_some() || consistency != "local" || !peers.is_empty() {
+        tracing::info!(
+            "note: this in-memory gateway ignores --path/--consistency/--peer; \
+             use the GuardianDB-backed gateway (guardian-db `sql` feature) for persistence/replication"
+        );
+    }
 
     serve(&addr, db, username).await
 }

@@ -188,7 +188,21 @@ impl<S: RelationalStorage> Session<S> {
     /// Handle utility statements (SET/SHOW/RESET/...) by inspecting the text.
     fn dispatch_fallback(&self, stmt: &Statement) -> Result<ExecResult> {
         let text = stmt.to_string();
-        let first = text.split_whitespace().next().unwrap_or("").to_ascii_uppercase();
+        let mut words = text.split_whitespace();
+        let first = words.next().unwrap_or("").to_ascii_uppercase();
+        let second = words.next().unwrap_or("").to_ascii_uppercase();
+        // Extension / sequence management is a no-op (sequences are managed
+        // implicitly by serial columns; no extensions are required).
+        if matches!(
+            (first.as_str(), second.as_str()),
+            ("CREATE", "EXTENSION")
+                | ("DROP", "EXTENSION")
+                | ("CREATE", "SEQUENCE")
+                | ("ALTER", "SEQUENCE")
+                | ("DROP", "SEQUENCE")
+        ) {
+            return Ok(ExecResult::empty_command(format!("{first} {second}")));
+        }
         match first.as_str() {
             "SET" | "RESET" | "DISCARD" | "DEALLOCATE" | "LISTEN" | "UNLISTEN" | "CHECKPOINT"
             | "CLOSE" | "ANALYZE" | "VACUUM" | "COMMENT" | "GRANT" | "REVOKE" => {
