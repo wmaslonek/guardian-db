@@ -15,6 +15,8 @@ pub mod message_marshaler;
 pub mod odm;
 pub mod p2p;
 pub mod reactive_synchronizer;
+#[cfg(feature = "sql")]
+pub mod sql;
 pub mod stores;
 pub mod traits;
 

@@ -1772,6 +1772,8 @@ dependencies = [
  "futures",
  "futures-lite",
  "guardian-db-derive",
+ "guardian-relational",
+ "guardian-sql",
  "hex",
  "iroh",
  "iroh-blobs",
