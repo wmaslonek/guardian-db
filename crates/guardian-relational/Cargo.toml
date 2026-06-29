@@ -1,0 +1,20 @@
+[package]
+name = "guardian-relational"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Relational catalog, type system, value model, and storage abstraction for GuardianDB's PostgreSQL compatibility layer"
+repository = "https://github.com/wmaslonek/guardian-db/"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.18", features = ["serde", "v4"] }
+rust_decimal = { version = "1.37", features = ["serde"] }
+thiserror = "2.0"
+async-trait = "0.1"
+base64 = "0.22"
+
+[dev-dependencies]
+tokio = { version = "1.47", features = ["macros", "rt-multi-thread", "sync"] }

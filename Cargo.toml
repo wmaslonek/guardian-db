@@ -76,5 +76,10 @@ harness = false
 required-features = ["odm"]
 
 [workspace]
-members = ["guardian-db-derive"]
+members = [
+    "guardian-db-derive",
+    "crates/guardian-relational",
+    "crates/guardian-sql",
+    "crates/guardian-pgwire",
+]
 resolver = "2"

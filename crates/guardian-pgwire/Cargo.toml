@@ -1,0 +1,31 @@
+[package]
+name = "guardian-pgwire"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "PostgreSQL wire-protocol server for GuardianDB"
+repository = "https://github.com/wmaslonek/guardian-db/"
+default-run = "guardian-pgwire"
+
+[dependencies]
+guardian-sql = { version = "0.1.0", path = "../guardian-sql" }
+guardian-relational = { version = "0.1.0", path = "../guardian-relational" }
+pgwire = "0.40"
+tokio = { version = "1.47", features = ["full"] }
+futures = "0.3"
+async-trait = "0.1"
+bytes = "1"
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde_json = "1.0"
+chrono = { version = "0.4" }
+rust_decimal = "1.37"
+uuid = { version = "1.18", features = ["v4"] }
+
+[dev-dependencies]
+tokio-postgres = "0.7"
+
+[[bin]]
+name = "guardian-pgwire"
+path = "src/main.rs"
