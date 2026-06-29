@@ -155,6 +155,11 @@ impl Exec {
         outer: &[Frame],
         order_by: Option<&OrderBy>,
     ) -> Result<RowSet> {
+        if select_has_window(select) {
+            return Err(SqlError::FeatureNotSupported(
+                "window functions (OVER) are not supported".into(),
+            ));
+        }
         // Planner: prefer an index scan when a single base table is filtered by
         // an equality on an indexed column; otherwise fall back to a full scan.
         let from = match self.try_index_scan(select, outer)? {
@@ -1351,6 +1356,27 @@ fn relabel(mut rs: RowSet, alias: &str, table_alias: &Option<sqlparser::ast::Tab
 // ---------------------------------------------------------------------------
 // Aggregate helpers
 // ---------------------------------------------------------------------------
+
+fn select_has_window(select: &Select) -> bool {
+    select.projection.iter().any(|it| {
+        matches!(it,
+            SelectItem::UnnamedExpr(e)
+            | SelectItem::ExprWithAlias { expr: e, .. }
+            | SelectItem::ExprWithAliases { expr: e, .. } if expr_has_window(e))
+    })
+}
+
+fn expr_has_window(expr: &Expr) -> bool {
+    let mut found = false;
+    walk_expr(expr, &mut |e| {
+        if let Expr::Function(f) = e {
+            if f.over.is_some() {
+                found = true;
+            }
+        }
+    });
+    found
+}
 
 fn select_has_aggregate(select: &Select) -> bool {
     let mut found = false;

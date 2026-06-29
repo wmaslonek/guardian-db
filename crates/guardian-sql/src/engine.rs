@@ -205,9 +205,8 @@ impl<S: RelationalStorage> Session<S> {
         }
         match first.as_str() {
             "SET" | "RESET" | "DISCARD" | "DEALLOCATE" | "LISTEN" | "UNLISTEN" | "CHECKPOINT"
-            | "CLOSE" | "ANALYZE" | "VACUUM" | "COMMENT" | "GRANT" | "REVOKE" => {
-                Ok(ExecResult::empty_command(first))
-            }
+            | "CLOSE" | "ANALYZE" | "VACUUM" | "COMMENT" | "GRANT" | "REVOKE" | "SAVEPOINT"
+            | "RELEASE" | "PREPARE" | "EXECUTE" => Ok(ExecResult::empty_command(first)),
             "SHOW" => {
                 let var = text.split_whitespace().nth(1).unwrap_or("").trim_end_matches(';').to_string();
                 let value = show_value(&var);

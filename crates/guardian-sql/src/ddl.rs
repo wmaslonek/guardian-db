@@ -306,6 +306,11 @@ impl Exec {
     }
 
     pub fn exec_create_view(&mut self, cv: &sqlparser::ast::CreateView) -> Result<ExecResult> {
+        if cv.materialized {
+            return Err(SqlError::FeatureNotSupported(
+                "materialized views are not supported".into(),
+            ));
+        }
         let (schema, name) = split_schema_table(&cv.name);
         let schema = self.catalog.creation_schema(schema.as_deref())?;
         let q = QualifiedName::new(schema.clone(), name.clone());
