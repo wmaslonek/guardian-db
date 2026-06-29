@@ -201,7 +201,7 @@ impl SqlType {
 
     /// Parse a PostgreSQL type name (case-insensitive) into a [`SqlType`].
     pub fn parse(name: &str) -> Result<SqlType> {
-        let lower = name.trim().to_ascii_lowercase();
+        let lower = name.trim().replace('"', "").to_ascii_lowercase();
         // Strip an array suffix `[]` (one level supported explicitly, more collapse).
         if let Some(base) = lower.strip_suffix("[]") {
             return Ok(SqlType::Array(Box::new(SqlType::parse(base)?)));
@@ -249,6 +249,12 @@ impl SqlType {
             "timestamptz" | "timestamp with time zone" => SqlType::Timestamptz,
             "json" => SqlType::Json,
             "jsonb" => SqlType::Jsonb,
+            // PostgreSQL OID-alias and internal types: surfaced so casts/columns
+            // referencing them resolve. `regclass` is handled specially by the
+            // engine (name -> OID); the rest map to their natural storage type.
+            "oid" | "regclass" | "regtype" | "regproc" | "regrole" | "regnamespace" | "xid"
+            | "cid" => SqlType::Integer,
+            "name" => SqlType::Text,
             other => return Err(RelError::UndefinedType(other.to_string())),
         };
         Ok(ty)

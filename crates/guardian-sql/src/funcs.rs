@@ -141,8 +141,9 @@ pub fn call_scalar(exec: &Exec, name: &str, args: Vec<SqlValue>) -> Result<SqlVa
         "pg_get_userbyid" => Text(exec.username.clone()),
         "pg_encoding_to_char" => Text("UTF8".into()),
         "pg_get_expr" | "pg_get_constraintdef" | "pg_get_indexdef" | "pg_get_viewdef"
-        | "pg_get_functiondef" | "obj_description" | "col_description"
-        | "shobj_description" => args.into_iter().next().unwrap_or(Null).cast(&SqlType::Text).unwrap_or(Null),
+        | "pg_get_functiondef" => args.into_iter().next().unwrap_or(Null).cast(&SqlType::Text).unwrap_or(Null),
+        // Comments are not stored; return NULL like a fresh database.
+        "obj_description" | "col_description" | "shobj_description" => Null,
         "format_type" => format_type(&args),
         "array_length" => match args.first() {
             Some(SqlValue::Array(a)) => Int4(a.len() as i32),

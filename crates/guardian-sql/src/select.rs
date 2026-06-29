@@ -266,6 +266,30 @@ impl Exec {
 
     fn exec_table_factor(&self, tf: &TableFactor, outer: &[Frame]) -> Result<RowSet> {
         match tf {
+            // A table function call such as `FROM current_schema()`.
+            TableFactor::Table { name, alias, args: Some(args), .. } => {
+                let arg_exprs: Vec<&Expr> = args
+                    .args
+                    .iter()
+                    .filter_map(|a| match a {
+                        FunctionArg::Unnamed(FunctionArgExpr::Expr(e))
+                        | FunctionArg::Named { arg: FunctionArgExpr::Expr(e), .. } => Some(e),
+                        _ => None,
+                    })
+                    .collect();
+                self.exec_table_function(name, &arg_exprs, alias, outer)
+            }
+            TableFactor::Function { name, args, alias, .. } => {
+                let arg_exprs: Vec<&Expr> = args
+                    .iter()
+                    .filter_map(|a| match a {
+                        FunctionArg::Unnamed(FunctionArgExpr::Expr(e))
+                        | FunctionArg::Named { arg: FunctionArgExpr::Expr(e), .. } => Some(e),
+                        _ => None,
+                    })
+                    .collect();
+                self.exec_table_function(name, &arg_exprs, alias, outer)
+            }
             TableFactor::Table { name, alias, .. } => {
                 let parts = object_name_parts(name);
                 let bare = parts.last().cloned().unwrap_or_default();
@@ -315,6 +339,44 @@ impl Exec {
                 "table factor not supported: {other}"
             ))),
         }
+    }
+
+    /// Execute a scalar table function in FROM position (e.g. `current_schema()`,
+    /// `version()`), producing a one-row, one-column result named after it.
+    /// Set-returning functions are not supported.
+    fn exec_table_function(
+        &self,
+        name: &sqlparser::ast::ObjectName,
+        args: &[&Expr],
+        alias: &Option<sqlparser::ast::TableAlias>,
+        outer: &[Frame],
+    ) -> Result<RowSet> {
+        let fname = name
+            .0
+            .last()
+            .and_then(|p| p.as_ident())
+            .map(ident_name)
+            .unwrap_or_default();
+        if matches!(fname.as_str(), "generate_series" | "unnest" | "jsonb_array_elements" | "json_array_elements") {
+            return Err(SqlError::FeatureNotSupported(format!(
+                "set-returning function {fname} is not supported"
+            )));
+        }
+        let mut values = Vec::with_capacity(args.len());
+        for e in args {
+            values.push(self.eval(e, outer)?);
+        }
+        let value = funcs::call_scalar(self, &fname, values)?;
+        let alias_name = alias
+            .as_ref()
+            .map(|a| ident_name(&a.name))
+            .unwrap_or_else(|| fname.clone());
+        let col_name = alias
+            .as_ref()
+            .and_then(|a| a.columns.first().map(|c| ident_name(&c.name)))
+            .unwrap_or(fname);
+        let field = FieldRef { table: Some(alias_name), name: col_name, ty: value.type_of() };
+        Ok(RowSet { schema: RowSchema::new(vec![field]), rows: vec![vec![value]] })
     }
 
     fn exec_view(
@@ -482,13 +544,25 @@ impl Exec {
                 .collect(),
         );
         // Project each row, retaining the input row so ORDER BY can reference
-        // input columns (which need not appear in the select list).
+        // input columns (which need not appear in the select list). A projection
+        // containing a set-returning `UNNEST(...)` expands each input row into one
+        // output row per array element (parallel UNNESTs expand in lockstep).
+        let has_unnest = select
+            .projection
+            .iter()
+            .any(|it| matches!(it, SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } | SelectItem::ExprWithAliases { expr: e, .. } if is_unnest(e)));
         let mut paired: Vec<(Tuple, Tuple)> = Vec::with_capacity(input.rows.len());
         for row in &input.rows {
             let mut frames: Vec<Frame> = outer.iter().map(|f| Frame { schema: f.schema, row: f.row }).collect();
             frames.push(Frame { schema: &input.schema, row });
-            let out = self.project_row(select, &input.schema, &frames)?;
-            paired.push((row.clone(), out));
+            if has_unnest {
+                for out in self.project_row_unnest(select, &frames)? {
+                    paired.push((row.clone(), out));
+                }
+            } else {
+                let out = self.project_row(select, &input.schema, &frames)?;
+                paired.push((row.clone(), out));
+            }
         }
 
         if let Some(OrderBy { kind: OrderByKind::Expressions(exprs), .. }) = order_by {
@@ -524,6 +598,51 @@ impl Exec {
             out_rows = dedupe(out_rows);
         }
         Ok(RowSet { schema: out_schema, rows: out_rows })
+    }
+
+    /// Expand a projection containing `UNNEST(...)` into multiple output rows.
+    fn project_row_unnest(&self, select: &Select, frames: &[Frame]) -> Result<Vec<Tuple>> {
+        enum Col {
+            Array(Vec<SqlValue>),
+            Scalar(SqlValue),
+        }
+        let mut cols = Vec::new();
+        let mut max_len = 0usize;
+        for item in &select.projection {
+            let expr = match item {
+                SelectItem::UnnamedExpr(e)
+                | SelectItem::ExprWithAlias { expr: e, .. }
+                | SelectItem::ExprWithAliases { expr: e, .. } => e,
+                _ => {
+                    return Err(SqlError::FeatureNotSupported(
+                        "wildcard with UNNEST is not supported".into(),
+                    ))
+                }
+            };
+            if let Some(arg) = unnest_arg(expr) {
+                let values = match self.eval(arg, frames)? {
+                    SqlValue::Array(items) => items,
+                    SqlValue::Null => Vec::new(),
+                    single => vec![single],
+                };
+                max_len = max_len.max(values.len());
+                cols.push(Col::Array(values));
+            } else {
+                cols.push(Col::Scalar(self.eval(expr, frames)?));
+            }
+        }
+        let mut rows = Vec::with_capacity(max_len);
+        for i in 0..max_len {
+            let tuple = cols
+                .iter()
+                .map(|c| match c {
+                    Col::Array(a) => a.get(i).cloned().unwrap_or(SqlValue::Null),
+                    Col::Scalar(s) => s.clone(),
+                })
+                .collect();
+            rows.push(tuple);
+        }
+        Ok(rows)
     }
 
     /// Resolve an ORDER BY key against output aliases/positions, falling back to
@@ -1088,6 +1207,25 @@ fn find_indexed_equality<'a>(
         Expr::Nested(e) => find_indexed_equality(e, loaded),
         _ => None,
     }
+}
+
+/// If `expr` is a top-level `UNNEST(arg)` call, return its single argument.
+fn unnest_arg(expr: &Expr) -> Option<&Expr> {
+    if let Expr::Function(f) = expr {
+        let name = f.name.0.last().and_then(|p| p.as_ident()).map(ident_name).unwrap_or_default();
+        if name == "unnest" {
+            if let FunctionArguments::List(list) = &f.args {
+                if let Some(FunctionArg::Unnamed(FunctionArgExpr::Expr(e))) = list.args.first() {
+                    return Some(e);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn is_unnest(expr: &Expr) -> bool {
+    unnest_arg(expr).is_some()
 }
 
 fn column_name(e: &Expr) -> Option<String> {

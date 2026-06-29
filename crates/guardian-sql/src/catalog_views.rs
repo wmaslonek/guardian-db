@@ -544,28 +544,38 @@ fn pg_index(catalog: &Catalog) -> RowSet {
         ("indisprimary", SqlType::Boolean),
         ("indisclustered", SqlType::Boolean),
         ("indisvalid", SqlType::Boolean),
-        ("indkey", SqlType::Text),
+        ("indisready", SqlType::Boolean),
+        // indkey is PostgreSQL's int2vector; we expose it as a smallint[] so that
+        // `attnum = ANY(indkey)` works in introspection queries.
+        ("indkey", SqlType::Array(Box::new(SqlType::SmallInt))),
+        ("indpred", SqlType::Text),
+        ("indexprs", SqlType::Text),
+        ("indoption", SqlType::Array(Box::new(SqlType::SmallInt))),
+        ("indcollation", SqlType::Array(Box::new(SqlType::Integer))),
+        ("indclass", SqlType::Array(Box::new(SqlType::Integer))),
     ];
     let mut rows = Vec::new();
     for idx in catalog.indexes() {
-        let table_oid = catalog
-            .resolve_table_name(Some(&idx.schema), &idx.table)
-            .and_then(|q| catalog.get_table(&q).map(|t| t.oid))
-            .unwrap_or(0);
         let table = catalog
             .resolve_table_name(Some(&idx.schema), &idx.table)
             .and_then(|q| catalog.get_table(&q).cloned());
-        let indkey: Vec<String> = idx
-            .columns
-            .iter()
-            .map(|c| {
-                table
-                    .as_ref()
-                    .and_then(|t| t.column_index(c))
-                    .map(|i| (i + 1).to_string())
-                    .unwrap_or_else(|| "0".into())
-            })
-            .collect();
+        let table_oid = table.as_ref().map(|t| t.oid).unwrap_or(0);
+        let indkey = SqlValue::Array(
+            idx.columns
+                .iter()
+                .map(|c| {
+                    SqlValue::Int2(
+                        table
+                            .as_ref()
+                            .and_then(|t| t.column_index(c))
+                            .map(|i| i as i16 + 1)
+                            .unwrap_or(0),
+                    )
+                })
+                .collect(),
+        );
+        let zeros =
+            SqlValue::Array(idx.columns.iter().map(|_| SqlValue::Int2(0)).collect());
         rows.push(vec![
             i4(idx.oid as i32),
             i4(table_oid as i32),
@@ -575,7 +585,13 @@ fn pg_index(catalog: &Catalog) -> RowSet {
             b(idx.primary),
             b(false),
             b(true),
-            t(&indkey.join(" ")),
+            b(true),
+            indkey,
+            null(),
+            null(),
+            zeros.clone(),
+            SqlValue::Array(idx.columns.iter().map(|_| i4(0)).collect()),
+            SqlValue::Array(idx.columns.iter().map(|_| i4(0)).collect()),
         ]);
     }
     rs(cols, rows)
@@ -618,11 +634,25 @@ fn pg_constraint(catalog: &Catalog) -> RowSet {
             oid += 1;
         }
         for fk in &table.foreign_keys {
-            let frelid = catalog
+            let ref_table = catalog
                 .resolve_table_name(Some(&fk.ref_schema), &fk.ref_table)
-                .and_then(|q| catalog.get_table(&q).map(|t| t.oid))
-                .unwrap_or(0);
-            rows.push(vec![i4(oid), t(&fk.name), i4(nsoid), t("f"), b(false), b(false), b(true), i4(table.oid as i32), i4(frelid as i32), colnums(&fk.columns), SqlValue::Array(vec![]), t(action_char(fk.on_update)), t(action_char(fk.on_delete))]);
+                .and_then(|q| catalog.get_table(&q).cloned());
+            let frelid = ref_table.as_ref().map(|t| t.oid).unwrap_or(0);
+            let confkey = SqlValue::Array(
+                fk.ref_columns
+                    .iter()
+                    .map(|c| {
+                        SqlValue::Int2(
+                            ref_table
+                                .as_ref()
+                                .and_then(|t| t.column_index(c))
+                                .map(|i| i as i16 + 1)
+                                .unwrap_or(0),
+                        )
+                    })
+                    .collect(),
+            );
+            rows.push(vec![i4(oid), t(&fk.name), i4(nsoid), t("f"), b(false), b(false), b(true), i4(table.oid as i32), i4(frelid as i32), colnums(&fk.columns), confkey, t(action_char(fk.on_update)), t(action_char(fk.on_delete))]);
             oid += 1;
         }
         for c in &table.checks {

@@ -103,8 +103,22 @@ impl Exec {
             }
             Expr::Cast { expr, data_type, .. } => {
                 let v = self.eval_inner(expr, frames, aggs)?;
-                let ty = parse_data_type(data_type)?;
-                v.cast(&ty)
+                // PostgreSQL OID-alias types (`regclass`, `regtype`, ...) require
+                // catalog resolution rather than a plain value cast. The type name
+                // may be quoted (e.g. `::"regtype"`), so normalise it.
+                let type_name = data_type
+                    .to_string()
+                    .to_ascii_lowercase()
+                    .replace('"', "");
+                match type_name.as_str() {
+                    "regclass" => self.cast_to_regclass(v),
+                    "regtype" | "regproc" | "regnamespace" | "regrole" | "name" => v.cast(&SqlType::Text),
+                    "oid" => v.cast(&SqlType::Integer),
+                    _ => {
+                        let ty = parse_data_type(data_type)?;
+                        v.cast(&ty)
+                    }
+                }
             }
             Expr::Exists { subquery, negated } => {
                 let rows = self.exec_subquery(subquery, frames)?;
@@ -122,6 +136,12 @@ impl Exec {
                     ));
                 }
                 Ok(rows.rows[0].first().cloned().unwrap_or(SqlValue::Null))
+            }
+            Expr::AnyOp { left, compare_op, right, .. } => {
+                self.eval_any_all(left, compare_op, right, true, frames, aggs)
+            }
+            Expr::AllOp { left, compare_op, right } => {
+                self.eval_any_all(left, compare_op, right, false, frames, aggs)
             }
             Expr::Function(func) => self.eval_function(func, frames, aggs),
             Expr::Tuple(items) => {
@@ -176,6 +196,41 @@ impl Exec {
             other => Err(SqlError::FeatureNotSupported(format!(
                 "expression not supported: {other}"
             ))),
+        }
+    }
+
+    /// Resolve `'relation'::regclass` to the relation's OID using the catalog.
+    fn cast_to_regclass(&self, v: SqlValue) -> Result<SqlValue> {
+        match v {
+            SqlValue::Null => Ok(SqlValue::Null),
+            SqlValue::Int2(_) | SqlValue::Int4(_) | SqlValue::Int8(_) => Ok(v),
+            SqlValue::Text(s) => {
+                let cleaned = s.replace('"', "");
+                let parts: Vec<&str> = cleaned.split('.').collect();
+                let (schema, table) = match parts.as_slice() {
+                    [t] => (None, *t),
+                    [s, t] => (Some(*s), *t),
+                    _ => (
+                        Some(parts[parts.len() - 2]),
+                        *parts.last().unwrap_or(&cleaned.as_str()),
+                    ),
+                };
+                if let Some(q) = self.catalog.resolve_table_name(schema, table) {
+                    if let Some(t) = self.catalog.get_table(&q) {
+                        return Ok(SqlValue::Int4(t.oid as i32));
+                    }
+                    if let Some(view) = self.catalog.get_view(&q) {
+                        return Ok(SqlValue::Int4(view.oid as i32));
+                    }
+                }
+                for idx in self.catalog.indexes() {
+                    if idx.name == table {
+                        return Ok(SqlValue::Int4(idx.oid as i32));
+                    }
+                }
+                Ok(SqlValue::Null)
+            }
+            other => Ok(other),
         }
     }
 
@@ -445,6 +500,53 @@ impl Exec {
         match else_result {
             Some(e) => self.eval_inner(e, frames, aggs),
             None => Ok(SqlValue::Null),
+        }
+    }
+
+    /// Evaluate `left <op> ANY(right)` / `left <op> ALL(right)` where `right`
+    /// yields an array (or a subquery's first column).
+    fn eval_any_all(
+        &self,
+        left: &Expr,
+        op: &BinaryOperator,
+        right: &Expr,
+        is_any: bool,
+        frames: &[Frame],
+        aggs: Option<&HashMap<String, SqlValue>>,
+    ) -> Result<SqlValue> {
+        let l = self.eval_inner(left, frames, aggs)?;
+        if l.is_null() {
+            return Ok(SqlValue::Null);
+        }
+        let elements: Vec<SqlValue> = match right {
+            Expr::Subquery(q) => self
+                .exec_subquery(q, frames)?
+                .rows
+                .into_iter()
+                .map(|r| r.into_iter().next().unwrap_or(SqlValue::Null))
+                .collect(),
+            other => match self.eval_inner(other, frames, aggs)? {
+                SqlValue::Array(items) => items,
+                SqlValue::Null => return Ok(SqlValue::Null),
+                single => vec![single],
+            },
+        };
+        let mut saw_null = false;
+        for e in &elements {
+            if e.is_null() {
+                saw_null = true;
+                continue;
+            }
+            match compare_op(&l, op, e).truthy() {
+                Some(true) if is_any => return Ok(SqlValue::Bool(true)),
+                Some(false) if !is_any => return Ok(SqlValue::Bool(false)),
+                _ => {}
+            }
+        }
+        if saw_null {
+            Ok(SqlValue::Null)
+        } else {
+            Ok(SqlValue::Bool(!is_any))
         }
     }
 
