@@ -2,13 +2,13 @@ use crate::guardian::error::GuardianError;
 use crate::guardian::serializer;
 use crate::traits::{MessageExchangeHeads, MessageMarshaler};
 
-/// Marshaler usando Postcard (binário, determinístico, performático)
+/// Marshaler using Postcard (binary, deterministic, performant).
 ///
-/// **Características:**
-/// - 70-85% menor que JSON
-/// - ~6x mais rápido que JSON
-/// - Determinístico (BLAKE3 hash consistente)
-/// - Compatível com iroh-blobs
+/// **Characteristics:**
+/// - 70-85% smaller than JSON
+/// - ~6x faster than JSON
+/// - Deterministic (consistent BLAKE3 hash)
+/// - Compatible with iroh-blobs
 /// - Zero-copy deserialization
 pub struct PostcardMarshaler;
 
@@ -75,7 +75,7 @@ mod tests {
         let marshaler = PostcardMarshaler::new();
         let message = create_test_message();
 
-        // Serializa 5 vezes
+        // Serialize 5 times.
         let hashes: Vec<String> = (0..5)
             .map(|_| {
                 let bytes = marshaler.marshal(&message).expect("Marshal failed");
@@ -83,7 +83,7 @@ mod tests {
             })
             .collect();
 
-        // Todos os hashes devem ser idênticos
+        // All hashes must be identical.
         let first = &hashes[0];
         for hash in &hashes[1..] {
             assert_eq!(first, hash, "Determinism broken!");

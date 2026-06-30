@@ -2,21 +2,21 @@ use crate::guardian::error::{GuardianError, Result};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
-/// Serializa um valor para bytes usando postcard (formato binário determinístico)
+/// Serializes a value to bytes using postcard (a deterministic binary format).
 ///
-/// Este módulo encapsula postcard para fornecer:
-/// - Error handling unificado com GuardianError
-/// - Logging/tracing centralizado
-/// - Ponto único para adicionar features (compressão, validação, etc)
-/// - Facilita migração futura se necessário
+/// This module wraps postcard to provide:
+/// - Unified error handling with GuardianError
+/// - Centralized logging/tracing
+/// - A single place to add features (compression, validation, etc.)
+/// - Easier future migration if needed
 ///
-/// # Argumentos
-/// * `value` - Qualquer tipo que implemente `Serialize`
+/// # Arguments
+/// * `value` - Any type that implements `Serialize`
 ///
-/// # Retorna
-/// * `Result<Vec<u8>>` - Bytes serializados ou erro
+/// # Returns
+/// * `Result<Vec<u8>>` - Serialized bytes or an error
 ///
-/// # Exemplo
+/// # Example
 /// ```ignore
 /// use guardian_db::serialization::serialize;
 /// use serde::{Serialize, Deserialize};
@@ -43,16 +43,16 @@ pub fn serialize<T: Serialize>(value: &T) -> Result<Vec<u8>> {
     result
 }
 
-/// Serializa com tamanho máximo (proteção contra estruturas muito grandes)
+/// Serializes with a maximum size (protection against very large structures).
 ///
-/// Útil para prevenir OOM em sistemas com recursos limitados.
+/// Useful for preventing OOM on resource-constrained systems.
 ///
-/// # Argumentos
-/// * `value` - Valor a serializar
-/// * `max_bytes` - Tamanho máximo permitido
+/// # Arguments
+/// * `value` - The value to serialize
+/// * `max_bytes` - The maximum allowed size
 ///
-/// # Retorna
-/// * `Result<Vec<u8>>` - Bytes ou erro se exceder limite
+/// # Returns
+/// * `Result<Vec<u8>>` - Bytes, or an error if the limit is exceeded
 pub fn serialize_with_limit<T: Serialize>(value: &T, max_bytes: usize) -> Result<Vec<u8>> {
     let bytes = serialize(value)?;
 
@@ -72,15 +72,15 @@ pub fn serialize_with_limit<T: Serialize>(value: &T, max_bytes: usize) -> Result
     Ok(bytes)
 }
 
-/// Deserializa bytes para um valor usando postcard
+/// Deserializes bytes into a value using postcard.
 ///
-/// # Argumentos
-/// * `bytes` - Slice de bytes previamente serializado com `serialize()`
+/// # Arguments
+/// * `bytes` - A byte slice previously serialized with `serialize()`
 ///
-/// # Retorna
-/// * `Result<T>` - Valor deserializado ou erro
+/// # Returns
+/// * `Result<T>` - The deserialized value or an error
 ///
-/// # Exemplo
+/// # Example
 /// ```ignore
 /// use guardian_db::serialization::{serialize, deserialize};
 /// use serde::{Serialize, Deserialize};
@@ -117,22 +117,22 @@ pub fn deserialize<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T> {
     result
 }
 
-/// Calcula o hash BLAKE3 dos bytes serializados
+/// Computes the BLAKE3 hash of the serialized bytes.
 ///
-/// Útil para verificação de integridade e geração de identificadores.
+/// Useful for integrity verification and identifier generation.
 ///
-/// # Argumentos
-/// * `value` - Valor a serializar e hashear
+/// # Arguments
+/// * `value` - The value to serialize and hash
 ///
-/// # Retorna
-/// * `Result<[u8; 32]>` - Hash BLAKE3 (32 bytes)
+/// # Returns
+/// * `Result<[u8; 32]>` - The BLAKE3 hash (32 bytes)
 pub fn serialize_and_hash<T: Serialize>(value: &T) -> Result<[u8; 32]> {
     let bytes = serialize(value)?;
     let hash = blake3::hash(&bytes);
     Ok(*hash.as_bytes())
 }
 
-/// Estatísticas de serialização (para debugging/monitoring)
+/// Serialization statistics (for debugging/monitoring).
 #[derive(Debug, Clone)]
 pub struct SerializationStats {
     pub original_size: usize,
@@ -141,6 +141,8 @@ pub struct SerializationStats {
 }
 
 impl SerializationStats {
+    /// Builds stats from the original and serialized sizes, computing the
+    /// compression ratio (serialized / original).
     pub fn new(original_size: usize, serialized_size: usize) -> Self {
         let compression_ratio = if original_size > 0 {
             serialized_size as f64 / original_size as f64
@@ -156,11 +158,11 @@ impl SerializationStats {
     }
 }
 
-/// Serializa e retorna estatísticas (útil para benchmarking)
+/// Serializes and returns statistics (useful for benchmarking).
 pub fn serialize_with_stats<T: Serialize>(value: &T) -> Result<(Vec<u8>, SerializationStats)> {
     let bytes = serialize(value)?;
 
-    // Estimativa do tamanho original (JSON como baseline)
+    // Estimate the original size (JSON as a baseline).
     let json_size = serde_json::to_vec(value).map(|v| v.len()).unwrap_or(0);
 
     let stats = SerializationStats::new(json_size, bytes.len());
@@ -204,11 +206,11 @@ mod tests {
             },
         };
 
-        // Deve passar - limite generoso
+        // Should pass - generous limit.
         let result = serialize_with_limit(&small_data, 1000);
         assert!(result.is_ok());
 
-        // Deve falhar - limite muito baixo
+        // Should fail - limit too low.
         let result = serialize_with_limit(&small_data, 10);
         assert!(result.is_err());
 
@@ -239,7 +241,7 @@ mod tests {
             },
         };
 
-        // Hash deve ser determinístico
+        // Hash must be deterministic.
         let hash1 = serialize_and_hash(&data).expect("Hash failed");
         let hash2 = serialize_and_hash(&data).expect("Hash failed");
 
@@ -312,14 +314,14 @@ mod tests {
             },
         };
 
-        // Serializa 10 vezes e verifica que os bytes são idênticos
+        // Serialize 10 times and check that the bytes are identical.
         let mut all_bytes = Vec::new();
         for _ in 0..10 {
             let bytes = serialize(&data).expect("Serialization failed");
             all_bytes.push(bytes);
         }
 
-        // Verifica que todos os resultados são idênticos
+        // Check that all results are identical.
         let first = &all_bytes[0];
         for bytes in &all_bytes[1..] {
             assert_eq!(first, bytes, "Serialization is not deterministic!");
@@ -339,7 +341,7 @@ mod tests {
             },
         };
 
-        // Serializa 10 vezes e verifica que o hash BLAKE3 é sempre o mesmo
+        // Serialize 10 times and check that the BLAKE3 hash is always the same.
         let hashes: Vec<String> = (0..10)
             .map(|_| {
                 let bytes = serialize(&data).expect("Serialization failed");
@@ -347,7 +349,7 @@ mod tests {
             })
             .collect();
 
-        // Todos os hashes devem ser idênticos
+        // All hashes must be identical.
         let first_hash = &hashes[0];
         for hash in &hashes[1..] {
             assert_eq!(
@@ -416,7 +418,7 @@ mod tests {
         // Postcard
         let postcard_bytes = serialize(&data).expect("Postcard serialization failed");
 
-        // JSON (para comparação)
+        // JSON (for comparison).
         let json_bytes = serde_json::to_vec(&data).expect("JSON serialization failed");
 
         println!("Postcard size: {} bytes", postcard_bytes.len());
@@ -426,7 +428,7 @@ mod tests {
             (1.0 - (postcard_bytes.len() as f64 / json_bytes.len() as f64)) * 100.0
         );
 
-        // Postcard deve ser significativamente menor
+        // Postcard should be significantly smaller.
         assert!(
             postcard_bytes.len() < json_bytes.len(),
             "Postcard should be smaller than JSON"

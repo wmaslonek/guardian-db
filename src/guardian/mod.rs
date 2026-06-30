@@ -22,7 +22,7 @@ pub struct GuardianDB {
 }
 
 impl GuardianDB {
-    /// Cria uma nova instância do GuardianDB
+    /// Creates a new GuardianDB instance.
     pub async fn new(client: IrohClient, options: Option<NewGuardianDBOptions>) -> Result<Self> {
         use crate::log::identity::{DefaultIdentificator, Identificator};
 
@@ -95,7 +95,7 @@ impl GuardianDB {
         }
     }
 
-    /// Cria um EventLogStore
+    /// Creates an EventLogStore.
     pub async fn log(
         &self,
         address: &str,
@@ -105,15 +105,18 @@ impl GuardianDB {
         opts.create = Some(true);
         opts.store_type = Some("eventlog".to_string());
 
-        // Passa o event_bus do GuardianDB para as options
+        // Pass the GuardianDB's event_bus into the options.
         if opts.event_bus.is_none() {
             opts.event_bus = Some((*self.base.event_bus()).clone());
         }
 
-        tracing::debug!(address = address, "GuardianDB::log - Criando EventLogStore");
+        tracing::debug!(
+            address = address,
+            "GuardianDB::log - Creating EventLogStore"
+        );
 
-        // Usa create() diretamente para nomes simples (sem hash válido)
-        // Se já existir, abre o existente usando o endereço completo para preservar o histórico
+        // Use create() directly for simple names (without a valid hash).
+        // If it already exists, open it via the full address to preserve history.
         let store = match self
             .base
             .create(address, "eventlog", Some(opts.clone()))
@@ -121,7 +124,7 @@ impl GuardianDB {
         {
             Ok(store) => store,
             Err(GuardianError::DatabaseAlreadyExists(existing_addr)) => {
-                tracing::debug!(address = address, full_addr = %existing_addr, "EventLogStore já existe, abrindo existente");
+                tracing::debug!(address = address, full_addr = %existing_addr, "EventLogStore already exists, opening existing one");
                 self.base.open(&existing_addr, opts).await?
             }
             Err(e) => return Err(e),
@@ -131,22 +134,22 @@ impl GuardianDB {
             address = address,
             store_type = store.store_type(),
             has_index = store.index().supports_entry_queries(),
-            "EventLogStore criado"
+            "EventLogStore created"
         );
 
-        // Verifica se o store retornado é do tipo correto
+        // Check that the returned store is of the correct type.
         if store.store_type() == "eventlog" {
-            // Cria um wrapper simples que implementa EventLogStore
+            // Create a simple wrapper that implements EventLogStore.
             Ok(Arc::new(EventLogStoreWrapper::new(store)))
         } else {
             Err(GuardianError::Store(format!(
-                "Tipo de store incorreto. Esperado: eventlog, encontrado: {}",
+                "Incorrect store type. Expected: eventlog, found: {}",
                 store.store_type()
             )))
         }
     }
 
-    /// Cria um KeyValueStore
+    /// Creates a KeyValueStore.
     pub async fn key_value(
         &self,
         address: &str,
@@ -156,13 +159,13 @@ impl GuardianDB {
         opts.create = Some(true);
         opts.store_type = Some("keyvalue".to_string());
 
-        // Passa o event_bus do GuardianDB para as options
+        // Pass the GuardianDB's event_bus into the options.
         if opts.event_bus.is_none() {
             opts.event_bus = Some((*self.base.event_bus()).clone());
         }
 
-        // Usa create() diretamente para nomes simples
-        // Se já existir, abre o existente usando o endereço completo para preservar os dados
+        // Use create() directly for simple names.
+        // If it already exists, open it via the full address to preserve the data.
         let store = match self
             .base
             .create(address, "keyvalue", Some(opts.clone()))
@@ -170,24 +173,24 @@ impl GuardianDB {
         {
             Ok(store) => store,
             Err(GuardianError::DatabaseAlreadyExists(existing_addr)) => {
-                tracing::debug!(address = address, full_addr = %existing_addr, "KeyValueStore já existe, abrindo existente");
+                tracing::debug!(address = address, full_addr = %existing_addr, "KeyValueStore already exists, opening existing one");
                 self.base.open(&existing_addr, opts).await?
             }
             Err(e) => return Err(e),
         };
 
-        // Para KeyValueStore, criamos um wrapper genérico
+        // For KeyValueStore, we create a generic wrapper.
         if store.store_type() == "keyvalue" {
             Ok(Arc::new(KeyValueStoreWrapper::new(store)))
         } else {
             Err(GuardianError::Store(format!(
-                "Tipo de store incorreto. Esperado: keyvalue, encontrado: {}",
+                "Incorrect store type. Expected: keyvalue, found: {}",
                 store.store_type()
             )))
         }
     }
 
-    /// Cria um DocumentStore
+    /// Creates a DocumentStore.
     pub async fn docs(
         &self,
         address: &str,
@@ -197,14 +200,14 @@ impl GuardianDB {
         opts.create = Some(true);
         opts.store_type = Some("document".to_string());
 
-        // Passa o event_bus do GuardianDB para as options
+        // Pass the GuardianDB's event_bus into the options.
         if opts.event_bus.is_none() {
             opts.event_bus = Some((*self.base.event_bus()).clone());
         }
 
-        // Usa create() diretamente para nomes simples. Assim como log() e
-        // key_value(), initCollection deve ser idempotente e reabrir uma store
-        // que já exista.
+        // Use create() directly for simple names. Like log() and key_value(),
+        // initCollection should be idempotent and reopen a store that already
+        // exists.
         let open_options = opts.clone();
         let store = match self.base.create(address, "document", Some(opts)).await {
             Ok(store) => store,
@@ -212,22 +215,22 @@ impl GuardianDB {
                 tracing::debug!(
                     address = address,
                     full_addr = %existing_addr,
-                    "DocumentStore já existe, abrindo existente"
+                    "DocumentStore already exists, opening existing one"
                 );
                 self.base.open(&existing_addr, open_options).await?
             }
             Err(error) => return Err(error),
         };
 
-        // Verifica se o store retornado é do tipo correto
+        // Check that the returned store is of the correct type.
         if store.store_type() == "document" {
             #[cfg(feature = "odm")]
             self.collection_names.write().insert(address.to_string());
-            // Cria um wrapper que implementa DocumentStore
+            // Create a wrapper that implements DocumentStore.
             Ok(Arc::new(DocumentStoreWrapper::new(store)))
         } else {
             Err(GuardianError::Store(format!(
-                "Tipo de store incorreto. Esperado: document, encontrado: {}",
+                "Incorrect store type. Expected: document, found: {}",
                 store.store_type()
             )))
         }
@@ -270,12 +273,20 @@ impl GuardianDB {
         self.collection_names.read().iter().cloned().collect()
     }
 
-    /// Acesso direto ao BaseGuardianDB para funcionalidades avançadas
+    /// Direct access to the BaseGuardianDB for advanced functionality.
     pub fn base(&self) -> &BaseGuardianDB {
         &self.base
     }
 
-    /// Método de conveniência para registrar um tipo de access controller com nome explícito
+    /// Returns a list of all currently open/managed stores.
+    /// Each element is a tuple (address, reference to the store).
+    pub fn list_stores(
+        &self,
+    ) -> Vec<(String, Arc<dyn Store<Error = GuardianError> + Send + Sync>)> {
+        self.base.list_stores()
+    }
+
+    /// Convenience method to register an access controller type with an explicit name.
     pub fn register_access_control_type_with_name(
         &self,
         controller_type: &str,
@@ -285,7 +296,7 @@ impl GuardianDB {
             .register_access_control_type_with_name(controller_type, constructor)
     }
 
-    /// Método de conveniência para registrar um access controller com tipo padrão
+    /// Convenience method to register an access controller with the default type.
     pub async fn register_access_control_type(
         &self,
         constructor: crate::traits::AccessControllerConstructor,
@@ -293,7 +304,7 @@ impl GuardianDB {
         self.base.register_access_control_type(constructor).await
     }
 
-    /// Método de conveniência para obter um construtor de access controller
+    /// Convenience method to get an access controller constructor.
     pub fn get_access_control_type(
         &self,
         controller_type: &str,
@@ -301,36 +312,36 @@ impl GuardianDB {
         self.base.get_access_control_type(controller_type)
     }
 
-    /// Método de conveniência para listar nomes de access controller types
+    /// Convenience method to list access controller type names.
     pub fn access_control_types_names(&self) -> Vec<String> {
         self.base.access_control_types_names()
     }
 
-    /// Método de conveniência para registrar access controllers padrão
+    /// Convenience method to register the default access controllers.
     pub async fn register_default_access_control_types(&self) -> Result<()> {
         self.base.register_default_access_control_types().await
     }
 
-    /// Conecta e sincroniza com um peer específico
+    /// Connects to and synchronizes with a specific peer.
     ///
-    /// Este método facilita a conexão manual com peers quando a descoberta
-    /// automática não é suficiente ou você quer forçar uma sincronização.
+    /// This method facilitates manual peer connection when automatic discovery
+    /// is not enough or you want to force a synchronization.
     ///
-    /// # Argumentos
-    /// * `peer_id` - NodeId do peer com quem sincronizar
+    /// # Arguments
+    /// * `peer_id` - NodeId of the peer to synchronize with
     ///
-    /// # Retorna
-    /// `Ok(())` se a sincronização foi iniciada com sucesso
-    pub async fn connect_to_peer(&self, peer_id: iroh::NodeId) -> Result<()> {
+    /// # Returns
+    /// `Ok(())` if the synchronization was started successfully
+    pub async fn connect_to_peer(&self, peer_id: iroh::EndpointId) -> Result<()> {
         self.base.connect_to_peer(peer_id).await
     }
 }
 
-/// Wrapper que adapta um Store genérico para EventLogStore
+/// Wrapper that adapts a generic Store to EventLogStore.
 ///
-/// SOLUÇÃO IMPLEMENTADA: O problema das limitações de &mut self foi resolvido
-/// usando downcasting para BaseStore, que implementa add_operation(&self) de
-/// forma thread-safe usando Arc<RwLock<T>> internamente.
+/// IMPLEMENTED SOLUTION: the &mut self limitation was solved by downcasting to
+/// BaseStore, which implements add_operation(&self) in a thread-safe way using
+/// an internal Arc<RwLock<T>>.
 pub struct EventLogStoreWrapper {
     store: Arc<dyn Store<Error = GuardianError> + Send + Sync>,
 }
@@ -340,17 +351,17 @@ impl EventLogStoreWrapper {
         Self { store }
     }
 
-    /// Retorna uma referência ao store interno
+    /// Returns a reference to the inner store.
     pub fn inner_store(&self) -> &Arc<dyn Store<Error = GuardianError> + Send + Sync> {
         &self.store
     }
 
-    /// Tenta acessar o BaseStore subjacente através de downcast
+    /// Tries to access the underlying BaseStore via downcast.
     ///
-    /// Este método é útil para operações avançadas como sincronização manual com peers.
-    /// Retorna `None` se o store interno não for do tipo esperado.
+    /// This method is useful for advanced operations such as manual peer sync.
+    /// Returns `None` if the inner store is not of the expected type.
     pub fn try_get_basestore(&self) -> Option<&crate::stores::base_store::BaseStore> {
-        // Tenta fazer downcast para GuardianDBEventLogStore
+        // Try to downcast to GuardianDBEventLogStore.
         if let Some(event_log_store) =
             self.store
                 .as_any()
@@ -361,34 +372,34 @@ impl EventLogStoreWrapper {
         None
     }
 
-    /// Conecta e sincroniza com um peer específico
+    /// Connects to and synchronizes with a specific peer.
     ///
-    /// Este método facilita a conexão manual com peers quando a descoberta
-    /// automática não é suficiente ou você quer forçar uma sincronização.
+    /// This method facilitates manual peer connection when automatic discovery
+    /// is not enough or you want to force a synchronization.
     ///
-    /// # Argumentos
-    /// * `peer_id` - NodeId do peer com quem sincronizar
+    /// # Arguments
+    /// * `peer_id` - NodeId of the peer to synchronize with
     ///
-    /// # Retorna
-    /// `Ok(())` se a sincronização foi iniciada com sucesso
-    pub async fn connect_to_peer(&self, peer_id: iroh::NodeId) -> Result<()> {
+    /// # Returns
+    /// `Ok(())` if the synchronization was started successfully
+    pub async fn connect_to_peer(&self, peer_id: iroh::EndpointId) -> Result<()> {
         if let Some(base_store) = self.try_get_basestore() {
             base_store.exchange_heads(peer_id).await
         } else {
             Err(GuardianError::Store(
-                "Não foi possível acessar BaseStore para sincronização".to_string(),
+                "Could not access BaseStore for synchronization".to_string(),
             ))
         }
     }
 
-    /// Query otimizada usando o índice da store
+    /// Optimized query using the store's index.
     fn query_from_index(
         &self,
         options: &crate::traits::StreamOptions,
     ) -> Result<Vec<crate::log::entry::Entry>> {
         let index = self.store.index();
 
-        // Query simples por quantidade (caso mais comum)
+        // Simple query by amount (the most common case).
         let is_simple_amount_query = options.gt.is_none()
             && options.gte.is_none()
             && options.lt.is_none()
@@ -398,7 +409,7 @@ impl EventLogStoreWrapper {
             let amount = match options.amount {
                 Some(a) if a > 0 => a as usize,
                 Some(-1) | None => {
-                    // -1 ou None significa "todas as entradas"
+                    // -1 or None means "all entries".
                     match index.len() {
                         Ok(len) => len,
                         Err(_) => return self.query_from_oplog(options), // Fallback
@@ -407,13 +418,13 @@ impl EventLogStoreWrapper {
                 _ => 0,
             };
 
-            // Usa método otimizado do índice se disponível
+            // Use the index's optimized method if available.
             if let Some(entries) = index.get_last_entries(amount) {
                 return Ok(entries);
             }
         }
 
-        // Query por Hash específico
+        // Query by a specific Hash.
         if let Some(hash) = options.gte.as_ref()
             && options.amount == Some(1)
             && options.gt.is_none()
@@ -423,15 +434,15 @@ impl EventLogStoreWrapper {
             if let Some(entry) = index.get_entry_by_hash(hash) {
                 return Ok(vec![entry]);
             } else {
-                return Ok(Vec::new()); // Hash não encontrado
+                return Ok(Vec::new()); // Hash not found.
             }
         }
 
-        // Para queries mais complexas, usa fallback
+        // For more complex queries, use the fallback.
         self.query_from_oplog(options)
     }
 
-    /// Fallback: busca direta no oplog quando índice não suporta a query
+    /// Fallback: direct oplog scan when the index does not support the query.
     fn query_from_oplog(
         &self,
         options: &crate::traits::StreamOptions,
@@ -439,59 +450,59 @@ impl EventLogStoreWrapper {
         let oplog = self.store.op_log();
         let oplog_guard = oplog.read();
 
-        // Coleta todas as entradas do oplog
+        // Collect all entries from the oplog.
         let mut all_entries: Vec<_> = oplog_guard
             .values()
             .iter()
             .map(|arc_entry| arc_entry.as_ref().clone())
             .collect();
 
-        // Ordena por ordem cronológica (mais antigas primeiro - ordem de inserção)
+        // Sort chronologically (oldest first - insertion order).
         all_entries.sort_by_key(|b| b.clock().time());
 
-        // Aplica filtros de Hash se especificados
+        // Apply Hash filters if specified.
         let mut filtered_entries = all_entries;
 
-        // Filtro gte (maior ou igual)
+        // gte filter (greater than or equal).
         if let Some(hash) = &options.gte {
             if let Some(start_idx) = filtered_entries.iter().position(|e| e.hash() == hash) {
                 filtered_entries = filtered_entries.into_iter().skip(start_idx).collect();
             } else {
-                return Ok(Vec::new()); // Hash não encontrado
+                return Ok(Vec::new()); // Hash not found.
             }
         }
 
-        // Filtro gt (maior que)
+        // gt filter (greater than).
         if let Some(hash) = &options.gt {
             if let Some(start_idx) = filtered_entries.iter().position(|e| e.hash() == hash) {
                 filtered_entries = filtered_entries.into_iter().skip(start_idx + 1).collect();
             } else {
-                return Ok(Vec::new()); // Hash não encontrado
+                return Ok(Vec::new()); // Hash not found.
             }
         }
 
-        // Filtro lte (menor ou igual)
+        // lte filter (less than or equal).
         if let Some(hash) = &options.lte {
             if let Some(end_idx) = filtered_entries.iter().position(|e| e.hash() == hash) {
                 filtered_entries = filtered_entries.into_iter().take(end_idx + 1).collect();
             } else {
-                return Ok(Vec::new()); // Hash não encontrado
+                return Ok(Vec::new()); // Hash not found.
             }
         }
 
-        // Filtro lt (menor que)
+        // lt filter (less than).
         if let Some(hash) = &options.lt {
             if let Some(end_idx) = filtered_entries.iter().position(|e| e.hash() == hash) {
                 filtered_entries = filtered_entries.into_iter().take(end_idx).collect();
             } else {
-                return Ok(Vec::new()); // Hash não encontrado
+                return Ok(Vec::new()); // Hash not found.
             }
         }
 
-        // Aplica limitação de quantidade
+        // Apply the amount limit.
         let amount = match options.amount {
             Some(a) if a > 0 => a as usize,
-            Some(-1) | None => filtered_entries.len(), // -1 ou None = todas
+            Some(-1) | None => filtered_entries.len(), // -1 or None = all.
             _ => 0,
         };
 
@@ -523,10 +534,6 @@ impl Store for EventLogStoreWrapper {
 
     fn store_type(&self) -> &str {
         self.store.store_type()
-    }
-
-    fn replication_status(&self) -> crate::stores::replicator::replication_info::ReplicationInfo {
-        self.store.replication_status()
     }
 
     fn cache(&self) -> Arc<dyn crate::data_store::Datastore> {
@@ -561,7 +568,7 @@ impl Store for EventLogStoreWrapper {
     }
 
     fn client(&self) -> Arc<IrohClient> {
-        unimplemented!("Adaptação entre tipos de cliente iroh pendente")
+        unimplemented!("Adaptation between iroh client types pending")
     }
 
     fn db_name(&self) -> &str {
@@ -581,7 +588,7 @@ impl Store for EventLogStoreWrapper {
         op: crate::stores::operation::Operation,
         on_progress_callback: Option<ProgressCallback>,
     ) -> std::result::Result<crate::log::entry::Entry, Self::Error> {
-        // Delega diretamente para o store interno através da trait Store
+        // Delegate directly to the inner store through the Store trait.
         self.store.add_operation(op, on_progress_callback).await
     }
 
@@ -608,15 +615,15 @@ impl EventLogStore for EventLogStoreWrapper {
         &self,
         data: Vec<u8>,
     ) -> std::result::Result<crate::stores::operation::Operation, Self::Error> {
-        // Cria uma operação ADD e a adiciona ao store
+        // Create an ADD operation and add it to the store.
         let operation =
             crate::stores::operation::Operation::new(None, "ADD".to_string(), Some(data));
 
         let _entry = self.add_operation(operation.clone(), None).await?;
 
-        // Retorna a operação que foi adicionada com sucesso
-        // ***Em uma implementação mais sofisticada, poderíamos re-parsear a entrada
-        // para garantir consistência, mas para este caso a operação original serve
+        // Return the operation that was successfully added.
+        // ***In a more sophisticated implementation we could re-parse the entry
+        // to ensure consistency, but for this case the original operation suffices.
         Ok(operation)
     }
 
@@ -624,35 +631,34 @@ impl EventLogStore for EventLogStoreWrapper {
         &self,
         hash: &iroh_blobs::Hash,
     ) -> std::result::Result<crate::stores::operation::Operation, Self::Error> {
-        // Busca uma operação específica por Hash
+        // Look up a specific operation by Hash.
 
-        // Primeiro, tenta usar o índice para busca otimizada
+        // First, try to use the index for an optimized lookup.
         if let Some(entry) = self.store.index().get_entry_by_hash(hash) {
-            // Converte a Entry para Operation usando parse_operation
+            // Convert the Entry into an Operation using parse_operation.
             let operation = crate::stores::operation::parse_operation(entry)
-                .map_err(|e| GuardianError::Store(format!("Falha ao parsear entrada: {}", e)))?;
+                .map_err(|e| GuardianError::Store(format!("Failed to parse entry: {}", e)))?;
             return Ok(operation);
         }
 
-        // Fallback: busca no oplog diretamente
+        // Fallback: scan the oplog directly.
         let oplog = self.store.op_log();
         let oplog_guard = oplog.read();
 
-        // Busca linear no oplog por Hash
+        // Linear scan of the oplog by Hash.
         for arc_entry in oplog_guard.values() {
             if arc_entry.hash() == hash {
-                // Converte Entry para Operation
+                // Convert Entry into Operation.
                 let entry = arc_entry.as_ref().clone();
-                let operation = crate::stores::operation::parse_operation(entry).map_err(|e| {
-                    GuardianError::Store(format!("Falha ao parsear entrada: {}", e))
-                })?;
+                let operation = crate::stores::operation::parse_operation(entry)
+                    .map_err(|e| GuardianError::Store(format!("Failed to parse entry: {}", e)))?;
                 return Ok(operation);
             }
         }
 
-        // Hash não encontrado
+        // Hash not found.
         Err(GuardianError::Store(format!(
-            "Operação não encontrada para Hash: {}",
+            "Operation not found for Hash: {}",
             hex::encode(hash.as_bytes())
         )))
     }
@@ -661,26 +667,26 @@ impl EventLogStore for EventLogStoreWrapper {
         &self,
         options: Option<crate::traits::StreamOptions>,
     ) -> std::result::Result<Vec<crate::stores::operation::Operation>, Self::Error> {
-        // Lista operações com filtros opcionais
+        // List operations with optional filters.
         let options = options.unwrap_or_default();
 
-        // Tenta usar índice otimizado primeiro
+        // Try the optimized index first.
         let entries = if self.store.index().supports_entry_queries() {
-            // Query otimizada usando o índice
+            // Optimized query using the index.
             self.query_from_index(&options)?
         } else {
-            // Fallback: busca no oplog
+            // Fallback: scan the oplog.
             self.query_from_oplog(&options)?
         };
 
-        // Converte todas as entradas para operações
+        // Convert all entries into operations.
         let mut operations = Vec::with_capacity(entries.len());
         for entry in entries {
             match crate::stores::operation::parse_operation(entry) {
                 Ok(operation) => operations.push(operation),
                 Err(e) => {
-                    // Log do erro mas continua processando outras entradas
-                    eprintln!("Aviso: Falha ao parsear entrada: {}", e);
+                    // Log the error but keep processing other entries.
+                    eprintln!("Warning: Failed to parse entry: {}", e);
                 }
             }
         }
@@ -689,7 +695,7 @@ impl EventLogStore for EventLogStoreWrapper {
     }
 }
 
-/// Wrapper que adapta um Store genérico para KeyValueStore
+/// Wrapper that adapts a generic Store to KeyValueStore.
 struct KeyValueStoreWrapper {
     store: Arc<dyn Store<Error = GuardianError> + Send + Sync>,
 }
@@ -725,10 +731,6 @@ impl Store for KeyValueStoreWrapper {
         self.store.store_type()
     }
 
-    fn replication_status(&self) -> crate::stores::replicator::replication_info::ReplicationInfo {
-        self.store.replication_status()
-    }
-
     fn cache(&self) -> Arc<dyn crate::data_store::Datastore> {
         self.store.cache()
     }
@@ -761,7 +763,7 @@ impl Store for KeyValueStoreWrapper {
     }
 
     fn client(&self) -> Arc<IrohClient> {
-        unimplemented!("Adaptação entre tipos de cliente iroh pendente")
+        unimplemented!("Adaptation between iroh client types pending")
     }
 
     fn db_name(&self) -> &str {
@@ -804,28 +806,28 @@ impl Store for KeyValueStoreWrapper {
 #[async_trait::async_trait]
 impl KeyValueStore for KeyValueStoreWrapper {
     async fn get(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, Self::Error> {
-        // Busca um valor por chave no KeyValue store
+        // Look up a value by key in the KeyValue store.
 
-        // Primeiro, tenta buscar no índice (mais eficiente)
+        // First, try the index (more efficient).
         let index = self.store.index();
         if let Ok(Some(bytes)) = index.get_bytes(key) {
             return Ok(Some(bytes));
         }
 
-        // Fallback: busca no oplog por operações PUT com a chave especificada
+        // Fallback: scan the oplog for PUT operations with the specified key.
         let oplog = self.store.op_log();
         let oplog_guard = oplog.read();
 
-        // Busca pela operação PUT mais recente com a chave especificada
+        // Look for the most recent PUT operation with the specified key.
         let mut latest_value: Option<Vec<u8>> = None;
         let mut latest_time = 0;
 
         for arc_entry in oplog_guard.values() {
             let entry = arc_entry.as_ref().clone();
 
-            // Converte Entry para Operation
+            // Convert Entry into Operation.
             if let Ok(operation) = crate::stores::operation::parse_operation(entry.clone()) {
-                // Verifica se é uma operação relevante para a chave
+                // Check whether it is an operation relevant to the key.
                 if let Some(op_key) = operation.key()
                     && op_key == key
                 {
@@ -833,16 +835,16 @@ impl KeyValueStore for KeyValueStoreWrapper {
 
                     let op_str = operation.op();
                     if op_str == "PUT" {
-                        // Se é mais recente que a operação anterior
+                        // If it is more recent than the previous operation.
                         if entry_time > latest_time {
                             latest_time = entry_time;
                             latest_value = Some(operation.value().to_vec());
                         }
                     } else if op_str == "DEL" {
-                        // Se é mais recente que a operação anterior e é uma deleção
+                        // If it is more recent than the previous operation and is a deletion.
                         if entry_time > latest_time {
                             latest_time = entry_time;
-                            latest_value = None; // Valor foi deletado
+                            latest_value = None; // The value was deleted.
                         }
                     }
                 }
@@ -857,7 +859,7 @@ impl KeyValueStore for KeyValueStoreWrapper {
         key: &str,
         value: Vec<u8>,
     ) -> std::result::Result<crate::stores::operation::Operation, Self::Error> {
-        // Cria uma operação PUT com chave e valor
+        // Create a PUT operation with key and value.
         let operation = crate::stores::operation::Operation::new(
             Some(key.to_string()),
             "PUT".to_string(),
@@ -872,7 +874,7 @@ impl KeyValueStore for KeyValueStoreWrapper {
         &self,
         key: &str,
     ) -> std::result::Result<crate::stores::operation::Operation, Self::Error> {
-        // Cria uma operação DEL com chave
+        // Create a DEL operation with the key.
         let operation = crate::stores::operation::Operation::new(
             Some(key.to_string()),
             "DEL".to_string(),
@@ -886,7 +888,7 @@ impl KeyValueStore for KeyValueStoreWrapper {
     fn all(&self) -> std::collections::HashMap<String, Vec<u8>> {
         let mut result = std::collections::HashMap::new();
 
-        // Primeiro, tenta coletar do índice (mais eficiente se estiver atualizado)
+        // First, try to collect from the index (more efficient if up to date).
         let index = self.store.index();
         if let Ok(keys) = index.keys() {
             for key in keys {
@@ -896,23 +898,23 @@ impl KeyValueStore for KeyValueStoreWrapper {
             }
         }
 
-        // Se o índice não retornou dados, ou como complemento, processa o oplog
-        // Isso garante que temos os dados mais atualizados, incluindo operações não indexadas
+        // If the index returned no data, or as a complement, process the oplog.
+        // This ensures we have the most up-to-date data, including unindexed operations.
         if result.is_empty() {
             let oplog = self.store.op_log();
             let oplog_guard = oplog.read();
 
-            // Mapeia chave -> (timestamp, operação, valor)
+            // Map key -> (timestamp, operation, value).
             let mut key_operations: std::collections::HashMap<
                 String,
                 (u64, String, Option<Vec<u8>>),
             > = std::collections::HashMap::new();
 
-            // Coleta todas as operações relevantes
+            // Collect all relevant operations.
             for arc_entry in oplog_guard.values() {
                 let entry = arc_entry.as_ref().clone();
 
-                // Converte Entry para Operation
+                // Convert Entry into Operation.
                 if let Ok(operation) = crate::stores::operation::parse_operation(entry.clone())
                     && let Some(op_key) = operation.key()
                 {
@@ -924,7 +926,7 @@ impl KeyValueStore for KeyValueStoreWrapper {
                         None
                     };
 
-                    // Atualiza se é mais recente ou se não existia antes
+                    // Update if it is more recent or did not exist before.
                     let key_clone = op_key.clone();
                     if let Some((existing_time, _, _)) = key_operations.get(&key_clone) {
                         if timestamp > *existing_time {
@@ -936,7 +938,7 @@ impl KeyValueStore for KeyValueStoreWrapper {
                 }
             }
 
-            // Processa as operações finais para cada chave
+            // Process the final operations for each key.
             for (key, (_timestamp, op_type, value)) in key_operations {
                 let op_str = op_type.as_str();
                 if op_str == "PUT" {
@@ -944,10 +946,10 @@ impl KeyValueStore for KeyValueStoreWrapper {
                         result.insert(key, val);
                     }
                 } else if op_str == "DEL" {
-                    // Remove da lista se foi deletado
+                    // Remove from the list if it was deleted.
                     result.remove(&key);
                 } else {
-                    // Para outras operações, adiciona se tiver valor
+                    // For other operations, add if it has a value.
                     if let Some(val) = value {
                         result.insert(key, val);
                     }
@@ -957,9 +959,23 @@ impl KeyValueStore for KeyValueStoreWrapper {
 
         result
     }
+
+    async fn share_ticket(&self) -> std::result::Result<String, Self::Error> {
+        // Delegate to the underlying GuardianDBKeyValue (which holds the iroh-docs doc).
+        self.store
+            .as_any()
+            .downcast_ref::<crate::stores::kv_store::GuardianDBKeyValue>()
+            .ok_or_else(|| {
+                GuardianError::Store(
+                    "share_ticket: underlying store is not a GuardianDBKeyValue".to_string(),
+                )
+            })?
+            .share_ticket()
+            .await
+    }
 }
 
-/// Wrapper que adapta um Store genérico para DocumentStore
+/// Wrapper that adapts a generic Store to DocumentStore.
 struct DocumentStoreWrapper {
     store: Arc<dyn Store<Error = GuardianError> + Send + Sync>,
 }
@@ -969,7 +985,7 @@ impl DocumentStoreWrapper {
         Self { store }
     }
 
-    /// Busca documentos no índice usando uma chave
+    /// Searches the index for documents matching a key.
     fn search_documents_by_key(
         &self,
         key: &str,
@@ -977,7 +993,7 @@ impl DocumentStoreWrapper {
     ) -> Result<Vec<Document>> {
         let index = self.store.index();
 
-        // Prepara a chave de busca de acordo com as opções
+        // Prepare the search key according to the options.
         let mut key_for_search = key.to_string();
         let has_multiple_terms = key.contains(' ');
 
@@ -990,18 +1006,18 @@ impl DocumentStoreWrapper {
 
         let mut documents = Vec::new();
 
-        // Obtém todas as chaves do índice
+        // Get all keys from the index.
         let all_keys = index.keys().unwrap_or_default();
 
         for index_key in all_keys {
             let mut index_key_for_search = index_key.clone();
 
-            // Normaliza a chave do índice para a busca
+            // Normalize the index key for the search.
             if opts.case_insensitive {
                 index_key_for_search = index_key_for_search.to_lowercase();
             }
 
-            // Verifica se a chave corresponde aos critérios de busca
+            // Check whether the key matches the search criteria.
             let matches = if opts.partial_matches {
                 index_key_for_search.contains(&key_for_search)
             } else {
@@ -1009,9 +1025,9 @@ impl DocumentStoreWrapper {
             };
 
             if matches {
-                // Busca o valor no índice
+                // Look up the value in the index.
                 if let Ok(Some(doc_bytes)) = index.get_bytes(&index_key) {
-                    // Desserializa o documento
+                    // Deserialize the document.
                     match serde_json::from_slice::<serde_json::Value>(&doc_bytes) {
                         Ok(json_value) => {
                             let doc: Document = Box::new(json_value);
@@ -1019,14 +1035,14 @@ impl DocumentStoreWrapper {
                         }
                         Err(e) => {
                             eprintln!(
-                                "Aviso: Falha ao desserializar documento para chave '{}': {}",
+                                "Warning: Failed to deserialize document for key '{}': {}",
                                 index_key, e
                             );
                         }
                     }
                 } else {
                     eprintln!(
-                        "Aviso: chave '{}' encontrada mas sem valor correspondente",
+                        "Warning: key '{}' found but without a corresponding value",
                         index_key
                     );
                 }
@@ -1036,7 +1052,7 @@ impl DocumentStoreWrapper {
         Ok(documents)
     }
 
-    /// Busca documentos usando operações do oplog
+    /// Searches for documents using operations from the oplog.
     fn search_documents_from_oplog(
         &self,
         key: &str,
@@ -1048,20 +1064,20 @@ impl DocumentStoreWrapper {
         let mut documents = Vec::new();
         let mut processed_keys = std::collections::HashSet::new();
 
-        // Coleta todas as entradas do oplog em um vetor para iterar em ordem reversa
+        // Collect all oplog entries into a vector to iterate in reverse order.
         let entries: Vec<Arc<crate::log::entry::Entry>> =
             oplog_guard.values().into_iter().collect();
 
-        // Itera em ordem reversa (do mais novo para o mais antigo)
-        // para garantir que apenas a operação mais recente para cada chave seja considerada
+        // Iterate in reverse order (newest to oldest) to ensure only the most
+        // recent operation for each key is considered.
         for arc_entry in entries.iter().rev() {
             let entry: crate::log::entry::Entry = (**arc_entry).clone();
 
-            // Converte Entry para Operation
+            // Convert Entry into Operation.
             if let Ok(operation) = crate::stores::operation::parse_operation(entry) {
-                // Verifica se a operação é relevante para documentos
+                // Check whether the operation is relevant to documents.
                 if let Some(op_key) = operation.key() {
-                    // Evita processar a mesma chave múltiplas vezes
+                    // Avoid processing the same key multiple times.
                     if processed_keys.contains(op_key) {
                         continue;
                     }
@@ -1083,21 +1099,21 @@ impl DocumentStoreWrapper {
                     if matches {
                         processed_keys.insert(op_key.clone());
 
-                        // Se a operação mais recente for DEL, ignora este documento
+                        // If the most recent operation is DEL, skip this document.
                         if operation.op() == "DEL" {
                             continue;
                         }
 
-                        // Se for PUT e tiver valor, adiciona o documento
+                        // If it is PUT and has a value, add the document.
                         if operation.op() == "PUT" && !operation.value().is_empty() {
-                            // Tenta desserializar o valor como documento
+                            // Try to deserialize the value as a document.
                             match serde_json::from_slice::<serde_json::Value>(operation.value()) {
                                 Ok(json_value) => {
                                     let doc: Document = Box::new(json_value);
                                     documents.push(doc);
                                 }
                                 Err(_) => {
-                                    // Se não conseguir desserializar como JSON, cria um documento simples
+                                    // If it cannot be deserialized as JSON, build a simple document.
                                     let simple_doc = serde_json::json!({
                                         "key": op_key,
                                         "value": String::from_utf8_lossy(operation.value()),
@@ -1116,7 +1132,7 @@ impl DocumentStoreWrapper {
         Ok(documents)
     }
 
-    /// Coleta todos os documentos do índice para queries
+    /// Collects all documents from the index for queries.
     fn get_all_documents_from_index(&self) -> Result<Vec<Document>> {
         let index = self.store.index();
         let mut documents = Vec::new();
@@ -1124,25 +1140,25 @@ impl DocumentStoreWrapper {
         let all_keys = index.keys().unwrap_or_default();
 
         eprintln!(
-            "DEBUG: get_all_documents_from_index - Total de chaves no índice: {}",
+            "DEBUG: get_all_documents_from_index - Total keys in the index: {}",
             all_keys.len()
         );
 
         for key in all_keys {
             eprintln!(
-                "DEBUG: get_all_documents_from_index - Processando chave: {}",
+                "DEBUG: get_all_documents_from_index - Processing key: {}",
                 key
             );
             if let Ok(Some(doc_bytes)) = index.get_bytes(&key) {
                 eprintln!(
-                    "DEBUG: get_all_documents_from_index - Bytes recuperados para chave '{}': {} bytes",
+                    "DEBUG: get_all_documents_from_index - Bytes retrieved for key '{}': {} bytes",
                     key,
                     doc_bytes.len()
                 );
                 match serde_json::from_slice::<serde_json::Value>(&doc_bytes) {
                     Ok(json_value) => {
                         eprintln!(
-                            "DEBUG: get_all_documents_from_index - Documento deserializado com sucesso: {:?}",
+                            "DEBUG: get_all_documents_from_index - Document deserialized successfully: {:?}",
                             json_value
                         );
                         let doc: Document = Box::new(json_value);
@@ -1150,21 +1166,21 @@ impl DocumentStoreWrapper {
                     }
                     Err(e) => {
                         eprintln!(
-                            "Aviso: Falha ao desserializar documento para chave '{}': {}",
+                            "Warning: Failed to deserialize document for key '{}': {}",
                             key, e
                         );
                     }
                 }
             } else {
                 eprintln!(
-                    "DEBUG: get_all_documents_from_index - Nenhum byte encontrado para chave: {}",
+                    "DEBUG: get_all_documents_from_index - No bytes found for key: {}",
                     key
                 );
             }
         }
 
         eprintln!(
-            "DEBUG: get_all_documents_from_index - Total de documentos coletados: {}",
+            "DEBUG: get_all_documents_from_index - Total documents collected: {}",
             documents.len()
         );
         Ok(documents)
@@ -1194,10 +1210,6 @@ impl Store for DocumentStoreWrapper {
 
     fn store_type(&self) -> &str {
         self.store.store_type()
-    }
-
-    fn replication_status(&self) -> crate::stores::replicator::replication_info::ReplicationInfo {
-        self.store.replication_status()
     }
 
     fn cache(&self) -> Arc<dyn crate::data_store::Datastore> {
@@ -1232,7 +1244,7 @@ impl Store for DocumentStoreWrapper {
     }
 
     fn client(&self) -> Arc<IrohClient> {
-        unimplemented!("Adaptação entre tipos de cliente iroh pendente")
+        unimplemented!("Adaptation between iroh client types pending")
     }
 
     fn db_name(&self) -> &str {
@@ -1252,7 +1264,7 @@ impl Store for DocumentStoreWrapper {
         op: crate::stores::operation::Operation,
         on_progress_callback: Option<ProgressCallback>,
     ) -> std::result::Result<crate::log::entry::Entry, Self::Error> {
-        // Delega diretamente para o store interno através da trait Store
+        // Delegate directly to the inner store through the Store trait.
         self.store.add_operation(op, on_progress_callback).await
     }
 
@@ -1279,7 +1291,7 @@ impl DocumentStore for DocumentStoreWrapper {
         &self,
         document: Document,
     ) -> std::result::Result<crate::stores::operation::Operation, Self::Error> {
-        // Extrai a chave do documento (tenta _id primeiro, depois id como fallback)
+        // Extract the document key (try _id first, then id as a fallback).
         let key = if let Some(json_val) = document.downcast_ref::<serde_json::Value>() {
             json_val
                 .get("_id")
@@ -1291,7 +1303,7 @@ impl DocumentStore for DocumentStoreWrapper {
             None
         };
 
-        // Serializa o documento para bytes
+        // Serialize the document to bytes.
         let data = if let Some(json_val) = document.downcast_ref::<serde_json::Value>() {
             serde_json::to_vec(json_val).map_err(|e| {
                 GuardianError::Store(format!("Failed to serialize JSON document: {}", e))
@@ -1299,11 +1311,11 @@ impl DocumentStore for DocumentStoreWrapper {
         } else if let Some(bytes) = document.downcast_ref::<Vec<u8>>() {
             bytes.clone()
         } else {
-            // Para outros tipos, usa uma serialização genérica
+            // For other types, use a generic serialization.
             format!("{:?}", document).into_bytes()
         };
 
-        // Cria uma operação PUT para documento com chave extraída
+        // Create a PUT operation for the document with the extracted key.
         let operation =
             crate::stores::operation::Operation::new(key, "PUT".to_string(), Some(data));
 
@@ -1315,7 +1327,7 @@ impl DocumentStore for DocumentStoreWrapper {
         &self,
         key: &str,
     ) -> std::result::Result<crate::stores::operation::Operation, Self::Error> {
-        // Cria uma operação DEL para documento
+        // Create a DEL operation for the document.
         let operation = crate::stores::operation::Operation::new(
             Some(key.to_string()),
             "DEL".to_string(),
@@ -1332,7 +1344,7 @@ impl DocumentStore for DocumentStoreWrapper {
     ) -> std::result::Result<crate::stores::operation::Operation, Self::Error> {
         if values.is_empty() {
             return Err(GuardianError::InvalidArgument(
-                "Nada para adicionar à store".to_string(),
+                "Nothing to add to the store".to_string(),
             ));
         }
 
@@ -1351,7 +1363,7 @@ impl DocumentStore for DocumentStoreWrapper {
     ) -> std::result::Result<crate::stores::operation::Operation, Self::Error> {
         if values.is_empty() {
             return Err(GuardianError::InvalidArgument(
-                "Nada para adicionar à store".to_string(),
+                "Nothing to add to the store".to_string(),
             ));
         }
 
@@ -1369,19 +1381,19 @@ impl DocumentStore for DocumentStoreWrapper {
         key: &str,
         opts: Option<crate::traits::DocumentStoreGetOptions>,
     ) -> std::result::Result<Vec<Document>, Self::Error> {
-        // Busca documentos por chave com opções avançadas
+        // Look up documents by key with advanced options.
 
         let opts = opts.unwrap_or_default();
 
-        // Tenta usar o índice primeiro (mais eficiente)
+        // Try the index first (more efficient).
         let documents_from_index = self.search_documents_by_key(key, &opts)?;
 
         if !documents_from_index.is_empty() {
             return Ok(documents_from_index);
         }
 
-        // Fallback: busca no oplog se o índice não retornar resultados
-        // Isso pode acontecer se o índice ainda não foi populado ou se estiver desatualizado
+        // Fallback: scan the oplog if the index returns no results.
+        // This can happen if the index has not been populated yet or is stale.
         let documents_from_oplog = self.search_documents_from_oplog(key, &opts)?;
 
         Ok(documents_from_oplog)
@@ -1391,36 +1403,50 @@ impl DocumentStore for DocumentStoreWrapper {
         &self,
         filter: AsyncDocumentFilter,
     ) -> std::result::Result<Vec<Document>, Self::Error> {
-        // Query com filtro assíncrono customizável
+        // Query with a customizable asynchronous filter.
 
-        // Obtém todos os documentos disponíveis
+        // Get all available documents.
         let all_documents = self.get_all_documents_from_index()?;
 
         let mut filtered_documents = Vec::new();
 
-        // Aplica o filtro assíncrono a cada documento
+        // Apply the asynchronous filter to each document.
         for document in all_documents {
-            // Chama o filtro assíncrono
+            // Call the asynchronous filter.
             let filter_future = filter(&document);
 
             match filter_future.await {
                 Ok(true) => {
-                    // Documento passou no filtro
+                    // The document passed the filter.
                     filtered_documents.push(document);
                 }
                 Ok(false) => {
-                    // Documento não passou no filtro, continua
+                    // The document did not pass the filter, continue.
                     continue;
                 }
                 Err(e) => {
-                    // Erro no filtro - logamos mas continuamos processando
-                    eprintln!("Aviso: Erro ao aplicar filtro no documento: {}", e);
+                    // Filter error - we log it but keep processing.
+                    eprintln!("Warning: Error applying filter to the document: {}", e);
                     continue;
                 }
             }
         }
 
         Ok(filtered_documents)
+    }
+
+    async fn share_ticket(&self) -> std::result::Result<String, Self::Error> {
+        // Delegate to the underlying GuardianDBDocumentStore (which holds the iroh-docs doc).
+        self.store
+            .as_any()
+            .downcast_ref::<crate::stores::document_store::GuardianDBDocumentStore>()
+            .ok_or_else(|| {
+                GuardianError::Store(
+                    "share_ticket: underlying store is not a GuardianDBDocumentStore".to_string(),
+                )
+            })?
+            .share_ticket()
+            .await
     }
 }
 
@@ -1480,14 +1506,14 @@ impl BaseGuardianDBTrait for GuardianDB {
         store_type: &str,
         constructor: crate::traits::StoreConstructor,
     ) {
-        // BaseGuardianDB já usa Arc<RwLock<>> internamente para store_types,
-        // então é thread-safe e não precisa de &mut self
+        // BaseGuardianDB already uses Arc<RwLock<>> internally for store_types,
+        // so it is thread-safe and does not need &mut self.
         self.base
             .register_store_type(store_type.to_string(), constructor);
     }
 
     fn unregister_store_type(&mut self, store_type: &str) {
-        // BaseGuardianDB já usa Arc<RwLock<>> internamente para store_types
+        // BaseGuardianDB already uses Arc<RwLock<>> internally for store_types.
         self.base.unregister_store_type(store_type);
     }
 
@@ -1495,14 +1521,14 @@ impl BaseGuardianDBTrait for GuardianDB {
         &mut self,
         constructor: crate::traits::AccessControllerConstructor,
     ) -> std::result::Result<(), Self::Error> {
-        // BaseGuardianDB já usa Arc<RwLock<>> internamente para access_control_types,
-        // então é thread-safe. Usamos o método legado que registra com tipo "simple"
+        // BaseGuardianDB already uses Arc<RwLock<>> internally for access_control_types,
+        // so it is thread-safe. We use the legacy method that registers with the "simple" type.
         self.base
             .register_access_control_type_with_name("simple", constructor)
     }
 
     fn unregister_access_controller_type(&mut self, controller_type: &str) {
-        // BaseGuardianDB já usa Arc<RwLock<>> internamente para access_control_types
+        // BaseGuardianDB already uses Arc<RwLock<>> internally for access_control_types.
         self.base.unregister_access_control_type(controller_type);
     }
 
@@ -1522,7 +1548,7 @@ impl BaseGuardianDBTrait for GuardianDB {
     }
 
     fn tracer(&self) -> Arc<crate::traits::TracerWrapper> {
-        // Converter BoxedTracer para TracerWrapper
+        // Convert BoxedTracer into TracerWrapper.
         let boxed_tracer = self.base.tracer();
         Arc::new(crate::traits::TracerWrapper::new_opentelemetry(
             boxed_tracer,
@@ -1539,16 +1565,16 @@ impl GuardianDBKVStoreProvider for GuardianDB {
         address: &str,
         options: &mut CreateDBOptions,
     ) -> std::result::Result<Box<dyn KeyValueStore<Error = GuardianError>>, Self::Error> {
-        // Usa o método já implementado do wrapper que retorna Arc
+        // Use the already-implemented wrapper method that returns an Arc.
         let opts_clone = options.clone();
         let arc_store = self.key_value(address, Some(opts_clone)).await?;
 
-        // Converte Arc para Box usando um wrapper
+        // Convert the Arc into a Box using a wrapper.
         Ok(Box::new(KeyValueStoreBoxWrapper::new(arc_store)))
     }
 }
 
-/// Wrapper para converter Arc<dyn KeyValueStore> para Box<dyn KeyValueStore>
+/// Wrapper to convert Arc<dyn KeyValueStore> into Box<dyn KeyValueStore>.
 pub struct KeyValueStoreBoxWrapper {
     inner: Arc<dyn KeyValueStore<Error = GuardianError>>,
 }
@@ -1572,7 +1598,7 @@ impl Store for KeyValueStoreBoxWrapper {
     }
 
     async fn close(&self) -> std::result::Result<(), Self::Error> {
-        // Delega para o store interno usando close()
+        // Delegate to the inner store using close().
         self.inner.close().await
     }
 
@@ -1581,7 +1607,7 @@ impl Store for KeyValueStoreBoxWrapper {
     }
 
     fn events(&self) -> &dyn crate::events::EmitterInterface {
-        // events() está deprecated
+        // events() is deprecated.
         unimplemented!("events() is deprecated, use event_bus() instead")
     }
 
@@ -1589,16 +1615,12 @@ impl Store for KeyValueStoreBoxWrapper {
         self.inner.index()
     }
 
-    fn replication_status(&self) -> crate::stores::replicator::replication_info::ReplicationInfo {
-        self.inner.replication_status()
-    }
-
     fn cache(&self) -> Arc<dyn crate::data_store::Datastore> {
         self.inner.cache()
     }
 
     async fn load(&self, amount: usize) -> std::result::Result<(), Self::Error> {
-        // Delega diretamente para o inner store
+        // Delegate directly to the inner store.
         self.inner.load(amount).await
     }
 
@@ -1606,17 +1628,17 @@ impl Store for KeyValueStoreBoxWrapper {
         &self,
         heads: Vec<crate::log::entry::Entry>,
     ) -> std::result::Result<(), Self::Error> {
-        // Delega diretamente para o inner store
+        // Delegate directly to the inner store.
         self.inner.sync(heads).await
     }
 
     async fn load_more_from(&self, _amount: u64, entries: Vec<crate::log::entry::Entry>) {
-        // Delega diretamente para o inner store
+        // Delegate directly to the inner store.
         self.inner.load_more_from(_amount, entries).await
     }
 
     async fn load_from_snapshot(&self) -> std::result::Result<(), Self::Error> {
-        // Delega diretamente para o inner store
+        // Delegate directly to the inner store.
         self.inner.load_from_snapshot().await
     }
 
@@ -1645,7 +1667,7 @@ impl Store for KeyValueStoreBoxWrapper {
         op: crate::stores::operation::Operation,
         on_progress_callback: Option<crate::traits::ProgressCallback>,
     ) -> std::result::Result<crate::log::entry::Entry, Self::Error> {
-        // Delega diretamente para o inner store
+        // Delegate directly to the inner store.
         self.inner.add_operation(op, on_progress_callback).await
     }
 
@@ -1673,7 +1695,7 @@ impl KeyValueStore for KeyValueStoreBoxWrapper {
         key: &str,
         value: Vec<u8>,
     ) -> std::result::Result<crate::stores::operation::Operation, Self::Error> {
-        // Delega para o inner KeyValueStore que já tem put implementado
+        // Delegate to the inner KeyValueStore, which already implements put.
         self.inner.put(key, value).await
     }
 
@@ -1685,11 +1707,15 @@ impl KeyValueStore for KeyValueStoreBoxWrapper {
         &self,
         key: &str,
     ) -> std::result::Result<crate::stores::operation::Operation, Self::Error> {
-        // Delega para o inner KeyValueStore que já tem delete implementado
+        // Delegate to the inner KeyValueStore, which already implements delete.
         self.inner.delete(key).await
     }
 
     fn all(&self) -> std::collections::HashMap<String, Vec<u8>> {
         self.inner.all()
+    }
+
+    async fn share_ticket(&self) -> std::result::Result<String, Self::Error> {
+        self.inner.share_ticket().await
     }
 }

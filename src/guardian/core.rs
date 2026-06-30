@@ -16,11 +16,10 @@ use crate::traits::{
     TracerWrapper,
 };
 use hex;
-use iroh::NodeId;
+use iroh::EndpointId as NodeId;
 use iroh_blobs::Hash;
 use opentelemetry::global::BoxedTracer;
 use parking_lot::RwLock;
-use rand_core;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -29,12 +28,12 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::Span;
 
-// Type aliases para simplificar tipos complexos
+// Type aliases to simplify complex types.
 type CloseKeystoreFn = Arc<RwLock<Option<Box<dyn Fn() -> Result<()> + Send + Sync>>>>;
-// Type alias para Store com GuardianError
+// Type alias for a Store using GuardianError.
 type GuardianStore = dyn Store<Error = GuardianError> + Send + Sync;
 
-// Usamos `Option<T>` para campos que podem não ser fornecidos.
+// We use `Option<T>` for fields that may not be provided.
 #[derive(Default)]
 pub struct NewGuardianDBOptions {
     pub id: Option<String>,
@@ -72,7 +71,7 @@ pub struct GuardianDB {
     event_bus: Arc<EventBusImpl>,
     #[allow(dead_code)]
     message_marshaler: Arc<dyn MessageMarshaler<Error = GuardianError> + Send + Sync>,
-    _monitor_handle: JoinHandle<()>, // Handle para a task em background, para que possa ser cancelada no Drop.
+    _monitor_handle: JoinHandle<()>, // Handle for the background task, so it can be cancelled on Drop.
     cancellation_token: CancellationToken,
     emitters: Arc<Emitters>,
 }
@@ -209,7 +208,7 @@ impl Emitters {
 }
 
 impl EventExchangeHeads {
-    /// Cria uma nova instância de EventExchangeHeads.
+    /// Creates a new EventExchangeHeads instance.
     pub fn new(p: NodeId, msg: MessageExchangeHeads) -> Self {
         Self {
             peer: p,
@@ -306,47 +305,45 @@ impl EventPermissionDenied {
 }
 
 impl GuardianDB {
-    /// Construtor de alto nível que configura o Keystore e a Identidade.
+    /// High-level constructor that sets up the Keystore and the Identity.
     pub async fn new(
         client_config: Option<ClientConfig>,
         options: Option<NewGuardianDBOptions>,
     ) -> Result<Self> {
         let mut options = options.unwrap_or_default();
 
-        // Usar configuração padrão do Client se não fornecida
+        // Use the default Client configuration if none is provided.
         let client_config = client_config.unwrap_or_default();
 
-        // Extrair node_id ou gerar aleatório
-        let node_id = options.node_id.unwrap_or_else(|| {
-            use rand_core::OsRng;
-            iroh::SecretKey::generate(OsRng).public()
-        });
+        // Extract node_id or generate a random one.
+        let node_id = options
+            .node_id
+            .unwrap_or_else(|| iroh::SecretKey::generate().public());
 
-        // Criar backend Iroh
+        // Create the Iroh backend.
         let backend = Arc::new(IrohBackend::new(&client_config).await?);
         let client = IrohClient::new_with_backend(backend.clone()).await?;
 
-        // Se o diretório não for fornecido, usa um padrão baseado no node_id
+        // If no directory is provided, use a default based on the node_id.
         let default_dir = PathBuf::from("./GuardianDB").join(node_id.to_string());
         let directory = options.directory.as_ref().unwrap_or(&default_dir);
 
-        // Configura o Keystore se nenhum for fornecido.
-        // Usa o banco de dados `sled` como substituto do `leveldb`.
+        // Configure the Keystore if none is provided.
+        // Uses the `sled` database as a replacement for `leveldb`.
         if options.keystore.is_none() {
-            // Em `sled`, None para o path significa in-memory
+            // In `sled`, None for the path means in-memory.
             let sled_path = if directory.to_string_lossy() == "./GuardianDB/in-memory" {
                 None
             } else {
                 Some(directory.join(node_id.to_string()).join("keystore"))
             };
 
-            // Cria o keystore usando nossa implementação RedbKeystore
-            let keystore =
-                Arc::new(RedbKeystore::new(sled_path).map_err(|e| {
-                    GuardianError::Other(format!("Falha ao criar o keystore: {}", e))
-                })?);
+            // Create the keystore using our RedbKeystore implementation.
+            let keystore = Arc::new(RedbKeystore::new(sled_path).map_err(|e| {
+                GuardianError::Other(format!("Failed to create the keystore: {}", e))
+            })?);
 
-            // Cria a closure de fechamento
+            // Create the close closure.
             let keystore_clone = keystore.clone();
             options.close_keystore = Some(Box::new(move || {
                 tokio::task::block_in_place(|| {
@@ -355,11 +352,11 @@ impl GuardianDB {
                 })
             }));
 
-            // Define o keystore nas opções
+            // Set the keystore in the options.
             options.keystore = Some(Box::new(keystore));
         }
 
-        // Configura a identidade se nenhuma for fornecida.
+        // Configure the identity if none is provided.
         let identity = if let Some(identity) = options.identity {
             identity
         } else {
@@ -369,7 +366,7 @@ impl GuardianDB {
                 .unwrap_or(&node_id.to_string())
                 .to_string();
             let _keystore = options.keystore.as_ref().ok_or_else(|| {
-                GuardianError::Other("Keystore é necessário para criar uma identidade".to_string())
+                GuardianError::Other("A Keystore is required to create an identity".to_string())
             })?;
 
             // Try to load persisted identity from the data directory
@@ -414,38 +411,38 @@ impl GuardianDB {
         options.identity = Some(identity.clone());
         options.backend = Some(backend);
 
-        // Chama o construtor principal com as opções totalmente configuradas.
+        // Call the main constructor with the fully configured options.
         Self::new_guardian_db(client, identity, Some(options)).await
     }
 
-    /// Construtor principal para uma instância de GuardianDB.
+    /// Main constructor for a GuardianDB instance.
     pub async fn new_guardian_db(
         client: IrohClient,
         identity: Identity,
         options: Option<NewGuardianDBOptions>,
     ) -> Result<Self> {
-        // Usa as opções fornecidas ou cria um valor padrão.
+        // Use the provided options or create a default value.
         let options = options.unwrap_or_default();
 
-        // 1. Configuração de valores padrão para as opções
+        // 1. Configure default values for the options.
         let tracer = options.tracer.unwrap_or_else(|| {
-            // Usar um tracer básico para telemetria
+            // Use a basic tracer for telemetry.
             Arc::new(BoxedTracer::new(Box::new(
                 opentelemetry::trace::noop::NoopTracer::new(),
             )))
         });
 
-        // Cria span para esta instância do GuardianDB
+        // Create a span for this GuardianDB instance.
         let span = tracing::info_span!("guardian_db", node_id = %identity.id());
         // Initialize EventBus with proper configuration
         let event_bus = Arc::new(EventBusImpl::new());
 
-        // Extrair IrohBackend ou criar um novo (deve sempre estar presente via options)
+        // Extract the IrohBackend or create a new one (must always be present via options).
         let backend = options.backend.clone().ok_or_else(|| {
-            GuardianError::Other("IrohBackend é necessário nas opções".to_string())
+            GuardianError::Other("IrohBackend is required in the options".to_string())
         })?;
 
-        // Criar DirectChannelFactory
+        // Create the DirectChannelFactory.
         let own_node_id = client.node_id();
         let direct_channel_factory = options.direct_channel_factory.unwrap_or_else(|| {
             let temp_span = tracing::Span::none();
@@ -457,13 +454,13 @@ impl GuardianDB {
         });
         let cancellation_token = CancellationToken::new();
 
-        // Criar emitters usando o EventBus
+        // Create emitters using the EventBus.
         let emitters = Emitters::generate_emitters(&event_bus).await.map_err(|e| {
-            GuardianError::Other(format!("Falha ao gerar emitters do EventBus: {}", e))
+            GuardianError::Other(format!("Failed to generate EventBus emitters: {}", e))
         })?;
 
-        // 2. Inicialização de componentes
-        // Criar canal direto usando nossa factory
+        // 2. Initialize components.
+        // Create the direct channel using our factory.
         let direct_channel = make_direct_channel(
             &event_bus,
             direct_channel_factory,
@@ -474,9 +471,9 @@ impl GuardianDB {
         let message_marshaler_arc: Arc<dyn MessageMarshaler<Error = GuardianError> + Send + Sync> =
             match options.message_marshaler {
                 Some(boxed_marshaler) => {
-                    // Converte Box para Arc criando novo Arc com o conteúdo
-                    // Usamos Box::into_inner seria ideal, mas trait objects não permitem
-                    // Então criamos um wrapper que delega todas as chamadas
+                    // Convert Box into Arc by creating a new Arc with the content.
+                    // Box::into_inner would be ideal, but trait objects do not allow it,
+                    // so we create a wrapper that delegates all calls.
                     struct BoxWrapper(Box<dyn MessageMarshaler<Error = GuardianError>>);
                     impl MessageMarshaler for BoxWrapper {
                         type Error = GuardianError;
@@ -497,23 +494,23 @@ impl GuardianDB {
                     Arc::new(BoxWrapper(boxed_marshaler))
                 }
                 None => {
-                    // Criar diretamente como Arc para evitar conversão
+                    // Create directly as an Arc to avoid a conversion.
                     Arc::new(crate::message_marshaler::PostcardMarshaler::new())
                 }
             };
         let cache = options.cache.unwrap_or_else(|| {
-            // Cria um cache com configuração adequada
+            // Create a cache with an appropriate configuration.
             Arc::new(crate::cache::level_down::LevelDownCache::new(None))
         });
         let directory = options
             .directory
-            .unwrap_or_else(|| PathBuf::from("./GuardianDB/in-memory")); // Padrão para dados em memória
+            .unwrap_or_else(|| PathBuf::from("./GuardianDB/in-memory")); // Default for in-memory data.
 
-        // 3. Instanciação da struct GuardianDB
+        // 3. Instantiate the GuardianDB struct.
         let instance = GuardianDB {
             client,
             identity: Arc::new(RwLock::new(identity.clone())),
-            id: Arc::new(RwLock::new(own_node_id)), // NodeId do IrohBackend
+            id: Arc::new(RwLock::new(own_node_id)), // NodeId from the IrohBackend.
             pubsub: options.pubsub,
             cache: Arc::new(RwLock::new(cache)),
             directory,
@@ -528,7 +525,7 @@ impl GuardianDB {
             message_marshaler: message_marshaler_arc,
             cancellation_token: cancellation_token.clone(),
             emitters: Arc::new(emitters),
-            // Inicia o monitor do canal direto usando a função helper
+            // Start the direct channel monitor using the helper function.
             _monitor_handle: Self::start_monitor_task(
                 event_bus.clone(),
                 cancellation_token.clone(),
@@ -537,31 +534,31 @@ impl GuardianDB {
             span,
         };
 
-        // 4. Configuração pós-inicialização
-        // Registra os construtores padrão de stores
+        // 4. Post-initialization configuration.
+        // Register the default store constructors.
         instance.register_default_store_types();
 
-        // Configura o emitter "newHeads" no event_bus
-        tracing::debug!("Configurando emitters do EventBus");
+        // Configure the "newHeads" emitter on the event_bus.
+        tracing::debug!("Configuring EventBus emitters");
 
-        // Inicia o monitor do canal direto para processar mensagens recebidas
-        tracing::debug!("Iniciando monitor do canal direto");
+        // Start the direct channel monitor to process incoming messages.
+        tracing::debug!("Starting the direct channel monitor");
         if let Err(e) = instance.monitor_direct_channel(event_bus.clone()).await {
-            tracing::error!("Falha ao iniciar monitor do canal direto: {}", e);
+            tracing::error!("Failed to start the direct channel monitor: {}", e);
         } else {
-            tracing::info!("Monitor do canal direto iniciado com sucesso");
+            tracing::info!("Direct channel monitor started successfully");
         }
 
-        // Emite evento de inicialização do GuardianDB
+        // Emit the GuardianDB ready event.
         let ready_event = EventGuardianDBReady {
             address: format!("/GuardianDB/{}", instance.node_id()),
             db_type: "GuardianDB".to_string(),
         };
 
         if let Err(e) = instance.emitters.ready.emit(ready_event) {
-            tracing::warn!("Falha ao emitir evento GuardianDB ready: {}", e);
+            tracing::warn!("Failed to emit GuardianDB ready event: {}", e);
         } else {
-            tracing::debug!("Evento GuardianDB ready emitido com sucesso");
+            tracing::debug!("GuardianDB ready event emitted successfully");
         }
 
         Ok(instance)
@@ -589,110 +586,120 @@ impl GuardianDB {
         }
     }
 
-    /// Retorna o tracer para telemetria e monitoramento.
+    /// Returns the tracer for telemetry and monitoring.
     pub fn tracer(&self) -> Arc<BoxedTracer> {
         self.tracer.clone()
     }
 
-    /// Retorna uma referência ao span de tracing para instrumentação
+    /// Returns a reference to the tracing span used for instrumentation.
     pub fn span(&self) -> &Span {
         &self.span
     }
 
-    /// Retorna o Client do GuardianDB.
+    /// Returns the GuardianDB's Client.
     pub fn client(&self) -> &IrohClient {
         &self.client
     }
 
-    /// Retorna a identidade da instância do GuardianDB.
-    /// A identidade é clonada para que o chamador possa usá-la sem manter o lock de leitura ativo.
+    /// Returns the identity of the GuardianDB instance.
+    /// The identity is cloned so the caller can use it without holding the read lock.
     pub fn identity(&self) -> Identity {
         self.identity.read().clone()
     }
 
-    /// Retorna o NodeId da instância do GuardianDB.
-    /// `NodeId` implementa o trait `Copy`, então o valor é copiado, o que é muito eficiente.
+    /// Returns the NodeId of the GuardianDB instance.
+    /// `NodeId` implements the `Copy` trait, so the value is copied, which is very efficient.
     pub fn node_id(&self) -> NodeId {
         *self.id.read()
     }
 
-    /// Retorna um clone do `Arc` para o Keystore, permitindo o acesso compartilhado.
-    /// O keystore é configurado durante a inicialização e pode ser usado para operações criptográficas.
+    /// Returns a clone of the `Arc` to the Keystore, allowing shared access.
+    /// The keystore is configured during initialization and can be used for cryptographic operations.
     pub fn keystore(&self) -> Arc<RwLock<Option<Box<dyn Keystore + Send + Sync>>>> {
         self.keystore.clone()
     }
 
-    /// Retorna a função de fechamento para o Keystore, se existir.
+    /// Returns the close function for the Keystore, if one exists.
     ///
-    /// Esta função retorna uma closure que pode ser chamada para fechar o keystore.
-    /// A closure captura uma referência clonada para o campo close_keystore interno.
+    /// This function returns a closure that can be called to close the keystore.
+    /// The closure captures a cloned reference to the internal close_keystore field.
     ///
-    /// # Retorna
+    /// # Returns
     ///
-    /// - `Some(closure)` se uma função de fechamento foi configurada durante a inicialização
-    /// - `None` se nenhuma função de fechamento foi definida
+    /// - `Some(closure)` if a close function was configured during initialization
+    /// - `None` if no close function was set
     ///
-    /// # Alternativa
+    /// # Alternative
     ///
-    /// Para uma interface mais simples, use `close_key_store()` diretamente.
+    /// For a simpler interface, use `close_key_store()` directly.
     pub fn close_keystore(&self) -> Option<Box<dyn Fn() -> Result<()> + Send + Sync>> {
-        // Adquire lock de leitura para verificar se existe uma função de fechamento
+        // Acquire a read lock to check whether a close function exists.
         let guard = self.close_keystore.read();
-        // Verifica se existe uma função de fechamento
+        // Check whether a close function exists.
         if guard.is_some() {
-            // Se existe, clona o Arc interno para capturar na closure
+            // If it does, clone the inner Arc to capture it in the closure.
             let close_keystore_clone = self.close_keystore.clone();
-            // Retorna uma nova closure que executa a função de fechamento
-            // Dentro da closure retornada, verifica novamente se a função ainda existe
+            // Return a new closure that runs the close function.
+            // Inside the returned closure, re-check that the function still exists.
             Some(Box::new(move || {
                 let guard = close_keystore_clone.read();
                 if let Some(close_fn) = guard.as_ref() {
-                    close_fn() // Executa a função se ainda existir
+                    close_fn() // Run the function if it still exists.
                 } else {
-                    Ok(()) // Função foi removida entre a verificação e a execução
+                    Ok(()) // The function was removed between the check and the execution.
                 }
             }))
         } else {
-            None // Entre a primeira e segunda verificação, outro thread pode ter removido a função
+            None // Between the first and second check, another thread may have removed the function.
         }
     }
 
-    /// Adiciona ou atualiza uma store no mapa de stores gerenciadas.
-    /// Esta operação adquire um lock de escrita.
+    /// Adds or updates a store in the managed stores map.
+    /// This operation acquires a write lock.
     pub fn set_store(&self, address: String, store: Arc<GuardianStore>) {
         self.stores.write().insert(address, store);
     }
 
-    /// Remove uma store do mapa de stores gerenciadas.
-    /// Esta operação adquire um lock de escrita.
+    /// Removes a store from the managed stores map.
+    /// This operation acquires a write lock.
     pub fn delete_store(&self, address: &str) {
         self.stores.write().remove(address);
     }
 
-    /// Busca uma store no mapa pelo seu endereço.
-    /// Retorna `Some(store)` se encontrada, ou `None` caso contrário.
+    /// Looks up a store in the map by its address.
+    /// Returns `Some(store)` if found, or `None` otherwise.
     pub fn get_store(&self, address: &str) -> Option<Arc<GuardianStore>> {
         self.stores.read().get(address).cloned()
     }
 
-    /// Conecta e sincroniza com um peer específico
+    /// Returns a list of all managed stores with their addresses.
+    /// Each element is a tuple (address, reference to the store).
+    pub fn list_stores(&self) -> Vec<(String, Arc<GuardianStore>)> {
+        self.stores
+            .read()
+            .iter()
+            .map(|(addr, store)| (addr.clone(), Arc::clone(store)))
+            .collect()
+    }
+
+    /// Connects to and synchronizes with a specific peer.
     ///
-    /// Este método facilita a conexão manual com peers quando a descoberta
-    /// automática não é suficiente ou você quer forçar uma sincronização.
-    /// Funciona encontrando qualquer EventLogStore ativa e usando seu BaseStore
-    /// para iniciar a sincronização via exchange_heads.
+    /// This method facilitates manual peer connection when automatic discovery
+    /// is not enough or you want to force a synchronization.
+    /// It works by finding any active EventLogStore and using its BaseStore
+    /// to start the synchronization via exchange_heads.
     ///
-    /// # Argumentos
-    /// * `peer_id` - NodeId do peer com quem sincronizar
+    /// # Arguments
+    /// * `peer_id` - NodeId of the peer to synchronize with
     ///
-    /// # Retorna
-    /// `Ok(())` se a sincronização foi iniciada com sucesso
+    /// # Returns
+    /// `Ok(())` if the synchronization was started successfully
     pub async fn connect_to_peer(&self, peer_id: NodeId) -> Result<()> {
         tracing::info!(peer = %peer_id, "Establishing connection with peer");
 
-        // PASSO 1: Estabelece conexão QUIC via gossip ALPN
-        // CRÍTICO: O Iroh gossip requer que os peers estejam conectados via QUIC
-        // com o ALPN "/iroh-gossip/1" ANTES de formar o mesh
+        // STEP 1: Establish a QUIC connection via the gossip ALPN.
+        // CRITICAL: Iroh gossip requires peers to be connected via QUIC
+        // with the ALPN "/iroh-gossip/1" BEFORE forming the mesh.
         tracing::debug!(peer = %peer_id, "Establishing QUIC connection via gossip ALPN");
 
         if let Err(e) = self.client.connect_gossip(peer_id).await {
@@ -701,27 +708,27 @@ impl GuardianDB {
                 error = %e,
                 "Failed to establish gossip QUIC connection, but continuing anyway (peer may already be connected)"
             );
-            // Não retorna erro - pode ser que já esteja conectado ou tenha outro caminho
+            // Do not return an error - the peer may already be connected or have another path.
         } else {
             tracing::info!(peer = %peer_id, "✓ Gossip QUIC connection established");
         }
 
-        // PASSO 2: Encontra stores ativas para iniciar sincronização
-        // Suporta EventLogStore, KeyValueStore e DocumentStore
+        // STEP 2: Find active stores to start synchronization.
+        // Supports EventLogStore, KeyValueStore and DocumentStore.
         let stores: Vec<_> = self.stores.read().values().cloned().collect();
 
         for store in &stores {
-            // Macro para sincronizar basestore de qualquer tipo de store
+            // Macro to synchronize the basestore of any store type.
             macro_rules! sync_store {
                 ($store_ref:expr, $store_type:expr) => {{
                     let basestore = $store_ref.basestore();
                     tracing::info!(
                         peer = %peer_id,
                         store_type = $store_type,
-                        "[SYNC] Iniciando sincronização com peer"
+                        "[SYNC] Starting synchronization with peer"
                     );
 
-                    // Adiciona o peer ao gossip mesh antes de enviar heads
+                    // Add the peer to the gossip mesh before sending heads.
                     let pubsub = basestore.pubsub();
                     if let Some(epidemic_pubsub) = pubsub
                         .as_any()
@@ -744,7 +751,7 @@ impl GuardianDB {
                 }};
             }
 
-            // Tenta fazer downcast para EventLogStore
+            // Try to downcast to EventLogStore.
             if let Some(event_log_store) = store
                 .as_any()
                 .downcast_ref::<crate::stores::event_log_store::GuardianDBEventLogStore>(
@@ -752,7 +759,7 @@ impl GuardianDB {
                 sync_store!(event_log_store, "eventlog");
             }
 
-            // KeyValueStore usa iroh-docs (Willow range sync) — não precisa de exchange_heads
+            // KeyValueStore uses iroh-docs (Willow range sync) — no exchange_heads needed.
             if store
                 .as_any()
                 .downcast_ref::<crate::stores::kv_store::GuardianDBKeyValue>()
@@ -761,13 +768,13 @@ impl GuardianDB {
                 tracing::info!(
                     peer = %peer_id,
                     store_type = "keyvalue",
-                    "[SYNC] KeyValueStore usa iroh-docs Willow sync — sync automático"
+                    "[SYNC] KeyValueStore uses iroh-docs Willow sync — automatic sync"
                 );
                 return Ok(());
             }
 
-            // Tenta fazer downcast para DocumentStore
-            // DocumentStore usa iroh-docs Willow sync — sync automático
+            // Try to downcast to DocumentStore.
+            // DocumentStore uses iroh-docs Willow sync — automatic sync.
             if store
                 .as_any()
                 .downcast_ref::<crate::stores::document_store::GuardianDBDocumentStore>()
@@ -776,27 +783,27 @@ impl GuardianDB {
                 tracing::info!(
                     peer = %peer_id,
                     store_type = "document",
-                    "[SYNC] DocumentStore usa iroh-docs Willow sync — sync automático"
+                    "[SYNC] DocumentStore uses iroh-docs Willow sync — automatic sync"
                 );
                 return Ok(());
             }
         }
 
         Err(GuardianError::Store(
-            "Nenhuma store ativa encontrada para sincronização. Crie uma store com db.log(), db.key_value() ou db.docs() primeiro.".to_string()
+            "No active store found for synchronization. Create a store with db.log(), db.key_value() or db.docs() first.".to_string()
         ))
     }
 
-    /// Itera sobre todas as stores gerenciadas e chama o método `close()` de cada uma.
-    /// Clona a lista de stores para evitar manter o lock durante a chamada a `close()`,
-    /// prevenindo possíveis deadlocks.
+    /// Iterates over all managed stores and calls `close()` on each one.
+    /// Clones the store list to avoid holding the lock during the `close()` call,
+    /// preventing potential deadlocks.
     pub async fn close_all_stores(&self) {
         let stores_to_close: Vec<Arc<GuardianStore>> =
             self.stores.read().values().cloned().collect();
 
         tracing::debug!(
             store_count = stores_to_close.len(),
-            "Iniciando fechamento de stores"
+            "Starting to close stores"
         );
 
         for (index, store) in stores_to_close.iter().enumerate() {
@@ -805,7 +812,7 @@ impl GuardianDB {
                 total_stores = stores_to_close.len(),
                 store_type = store.store_type(),
                 address = %store.address(),
-                "Fechando store"
+                "Closing store"
             );
 
             match store.close().await {
@@ -813,7 +820,7 @@ impl GuardianDB {
                     tracing::debug!(
                         store_type = store.store_type(),
                         address = %store.address(),
-                        "Store fechada com sucesso"
+                        "Store closed successfully"
                     );
                 }
                 Err(e) => {
@@ -821,79 +828,79 @@ impl GuardianDB {
                         store_type = store.store_type(),
                         address = %store.address(),
                         error = %e,
-                        "Erro ao fechar store"
+                        "Error closing store"
                     );
-                    // Continua fechando outras stores mesmo se uma falhar
+                    // Keep closing other stores even if one fails.
                 }
             }
         }
 
-        // Limpa o mapa de stores após fechar todas
+        // Clear the store map after closing them all.
         self.stores.write().clear();
         tracing::debug!(
             stores_count = stores_to_close.len(),
-            "Todas as stores foram processadas e removidas do mapa"
+            "All stores were processed and removed from the map"
         );
     }
 
-    /// Fecha o cache LevelDown, garantindo que todos os dados sejam persistidos
-    /// e liberando os recursos associados.
+    /// Closes the LevelDown cache, ensuring all data is persisted
+    /// and releasing the associated resources.
     pub fn close_cache(&self) {
-        tracing::debug!("Iniciando fechamento do cache");
+        tracing::debug!("Starting cache shutdown");
 
-        // Obtém lock de escrita no cache para realizar o fechamento
+        // Acquire a write lock on the cache to perform the shutdown.
         let cache_guard = self.cache.write();
 
-        // Fecha o cache usando o método direto da instância
+        // Close the cache using the instance's direct method.
         match cache_guard.close_internal() {
             Ok(()) => {
-                tracing::debug!("Cache fechado com sucesso");
+                tracing::debug!("Cache closed successfully");
             }
             Err(e) => {
-                tracing::error!(error = %e, "Erro ao fechar cache");
+                tracing::error!(error = %e, "Error closing cache");
             }
         }
 
-        // O lock é automaticamente liberado quando cache_guard sai de escopo
+        // The lock is automatically released when cache_guard goes out of scope.
     }
 
-    /// Fecha o canal de comunicação direta e registra um erro se a operação falhar.
+    /// Closes the direct communication channel and logs an error if the operation fails.
     pub async fn close_direct_connections(&self) {
-        tracing::debug!("Iniciando fechamento do canal direto");
+        tracing::debug!("Starting direct channel shutdown");
 
         match self.direct_channel.close_shared().await {
             Ok(()) => {
-                tracing::debug!("Canal direto fechado com sucesso");
+                tracing::debug!("Direct channel closed successfully");
             }
             Err(e) => {
                 tracing::error!(
                     error = %e,
-                    "Erro ao fechar canal direto"
+                    "Error closing direct channel"
                 );
             }
         }
     }
 
-    /// Executa a função de fechamento do keystore, se ela tiver sido definida.
-    /// Adquire um lock de escrita para garantir que a função não seja modificada enquanto é lida e executada.
+    /// Runs the keystore close function, if one was set.
+    /// Acquires a write lock to ensure the function is not modified while being read and executed.
     pub fn close_key_store(&self) {
         let guard = self.close_keystore.write();
         if let Some(close_fn) = guard.as_ref()
             && let Err(e) = close_fn()
         {
-            tracing::error!(error = %e, "não foi possível fechar o keystore");
+            tracing::error!(error = %e, "could not close the keystore");
         }
     }
 
-    /// Busca um construtor de AccessController pelo seu tipo (nome).
-    /// Retorna `Some(constructor)` se encontrado, ou `None` caso contrário.
+    /// Looks up an AccessController constructor by its type (name).
+    /// Returns `Some(constructor)` if found, or `None` otherwise.
     pub fn get_access_control_type(
         &self,
         controller_type: &str,
     ) -> Option<AccessControllerConstructor> {
         tracing::debug!(
             controller_type = controller_type,
-            "Buscando construtor de AccessController"
+            "Looking up AccessController constructor"
         );
 
         let access_controls = self.access_control_types.read();
@@ -902,7 +909,7 @@ impl GuardianDB {
             Some(constructor) => {
                 tracing::debug!(
                     controller_type = controller_type,
-                    "Construtor de AccessController encontrado"
+                    "AccessController constructor found"
                 );
                 Some(constructor.clone())
             }
@@ -910,30 +917,30 @@ impl GuardianDB {
                 tracing::debug!(
                     controller_type = controller_type,
                     available_types = ?access_controls.keys().collect::<Vec<_>>(),
-                    "Construtor de AccessController não encontrado"
+                    "AccessController constructor not found"
                 );
                 None
             }
         }
     }
 
-    /// Retorna uma lista com os nomes de todos os tipos de AccessController registrados.
-    /// Função auxiliar para debug e listagem de tipos disponíveis.
+    /// Returns a list of the names of all registered AccessController types.
+    /// Helper function for debugging and listing available types.
     pub fn access_control_types_names(&self) -> Vec<String> {
         self.access_control_types.read().keys().cloned().collect()
     }
 
-    /// Remove um construtor de AccessController do mapa pelo seu tipo.
-    /// Esta operação adquire um lock de escrita.
+    /// Removes an AccessController constructor from the map by its type.
+    /// This operation acquires a write lock.
     pub fn unregister_access_control_type(&self, controller_type: &str) {
         self.access_control_types.write().remove(controller_type);
     }
 
-    /// Registra um novo tipo de AccessController.
-    /// A função construtora é executada uma vez para determinar o nome do tipo.
+    /// Registers a new AccessController type.
+    /// The constructor function is run once to determine the type name.
     ///
-    /// Executa o construtor para determinar o tipo dinâmico
-    /// Registra um novo tipo de AccessController com tipo explícito.
+    /// Runs the constructor to determine the dynamic type.
+    /// Registers a new AccessController type with an explicit type.
     pub fn register_access_control_type_with_name(
         &self,
         controller_type: &str,
@@ -941,67 +948,67 @@ impl GuardianDB {
     ) -> Result<()> {
         tracing::debug!(
             controller_type = %controller_type,
-            "Registrando novo tipo de AccessController"
+            "Registering new AccessController type"
         );
 
-        // Validações do tipo
+        // Type validations.
         if controller_type.is_empty() {
             return Err(GuardianError::InvalidArgument(
-                "O tipo do controller não pode ser uma string vazia".to_string(),
+                "The controller type cannot be an empty string".to_string(),
             ));
         }
 
         if controller_type.len() > 100 {
             return Err(GuardianError::InvalidArgument(
-                "O tipo do controller é muito longo (máximo 100 caracteres)".to_string(),
+                "The controller type is too long (maximum 100 characters)".to_string(),
             ));
         }
 
-        // Valida tipos conhecidos
+        // Validate known types.
         let valid_types = ["simple", "guardian", "iroh"];
         if !valid_types.contains(&controller_type) {
             tracing::warn!(
                 controller_type = %controller_type,
                 valid_types = ?valid_types,
-                "Tipo de AccessController não reconhecido - registrando mesmo assim"
+                "Unrecognized AccessController type - registering anyway"
             );
         }
 
-        // Verifica se o tipo já está registrado
+        // Check whether the type is already registered.
         {
             let existing_types = self.access_control_types.read();
             if existing_types.contains_key(controller_type) {
                 tracing::warn!(
                     controller_type = %controller_type,
-                    "AccessController já registrado - sobrescrevendo"
+                    "AccessController already registered - overwriting"
                 );
             } else {
                 tracing::debug!(
                     controller_type = %controller_type,
-                    "Novo tipo de AccessController sendo registrado"
+                    "New AccessController type being registered"
                 );
             }
         }
 
-        // Registra o construtor no mapa
+        // Register the constructor in the map.
         self.access_control_types
             .write()
             .insert(controller_type.to_string(), constructor);
 
         tracing::debug!(
             controller_type = %controller_type,
-            "AccessController registrado com sucesso"
+            "AccessController registered successfully"
         );
 
         Ok(())
     }
 
-    /// Método legado mantido por compatibilidade - usa tipo padrão "simple"
+    /// Legacy method kept for compatibility - uses the default "simple" type.
     pub async fn register_access_control_type(
         &self,
         constructor: AccessControllerConstructor,
     ) -> Result<()> {
-        tracing::debug!("Usando registro legado com tipo padrão 'simple'");
+        tracing::debug!("Using legacy registration with default 'simple' type");
         self.register_access_control_type_with_name("simple", constructor)
     }
 
@@ -1009,81 +1016,81 @@ impl GuardianDB {
         self.store_types.write().insert(store_type, constructor);
     }
 
-    /// Remove um construtor de Store do mapa pelo seu tipo.
+    /// Removes a Store constructor from the map by its type.
     pub fn unregister_store_type(&self, store_type: &str) {
         self.store_types.write().remove(store_type);
     }
 
-    /// Retorna uma lista com os nomes de todos os tipos de Store registrados.
+    /// Returns a list of the names of all registered Store types.
     pub fn store_types_names(&self) -> Vec<String> {
         self.store_types.read().keys().cloned().collect()
     }
 
-    /// Busca um construtor de Store pelo seu tipo (nome).
-    /// Retorna `Some(constructor)` se encontrado, ou `None` caso contrário.
+    /// Looks up a Store constructor by its type (name).
+    /// Returns `Some(constructor)` if found, or `None` otherwise.
     pub fn get_store_constructor(&self, store_type: &str) -> Option<StoreConstructor> {
-        tracing::debug!(store_type = store_type, "Buscando construtor de Store");
+        tracing::debug!(store_type = store_type, "Looking up Store constructor");
 
         let store_constructors = self.store_types.read();
 
         match store_constructors.get(store_type) {
             Some(constructor) => {
-                tracing::debug!(store_type = store_type, "Construtor de Store encontrado");
+                tracing::debug!(store_type = store_type, "Store constructor found");
                 Some(constructor.clone())
             }
             None => {
                 tracing::debug!(
                     store_type = store_type,
                     available_types = ?store_constructors.keys().collect::<Vec<_>>(),
-                    "Construtor de Store não encontrado"
+                    "Store constructor not found"
                 );
                 None
             }
         }
     }
 
-    /// Encerra a instância do GuardianDB, fechando todas as stores, conexões e tarefas em background.
+    /// Shuts down the GuardianDB instance, closing all stores, connections and background tasks.
     pub async fn close(&self) -> Result<()> {
         let _entered = self.span.enter();
-        tracing::debug!("Iniciando fechamento do GuardianDB");
+        tracing::debug!("Starting GuardianDB shutdown");
 
-        // Close all stores first (async operation) - com tratamento de erro
-        tracing::debug!("Fechando todas as stores");
+        // Close all stores first (async operation) - with error handling.
+        tracing::debug!("Closing all stores");
         self.close_all_stores().await;
 
-        // Close direct connections (async operation) - com tratamento de erro
-        tracing::debug!("Fechando conexões diretas");
+        // Close direct connections (async operation) - with error handling.
+        tracing::debug!("Closing direct connections");
         self.close_direct_connections().await;
 
         // Close cache (synchronous operation)
-        tracing::debug!("Fechando cache");
+        tracing::debug!("Closing cache");
         self.close_cache();
 
-        // Close keystore (synchronous operation) - com tratamento de erro
-        tracing::debug!("Fechando keystore");
+        // Close keystore (synchronous operation) - with error handling.
+        tracing::debug!("Closing keystore");
         self.close_key_store();
 
-        // Fechar emitters usando o EventBus
-        // Note: Nossos emitters não precisam de close explícito pois usam Tokio broadcast channels
-        // que são automaticamente limpos quando o EventBus é dropado
-        tracing::debug!("Emitters serão fechados automaticamente com o EventBus");
+        // Close emitters using the EventBus.
+        // Note: our emitters do not need an explicit close since they use Tokio broadcast channels,
+        // which are automatically cleaned up when the EventBus is dropped.
+        tracing::debug!("Emitters will be closed automatically with the EventBus");
 
-        // Sinaliza para todas as tarefas em background (como `monitor_direct_channel`) para encerrarem.
-        tracing::debug!("Cancelando tarefas em background");
+        // Signal all background tasks (such as `monitor_direct_channel`) to shut down.
+        tracing::debug!("Cancelling background tasks");
         self.cancellation_token.cancel();
 
-        // Abortar explicitamente a task do monitor para evitar quedas na finalização
-        tracing::debug!("Abortando task do monitor do canal direto");
+        // Explicitly abort the monitor task to avoid hangs during shutdown.
+        tracing::debug!("Aborting the direct channel monitor task");
         self._monitor_handle.abort();
 
-        // Pequeno atraso para permitir que o abort propague
+        // Small delay to allow the abort to propagate.
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-        tracing::debug!("GuardianDB fechado com sucesso");
+        tracing::debug!("GuardianDB closed successfully");
         Ok(())
     }
 
-    /// Cria um novo banco de dados (store), determina seu endereço, salva localmente e o abre.
+    /// Creates a new database (store), determines its address, saves it locally and opens it.
     pub async fn create(
         &self,
         name: &str,
@@ -1094,7 +1101,7 @@ impl GuardianDB {
         tracing::debug!("Create()");
         let options = options.unwrap_or_default();
 
-        // O diretório pode ser passado como uma opção, caso contrário, usa o padrão da instância.
+        // The directory can be passed as an option; otherwise, use the instance default.
         let directory = options
             .directory
             .clone()
@@ -1106,10 +1113,10 @@ impl GuardianDB {
             name = name,
             store_type = store_type,
             directory = %directory,
-            "Criando banco de dados"
+            "Creating database"
         );
 
-        // Cria o endereço do banco de dados.
+        // Create the database address.
         let determine_opts = crate::traits::DetermineAddressOptions {
             only_hash: None,
             replicate: None,
@@ -1120,45 +1127,42 @@ impl GuardianDB {
             .determine_address(name, store_type, Some(determine_opts))
             .await?;
 
-        // Carrega o cache salvo localmente.
+        // Load the locally saved cache.
         let directory_path = PathBuf::from(&directory);
         self.load_cache(directory_path.as_path(), &db_address)
             .await?;
 
-        // Verifica se o banco de dados já existe localmente.
+        // Check whether the database already exists locally.
         let have_db = self.have_local_data_in(&db_address, &directory).await;
 
         if have_db && !options.overwrite.unwrap_or(false) {
             return Err(GuardianError::DatabaseAlreadyExists(db_address.to_string()));
         }
 
-        // Salva o manifesto do banco de dados localmente.
+        // Save the database manifest locally.
         self.add_manifest_to_cache(&directory_path, &db_address)
             .await
             .map_err(|e| {
-                GuardianError::Other(format!(
-                    "não foi possível adicionar o manifesto ao cache: {}",
-                    e
-                ))
+                GuardianError::Other(format!("could not add the manifest to the cache: {}", e))
             })?;
 
         tracing::debug!(
             address = %db_address,
-            "Banco de dados criado"
+            "Database created"
         );
 
-        // Abre o banco de dados.
+        // Open the database.
         self.open(&db_address.to_string(), options).await
     }
 
-    /// Abre um banco de dados a partir de um endereço GuardianDB.
+    /// Opens a database from a GuardianDB address.
     pub async fn open(
         &self,
         db_address: &str,
         options: CreateDBOptions,
     ) -> Result<Arc<GuardianStore>> {
         let _entered = self.span.enter();
-        tracing::debug!(address = db_address, "abrindo store GuardianDB");
+        tracing::debug!(address = db_address, "opening GuardianDB store");
         let mut options = options;
 
         let directory = options
@@ -1167,33 +1171,33 @@ impl GuardianDB {
             .unwrap_or_else(|| self.directory.to_string_lossy().to_string());
         options.directory = Some(directory.clone());
 
-        // Valida o endereço. Se for inválido, tenta criar um novo banco de dados se a opção `create` for verdadeira.
+        // Validate the address. If invalid, try to create a new database if the `create` option is true.
         if crate::address::is_valid(db_address).is_err() {
-            tracing::warn!(address = db_address, "open: Endereço GuardianDB inválido");
+            tracing::warn!(address = db_address, "open: Invalid GuardianDB address");
             if !options.create.unwrap_or(false) {
-                return Err(GuardianError::InvalidArgument("'options.create' definido como 'false'. Se você quer criar um banco de dados, defina como 'true'".to_string()));
+                return Err(GuardianError::InvalidArgument("'options.create' set to 'false'. If you want to create a database, set it to 'true'".to_string()));
             }
             let store_type = options.store_type.as_deref().unwrap_or("");
             if store_type.is_empty() {
                 let available_types = self.store_types_names();
                 let types_list = if available_types.is_empty() {
-                    "Nenhum tipo de store registrado".to_string()
+                    "No store type registered".to_string()
                 } else {
-                    format!("Tipos disponíveis: {}", available_types.join(", "))
+                    format!("Available types: {}", available_types.join(", "))
                 };
                 return Err(GuardianError::InvalidArgument(format!(
-                    "Tipo de banco de dados não fornecido! Forneça um tipo com 'options.store_type'. {}",
+                    "Database type not provided! Provide a type with 'options.store_type'. {}",
                     types_list
                 )));
             }
 
             options.overwrite = Some(true);
-            // Para evitar o borrow check, criamos novas options preservando o event_bus
+            // To avoid the borrow checker, we create new options preserving the event_bus.
             let new_options = CreateDBOptions {
                 overwrite: Some(true),
                 create: Some(true),
                 store_type: Some(store_type.to_string()),
-                event_bus: options.event_bus.clone(), // Preserva o event_bus!
+                event_bus: options.event_bus.clone(), // Preserve the event_bus!
                 ..Default::default()
             };
 
@@ -1202,7 +1206,7 @@ impl GuardianDB {
         }
 
         let parsed_address = crate::address::parse(db_address)
-            .map_err(|e| GuardianError::Other(format!("Erro ao fazer parse do endereço: {}", e)))?;
+            .map_err(|e| GuardianError::Other(format!("Error parsing the address: {}", e)))?;
 
         let directory_path = PathBuf::from(&directory);
         self.load_cache(directory_path.as_path(), &parsed_address)
@@ -1212,72 +1216,70 @@ impl GuardianDB {
             && !self.have_local_data_in(&parsed_address, &directory).await
         {
             return Err(GuardianError::NotFound(format!(
-                "O banco de dados não existe localmente: {}",
+                "The database does not exist locally: {}",
                 db_address
             )));
         }
 
-        // Se overwrite está ativo e temos um store_type, usa ele diretamente sem ler o manifesto
+        // If overwrite is active and we have a store_type, use it directly without reading the manifest.
         let manifest_type = if options.overwrite.unwrap_or(false) && options.store_type.is_some() {
-            tracing::debug!("Overwrite ativo, usando store_type das opções");
+            tracing::debug!("Overwrite active, using store_type from options");
             options.store_type.clone().unwrap()
         } else {
-            // Lê o manifesto para determinar o tipo do banco de dados
+            // Read the manifest to determine the database type.
             if self.have_local_data_in(&parsed_address, &directory).await {
-                // Se temos dados locais, primeiro tenta ler do cache local
-                tracing::debug!(
-                    "Dados encontrados localmente, tentando ler do cache antes do iroh"
-                );
+                // If we have local data, first try to read from the local cache.
+                tracing::debug!("Data found locally, trying to read from cache before iroh");
 
-                // Leitura do cache local
+                // Read the local cache.
                 let _cache_key = format!("{}/_manifest", parsed_address);
 
-                // Tenta primeiro o cache, depois fallback para Client
+                // Try the cache first, then fall back to the Client.
                 let cache_result = {
                     let cache = self.cache.read();
                     let directory_str = directory_path.to_string_lossy();
 
-                    // Tenta carregar os dados do cache usando métodos internos
+                    // Try to load the data from the cache using internal methods.
                     match cache.load_internal(&directory_str, &parsed_address as &dyn Address) {
                         Ok(wrapped_cache) => {
-                            // Cache carregado com sucesso, agora verifica se o manifesto existe
+                            // Cache loaded successfully, now check whether the manifest exists.
                             let manifest_key = format!("{}/_manifest", parsed_address);
 
                             tracing::debug!(
                                 key = %manifest_key,
                                 cache_loaded = true,
-                                "Verificando manifesto no cache"
+                                "Checking the manifest in the cache"
                             );
 
-                            // Prepara contexto e chave para o cache
+                            // Prepare the context and key for the cache.
                             let mut ctx: Box<dyn std::any::Any> = Box::new(());
                             let key = crate::data_store::Key::new(&manifest_key);
 
-                            // Tenta obter o manifesto do cache
+                            // Try to get the manifest from the cache.
                             match wrapped_cache.get(ctx.as_mut(), &key) {
                                 Ok(manifest_data) => {
                                     tracing::debug!(
                                         key = %manifest_key,
                                         data_size = manifest_data.len(),
-                                        "Manifesto encontrado no cache"
+                                        "Manifest found in the cache"
                                     );
 
-                                    // Valida se os dados são um tipo de store válido
+                                    // Validate that the data is a valid store type.
                                     let manifest_type =
                                         String::from_utf8_lossy(&manifest_data).to_string();
 
-                                    // Verifica se o tipo está registrado
+                                    // Check whether the type is registered.
                                     if self.get_store_constructor(&manifest_type).is_some() {
                                         tracing::debug!(
                                             manifest_type = %manifest_type,
-                                            "Manifesto válido encontrado no cache"
+                                            "Valid manifest found in the cache"
                                         );
                                         Some(manifest_data)
                                     } else {
                                         tracing::warn!(
                                             manifest_type = %manifest_type,
                                             available_types = ?self.store_types_names(),
-                                            "Tipo de manifesto no cache não está registrado"
+                                            "Manifest type in the cache is not registered"
                                         );
                                         None
                                     }
@@ -1286,7 +1288,7 @@ impl GuardianDB {
                                     tracing::debug!(
                                         key = %manifest_key,
                                         error = %e,
-                                        "Manifesto não encontrado no cache"
+                                        "Manifest not found in the cache"
                                     );
                                     None
                                 }
@@ -1295,7 +1297,7 @@ impl GuardianDB {
                         Err(e) => {
                             tracing::debug!(
                                 error = %e,
-                                "Falha ao carregar cache, usando iroh"
+                                "Failed to load cache, using iroh"
                             );
                             None
                         }
@@ -1304,44 +1306,44 @@ impl GuardianDB {
 
                 match cache_result {
                     Some(cached_data) => {
-                        tracing::debug!("Manifesto encontrado no cache local");
-                        // Parse do tipo do manifesto a partir dos dados do cache
+                        tracing::debug!("Manifest found in the local cache");
+                        // Parse the manifest type from the cached data.
                         String::from_utf8_lossy(&cached_data).to_string()
                     }
                     None => {
-                        tracing::debug!("Cache miss, lendo manifesto");
+                        tracing::debug!("Cache miss, reading manifest");
                         let manifest = db_manifest::read_db_manifest(
                             self.client(),
                             &parsed_address.get_root(),
                         )
                         .await
                         .map_err(|e| {
-                            GuardianError::Other(format!("Não foi possível ler o manifesto: {}", e))
+                            GuardianError::Other(format!("Could not read the manifest: {}", e))
                         })?;
                         manifest.get_type
                     }
                 }
             } else {
-                // Se não temos dados locais, lê diretamente do Client
-                tracing::debug!("Dados não encontrados localmente, lendo manifesto");
+                // If we have no local data, read directly from the Client.
+                tracing::debug!("Data not found locally, reading manifest");
                 let manifest =
                     db_manifest::read_db_manifest(self.client(), &parsed_address.get_root())
                         .await
                         .map_err(|e| {
-                            GuardianError::Other(format!("Não foi possível ler o manifesto: {}", e))
+                            GuardianError::Other(format!("Could not read the manifest: {}", e))
                         })?;
                 manifest.get_type
             }
         };
 
-        tracing::debug!(manifest_type = %manifest_type, "Tipo do banco de dados detectado");
-        tracing::debug!("Criando instância da store");
+        tracing::debug!(manifest_type = %manifest_type, "Database type detected");
+        tracing::debug!("Creating store instance");
 
         self.create_store(&manifest_type, &parsed_address, options)
             .await
     }
 
-    /// Determina o endereço de um banco de dados criando seu manifesto e salvando no Client.
+    /// Determines a database address by creating its manifest and saving it to the Client.
     pub async fn determine_address(
         &self,
         name: &str,
@@ -1350,72 +1352,70 @@ impl GuardianDB {
     ) -> Result<GuardianDBAddress> {
         let _options = options.unwrap_or_default();
 
-        // Valida se o tipo de store está registrado
+        // Validate that the store type is registered.
         if self.get_store_constructor(store_type).is_none() {
             let available_types = self.store_types_names();
             return Err(GuardianError::InvalidArgument(format!(
-                "Tipo de banco de dados inválido: {}. Tipos disponíveis: {:?}",
+                "Invalid database type: {}. Available types: {:?}",
                 store_type, available_types
             )));
         }
 
         if crate::address::is_valid(name).is_ok() {
             return Err(GuardianError::InvalidArgument(
-                "O nome do banco de dados fornecido já é um endereço válido".to_string(),
+                "The provided database name is already a valid address".to_string(),
             ));
         }
 
-        // Cria opções para o access controller com configurações adequadas
+        // Create options for the access controller with appropriate settings.
         let _ac_params =
             crate::access_control::manifest::CreateAccessControllerOptions::new_empty();
 
-        // Criação do Access Controller
-        // Gera um endereço baseado no hash do manifesto e identidade do usuário
+        // Access Controller creation.
+        // Generate an address based on the manifest hash and the user's identity.
         let identity_hash = hex::encode(self.identity().pub_key.as_bytes());
         let ac_address_string = format!("/iroh/{}/access_control/{}", name, &identity_hash[..8]);
 
         tracing::debug!(
             address = %ac_address_string,
             identity = %&identity_hash[..16],
-            "Access Controller criado"
+            "Access Controller created"
         );
 
-        // Cria o manifesto do banco de dados no Client
+        // Create the database manifest on the Client.
         let manifest_hash =
             db_manifest::create_db_manifest(self.client(), name, store_type, &ac_address_string)
                 .await
-                .map_err(|e| {
-                    GuardianError::Other(format!("Não foi possível salvar o manifesto: {}", e))
-                })?;
+                .map_err(|e| GuardianError::Other(format!("Could not save the manifest: {}", e)))?;
 
-        // Constrói e retorna o endereço final do GuardianDB
+        // Build and return the final GuardianDB address.
         let addr_string = format!("/GuardianDB/{}/{}", manifest_hash, name);
         crate::address::parse(&addr_string)
-            .map_err(|e| GuardianError::Other(format!("Erro ao fazer parse do endereço: {}", e)))
+            .map_err(|e| GuardianError::Other(format!("Error parsing the address: {}", e)))
     }
 
-    /// Carrega o cache para um determinado endereço de banco de dados.
+    /// Loads the cache for a given database address.
     pub async fn load_cache(&self, directory: &Path, db_address: &GuardianDBAddress) -> Result<()> {
-        // Carrega o cache usando o LevelDownCache
+        // Load the cache using the LevelDownCache.
         let cache = self.cache.read();
         let directory_str = directory.to_string_lossy();
 
         tracing::debug!(
             address = %db_address,
             directory = %directory_str,
-            "Carregando cache para endereço"
+            "Loading cache for address"
         );
 
-        // Carrega o cache específico para este endereço
+        // Load the cache specific to this address.
         let _loaded_cache = cache
             .load_internal(&directory_str, db_address)
-            .map_err(|e| GuardianError::Other(format!("Falha ao carregar cache: {}", e)))?;
+            .map_err(|e| GuardianError::Other(format!("Failed to load cache: {}", e)))?;
 
-        tracing::debug!(address = %db_address, "Cache carregado com sucesso");
+        tracing::debug!(address = %db_address, "Cache loaded successfully");
         Ok(())
     }
 
-    /// Verifica se o manifesto de um banco de dados existe no cache local.
+    /// Checks whether a database manifest exists in the local cache.
     pub async fn have_local_data_in(
         &self,
         db_address: &GuardianDBAddress,
@@ -1423,35 +1423,35 @@ impl GuardianDB {
     ) -> bool {
         let _cache_key = format!("{}/_manifest", db_address);
 
-        // Verificar se os dados existem no cache
+        // Check whether the data exists in the cache.
         let cache = self.cache.read();
         let directory_str = directory;
 
-        // Tenta carregar o cache e verificar se o manifesto existe
+        // Try to load the cache and check whether the manifest exists.
         match cache.load_internal(directory_str, db_address) {
             Ok(wrapped_cache) => {
-                // Verifica se a chave do manifesto existe no cache
+                // Check whether the manifest key exists in the cache.
                 let manifest_key = format!("{}/_manifest", db_address);
 
-                // Prepara contexto e chave para verificar existência
+                // Prepare the context and key to check existence.
                 let mut ctx: Box<dyn std::any::Any> = Box::new(());
                 let key = crate::data_store::Key::new(&manifest_key);
 
-                // Tenta obter o manifesto do cache para verificar se existe
+                // Try to get the manifest from the cache to check whether it exists.
                 match wrapped_cache.get(ctx.as_mut(), &key) {
                     Ok(manifest_data) => {
-                        // Manifesto encontrado, verifica se os dados são válidos
+                        // Manifest found, check whether the data is valid.
                         if !manifest_data.is_empty() {
                             tracing::debug!(
                                 address = %db_address,
                                 manifest_size = manifest_data.len(),
-                                "Dados locais encontrados no cache"
+                                "Local data found in the cache"
                             );
                             true
                         } else {
                             tracing::debug!(
                                 address = %db_address,
-                                "Manifesto vazio encontrado no cache"
+                                "Empty manifest found in the cache"
                             );
                             false
                         }
@@ -1460,7 +1460,7 @@ impl GuardianDB {
                         tracing::debug!(
                             address = %db_address,
                             error = %e,
-                            "Manifesto não encontrado no cache"
+                            "Manifest not found in the cache"
                         );
                         false
                     }
@@ -1470,14 +1470,14 @@ impl GuardianDB {
                 tracing::debug!(
                     address = %db_address,
                     error = %e,
-                    "Falha ao carregar cache para verificação de dados locais"
+                    "Failed to load cache to check local data"
                 );
                 false
             }
         }
     }
 
-    /// Adiciona o hash do manifesto de um banco de dados ao cache local.
+    /// Adds a database's manifest hash to the local cache.
     pub async fn add_manifest_to_cache(
         &self,
         directory: &Path,
@@ -1486,33 +1486,33 @@ impl GuardianDB {
         let cache_key = format!("{}/_manifest", db_address);
         let root_hash_bytes = db_address.get_root().to_string().into_bytes();
 
-        // Armazenar o manifesto no cache
+        // Store the manifest in the cache.
         let wrapped_cache = {
             let cache = self.cache.read();
             let directory_str = directory.to_string_lossy();
 
-            // Carrega ou cria o datastore para este endereço
+            // Load or create the datastore for this address.
             cache
                 .load_internal(&directory_str, db_address)
-                .map_err(|e| GuardianError::Other(format!("Falha ao carregar cache: {}", e)))?
+                .map_err(|e| GuardianError::Other(format!("Failed to load cache: {}", e)))?
         };
 
-        // Armazena o hash do manifesto no cache de forma concreta
+        // Store the manifest hash in the cache concretely.
         let key = crate::data_store::Key::new(&cache_key);
 
-        // Armazena o tipo de manifesto (não apenas o hash) para facilitar a verificação
-        // Busca o tipo do manifesto se ele estiver disponível
+        // Store the manifest type (not just the hash) to make checking easier.
+        // Fetch the manifest type if it is available.
         let manifest_data = if let Ok(manifest) =
             db_manifest::read_db_manifest(self.client(), &db_address.get_root()).await
         {
-            // Se conseguimos ler o manifesto do Client, armazenamos o tipo
+            // If we could read the manifest from the Client, store the type.
             manifest.get_type.into_bytes()
         } else {
-            // Fallback: armazena apenas o hash da raiz como indicador de existência
+            // Fallback: store only the root hash as an existence indicator.
             root_hash_bytes
         };
 
-        // Cria context depois do await para evitar problemas de Send
+        // Create the context after the await to avoid Send issues.
         let mut ctx: Box<dyn std::any::Any + Send + Sync> = Box::new(());
 
         match wrapped_cache.put(ctx.as_mut(), &key, &manifest_data) {
@@ -1521,7 +1521,7 @@ impl GuardianDB {
                     cache_key = %cache_key,
                     data_size = manifest_data.len(),
                     address = %db_address,
-                    "Manifesto armazenado no cache com sucesso"
+                    "Manifest stored in the cache successfully"
                 );
             }
             Err(e) => {
@@ -1529,9 +1529,9 @@ impl GuardianDB {
                     cache_key = %cache_key,
                     error = %e,
                     address = %db_address,
-                    "Falha ao armazenar manifesto no cache"
+                    "Failed to store manifest in the cache"
                 );
-                // Não retorna erro pois é uma otimização, não operação crítica
+                // Do not return an error since this is an optimization, not a critical operation.
             }
         }
 
@@ -1539,14 +1539,14 @@ impl GuardianDB {
             address = %db_address,
             directory = %directory.to_string_lossy(),
             cache_key = %cache_key,
-            "Manifesto adicionado ao cache"
+            "Manifest added to the cache"
         );
 
         Ok(())
     }
 
-    /// Lida com a lógica complexa de instanciar uma nova Store, incluindo a resolução
-    /// do Access Controller, carregamento de cache e configuração de todas as opções.
+    /// Handles the complex logic of instantiating a new Store, including resolving
+    /// the Access Controller, loading the cache and configuring all options.
     pub async fn create_store(
         &self,
         store_type: &str,
@@ -1556,24 +1556,24 @@ impl GuardianDB {
         tracing::debug!(
             store_type = store_type,
             address = %address,
-            "Criando store"
+            "Creating store"
         );
 
-        // 1. Busca o construtor registrado para o tipo de store
+        // 1. Look up the registered constructor for the store type.
         let constructor = self.get_store_constructor(store_type).ok_or_else(|| {
             let available_types = self.store_types_names();
             GuardianError::InvalidArgument(format!(
-                "Tipo de store '{}' não registrado. Tipos disponíveis: {:?}",
+                "Store type '{}' not registered. Available types: {:?}",
                 store_type, available_types
             ))
         })?;
 
-        // 2. Converte CreateDBOptions para NewStoreOptions
+        // 2. Convert CreateDBOptions into NewStoreOptions.
         let new_store_options = self
             .convert_create_to_store_options(store_type, options)
             .await?;
 
-        // 3. Prepara argumentos para o construtor
+        // 3. Prepare arguments for the constructor.
         let client = Arc::new(self.client().clone());
         let identity = Arc::new(self.identity());
         let store_address = Box::new(address.clone()) as Box<dyn Address>;
@@ -1581,10 +1581,10 @@ impl GuardianDB {
         tracing::debug!(
             store_type = store_type,
             address = %address,
-            "Executando construtor da store"
+            "Running the store constructor"
         );
 
-        // 4. Executa o construtor
+        // 4. Run the constructor.
         let store_result = constructor(client, identity, store_address, new_store_options).await;
 
         let store = match store_result {
@@ -1594,30 +1594,30 @@ impl GuardianDB {
                     store_type = store_type,
                     address = %address,
                     error = %e,
-                    "Falha ao criar store"
+                    "Failed to create store"
                 );
                 return Err(e);
             }
         };
 
-        // 5. Converte para Arc<GuardianStore>
+        // 5. Convert into Arc<GuardianStore>.
         let boxed_store = store as Box<dyn Store<Error = GuardianError> + Send + Sync>;
         let arc_store: Arc<GuardianStore> = Arc::from(boxed_store);
 
-        // 6. Registra a store no mapa gerenciado
+        // 6. Register the store in the managed map.
         self.set_store(address.to_string(), arc_store.clone());
 
         tracing::debug!(
             store_type = store_type,
             address = %address,
             store_type_confirmed = arc_store.store_type(),
-            "Store criada e registrada com sucesso"
+            "Store created and registered successfully"
         );
 
         Ok(arc_store)
     }
 
-    /// Converte CreateDBOptions para NewStoreOptions necessário pelos construtores
+    /// Converts CreateDBOptions into the NewStoreOptions required by the constructors.
     async fn convert_create_to_store_options(
         &self,
         store_type: &str,
@@ -1625,27 +1625,27 @@ impl GuardianDB {
     ) -> Result<crate::traits::NewStoreOptions> {
         use crate::traits::NewStoreOptions;
 
-        tracing::debug!("Convertendo opções para criação de store");
+        tracing::debug!("Converting options for store creation");
 
-        // Converte access_control de ManifestParams para AccessController
+        // Convert access_control from ManifestParams into an AccessController.
         let access_controller = if let Some(manifest_params) = options.access_controller {
-            tracing::debug!("Convertendo ManifestParams para AccessController");
+            tracing::debug!("Converting ManifestParams into AccessController");
 
-            // Extrai informações do ManifestParams
+            // Extract information from the ManifestParams.
             let controller_type = manifest_params.get_type();
 
             tracing::debug!(
                 controller_type = %controller_type,
-                "Criando access controller a partir do manifesto"
+                "Creating access controller from the manifest"
             );
 
-            // Extrai as permissões do ManifestParams
+            // Extract the permissions from the ManifestParams.
             let permissions = manifest_params.get_all_access();
 
-            // Cria AccessController baseado no tipo
+            // Create the AccessController based on the type.
             match controller_type {
                 "simple" | "" => {
-                    tracing::debug!("Criando SimpleAccessController");
+                    tracing::debug!("Creating SimpleAccessController");
 
                     let simple_controller =
                         crate::access_control::acl_simple::SimpleAccessController::new(
@@ -1659,9 +1659,9 @@ impl GuardianDB {
                         as Arc<dyn crate::access_control::traits::AccessController>)
                 }
                 "guardian" => {
-                    tracing::debug!("Criando GuardianAccessController");
+                    tracing::debug!("Creating GuardianAccessController");
 
-                    // Para GuardianAccessController, usa configuração básica
+                    // For GuardianAccessController, use a basic configuration.
                     let simple_controller =
                         crate::access_control::acl_simple::SimpleAccessController::new(
                             if permissions.is_empty() {
@@ -1675,7 +1675,7 @@ impl GuardianDB {
                 }
                 "iroh" => {
                     tracing::debug!(
-                        "Iroh AccessController não implementado, usando SimpleAccessController"
+                        "Iroh AccessController not implemented, using SimpleAccessController"
                     );
 
                     let simple_controller =
@@ -1692,7 +1692,7 @@ impl GuardianDB {
                 _ => {
                     tracing::warn!(
                         controller_type = %controller_type,
-                        "Tipo de access controller não reconhecido, usando SimpleAccessController"
+                        "Unrecognized access controller type, using SimpleAccessController"
                     );
 
                     let simple_controller =
@@ -1708,67 +1708,69 @@ impl GuardianDB {
                 }
             }
         } else {
-            tracing::debug!("Nenhum access controller especificado, usando padrão");
+            tracing::debug!("No access controller specified, using the default");
             None
         };
 
-        // Converte as opções básicas mantendo compatibilidade
+        // Convert the basic options while keeping compatibility.
 
-        // Cria ou usa o PubSub existente
+        // Create or use the existing PubSub.
         let pubsub = if self.pubsub.is_some() {
-            // PubSub já existe - cria novo EpidemicPubSub do backend
+            // PubSub already exists - create a new EpidemicPubSub from the backend.
             let backend = self.client().backend().clone();
             let epidemic_pubsub = Arc::new(backend.create_pubsub_interface().await?);
             Some(epidemic_pubsub as Arc<dyn PubSubInterface<Error = GuardianError>>)
         } else {
-            // Cria EpidemicPubSub diretamente a partir do backend
+            // Create an EpidemicPubSub directly from the backend.
             let backend = self.client().backend().clone();
             let epidemic_pubsub = Arc::new(backend.create_pubsub_interface().await?);
             Some(epidemic_pubsub as Arc<dyn PubSubInterface<Error = GuardianError>>)
         };
 
         let store_options = NewStoreOptions {
-            event_bus: options.event_bus, // Usa o EventBus fornecido (requerido)
+            event_bus: options.event_bus, // Use the provided EventBus (required).
             index: {
-                // CORREÇÃO CRÍTICA: Cria índice baseado no store_type
+                // CRITICAL FIX: create the index based on the store_type.
                 match store_type {
                     "eventlog" => {
                         use crate::stores::event_log_store::index::new_event_index;
                         Some(Box::new(new_event_index))
                     }
-                    _ => None, // Outros tipos de store podem não ter índice
+                    _ => None, // Other store types may not have an index.
                 }
             },
-            access_controller, // AccessController convertido do ManifestParams
-            cache: None,       // Usa cache padrão
+            access_controller, // AccessController converted from the ManifestParams.
+            cache: None,       // Use the default cache.
             cache_destroy: None,
             replication_concurrency: None,
             reference_count: None,
-            replicate: Some(true), // Por padrão, habilita replicação
+            replicate: Some(true), // Enable replication by default.
             max_history: None,
             directory: options
                 .directory
                 .unwrap_or_else(|| self.directory.to_string_lossy().to_string()),
             sort_fn: None,
-            span: None,   // Será configurado pela BaseStore
-            tracer: None, // Será configurado pela BaseStore
-            pubsub,       // ***Verificar se o pubsub a ser usado é o EpidemicPubSub ou RawPubSub
+            span: None,   // Will be configured by the BaseStore.
+            tracer: None, // Will be configured by the BaseStore.
+            pubsub,       // ***Check whether the pubsub to use is EpidemicPubSub or RawPubSub.
             message_marshaler: Some(self.message_marshaler.clone()),
-            node_id: *self.id.read(), // NodeId da instância GuardianDB
+            node_id: *self.id.read(), // NodeId of the GuardianDB instance.
             direct_channel: Some(self.direct_channel.clone()),
             close_func: None,
             store_specific_opts: None,
+            doc_ticket: options.doc_ticket,
+            read_only: options.read_only,
         };
 
-        tracing::debug!("Opções convertidas com sucesso");
+        tracing::debug!("Options converted successfully");
         Ok(store_options)
     }
 
-    /// Registra os construtores padrão de access controllers disponíveis
+    /// Registers the available default access controller constructors.
     pub async fn register_default_access_control_types(&self) -> Result<()> {
-        tracing::debug!("Registrando construtores padrão de access controllers");
+        tracing::debug!("Registering default access controller constructors");
 
-        // Registra SimpleAccessController
+        // Register SimpleAccessController.
         let simple_constructor =
             Arc::new(
                 |_base_guardian: Arc<
@@ -1788,22 +1790,22 @@ impl GuardianDB {
                 },
             );
 
-        // Efetua o registro usando o novo método com tipo explícito
+        // Perform the registration using the new method with an explicit type.
         self.register_access_control_type_with_name("simple", simple_constructor)?;
 
         tracing::debug!(
             types = ?self.access_control_types_names(),
-            "Construtores padrão de access controllers registrados"
+            "Default access controller constructors registered"
         );
 
         Ok(())
     }
 
-    /// Registra os construtores padrão de stores disponíveis
+    /// Registers the available default store constructors.
     pub fn register_default_store_types(&self) {
-        tracing::debug!("Registrando construtores padrão de stores");
+        tracing::debug!("Registering default store constructors");
 
-        // Registra EventLogStore
+        // Register EventLogStore.
         let eventlog_constructor =
             Arc::new(
                 |client: Arc<crate::p2p::network::client::IrohClient>,
@@ -1812,7 +1814,7 @@ impl GuardianDB {
                  options: crate::traits::NewStoreOptions| {
                     Box::pin(async move {
                     use crate::stores::event_log_store::GuardianDBEventLogStore;
-                    // Converte Box<dyn Address> para Arc<dyn Address + Send + Sync>
+                    // Convert Box<dyn Address> into Arc<dyn Address + Send + Sync>.
                     let arc_address: Arc<dyn crate::address::Address + Send + Sync> =
                         Arc::from(address as Box<dyn crate::address::Address + Send + Sync>);
 
@@ -1848,7 +1850,7 @@ impl GuardianDB {
              options: crate::traits::NewStoreOptions| {
                 Box::pin(async move {
                     use crate::stores::kv_store::GuardianDBKeyValue;
-                    // Converte Box<dyn Address> para Arc<dyn Address + Send + Sync>
+                    // Convert Box<dyn Address> into Arc<dyn Address + Send + Sync>.
                     let arc_address: Arc<dyn crate::address::Address + Send + Sync> =
                         Arc::from(address as Box<dyn crate::address::Address + Send + Sync>);
 
@@ -1890,7 +1892,7 @@ impl GuardianDB {
                     Box::pin(async move {
                     use crate::stores::document_store::GuardianDBDocumentStore;
 
-                    // Converte Box<dyn Address> para Arc<dyn Address>
+                    // Convert Box<dyn Address> into Arc<dyn Address>.
                     let arc_address: Arc<dyn crate::address::Address> =
                         Arc::from(address as Box<dyn crate::address::Address>);
 
@@ -1919,23 +1921,23 @@ impl GuardianDB {
                 },
             );
 
-        // Efetua os registros
+        // Perform the registrations.
         self.register_store_type("eventlog".to_string(), eventlog_constructor);
         self.register_store_type("keyvalue".to_string(), keyvalue_constructor);
         self.register_store_type("document".to_string(), document_constructor);
 
         tracing::debug!(
             types = ?self.store_types_names(),
-            "Construtores padrão registrados"
+            "Default constructors registered"
         );
     }
 
-    /// Retorna o barramento de eventos da instância do GuardianDB.
+    /// Returns the event bus of the GuardianDB instance.
     pub fn event_bus(&self) -> Arc<EventBusImpl> {
         self.event_bus.clone()
     }
 
-    /// Inicia uma tarefa em background para escutar eventos do pubsub e processá-los.
+    /// Starts a background task to listen for pubsub events and process them.
     pub async fn monitor_direct_channel(
         &self,
         event_bus: Arc<EventBusImpl>,
@@ -1944,39 +1946,36 @@ impl GuardianDB {
             .subscribe::<EventPubSubPayload>()
             .await
             .map_err(|e| {
-                GuardianError::Other(format!(
-                    "não foi possível se inscrever nos eventos do pubsub: {}",
-                    e
-                ))
+                GuardianError::Other(format!("could not subscribe to pubsub events: {}", e))
             })?;
 
-        // Clona os Arcs e outros dados necessários para a tarefa assíncrona
+        // Clone the Arcs and other data needed for the asynchronous task.
         let token = self.cancellation_token.clone();
         let message_marshaler = self.message_marshaler.clone();
         let emitters = self.emitters.clone();
         let stores = self.stores.clone();
 
         let handle = tokio::spawn(async move {
-            tracing::debug!("Monitor do canal direto iniciado");
+            tracing::debug!("Direct channel monitor started");
 
             loop {
                 tokio::select! {
-                    // Escuta o sinal de cancelamento
+                    // Listen for the cancellation signal.
                     _ = token.cancelled() => {
-                        tracing::debug!("monitor_direct_channel encerrando");
+                        tracing::debug!("monitor_direct_channel shutting down");
                         return;
                     }
-                    // Escuta por novos eventos
+                    // Listen for new events.
                     maybe_event = receiver.recv() => {
                         match maybe_event {
                             Ok(event) => {
                                 tracing::trace!(
                                     peer = %event.peer,
                                     payload_size = event.payload.len(),
-                                    "Evento recebido no canal direto"
+                                    "Event received on the direct channel"
                                 );
 
-                                // ETAPA 1: Deserialização da mensagem usando message_marshaler
+                                // STEP 1: Deserialize the message using message_marshaler.
                                 let msg = match message_marshaler.unmarshal(&event.payload) {
                                     Ok(msg) => msg,
                                     Err(e) => {
@@ -1984,7 +1983,7 @@ impl GuardianDB {
                                             peer = %event.peer,
                                             error = %e,
                                             payload_size = event.payload.len(),
-                                            "Falha ao deserializar mensagem do canal direto"
+                                            "Failed to deserialize direct channel message"
                                         );
                                         continue;
                                     }
@@ -1994,23 +1993,23 @@ impl GuardianDB {
                                     peer = %event.peer,
                                     store_address = %msg.address,
                                     heads_count = msg.heads.len(),
-                                    "Mensagem deserializada com sucesso"
+                                    "Message deserialized successfully"
                                 );
 
-                                // ETAPA 2: Busca da store correspondente pelo endereço
-                                // Se msg.address for apenas o nome do log, tenta encontrar a store que termina com esse nome
+                                // STEP 2: Find the matching store by address.
+                                // If msg.address is just the log name, try to find the store ending with that name.
                                 let store = {
                                     let stores_guard = stores.read();
 
-                                    // Primeiro tenta busca exata
+                                    // First try an exact lookup.
                                     if let Some(store) = stores_guard.get(&msg.address) {
                                         Some(store.clone())
                                     } else {
-                                        // Se não encontrar, busca por endereço que termina com msg.address
+                                        // If not found, search for an address ending with msg.address.
                                         tracing::debug!(
                                             looking_for = %msg.address,
                                             available_stores = ?stores_guard.keys().collect::<Vec<_>>(),
-                                            "Buscando store por nome parcial"
+                                            "Looking up store by partial name"
                                         );
 
                                         stores_guard.iter()
@@ -2024,7 +2023,7 @@ impl GuardianDB {
                                         tracing::debug!(
                                             store_address = %store.address(),
                                             peer = %event.peer,
-                                            "Store encontrada para processamento"
+                                            "Store found for processing"
                                         );
                                         store
                                     },
@@ -2032,14 +2031,14 @@ impl GuardianDB {
                                         tracing::warn!(
                                             store_address = %msg.address,
                                             peer = %event.peer,
-                                            "Store não encontrada para endereço, ignorando mensagem"
+                                            "Store not found for address, ignoring message"
                                         );
                                         continue;
                                     }
                                 };
 
-                                // ETAPA 3: Processamento da troca de heads
-                                // Realiza validação básica dos heads recebidos
+                                // STEP 3: Process the head exchange.
+                                // Perform basic validation of the received heads.
                                 let valid_heads: Vec<_> = msg.heads.iter()
                                     .filter(|head| !head.id.is_empty() && !head.payload.is_empty())
                                     .cloned()
@@ -2050,7 +2049,7 @@ impl GuardianDB {
                                         store_address = %msg.address,
                                         peer = %event.peer,
                                         total_heads = msg.heads.len(),
-                                        "Todos os heads recebidos são inválidos"
+                                        "All received heads are invalid"
                                     );
                                     continue;
                                 }
@@ -2060,20 +2059,20 @@ impl GuardianDB {
                                     peer = %event.peer,
                                     valid_heads = valid_heads.len(),
                                     total_heads = msg.heads.len(),
-                                    "Processando heads válidos"
+                                    "Processing valid heads"
                                 );
 
-                                // ETAPA 4: Sincronização efetiva com a store
-                                // Sincronização usando o método sync da store
+                                // STEP 4: Actual synchronization with the store.
+                                // Synchronization using the store's sync method.
                                 tracing::debug!(
                                     store_address = %msg.address,
                                     peer = %event.peer,
                                     valid_heads = valid_heads.len(),
-                                    "Iniciando sincronização com a store"
+                                    "Starting synchronization with the store"
                                 );
 
-                                // Realiza a sincronização usando o método sync da trait Store
-                                // Nota: Usamos interior mutability para compatibilidade com Arc<>
+                                // Perform the synchronization using the Store trait's sync method.
+                                // Note: we use interior mutability for compatibility with Arc<>.
                                 let sync_result = Self::sync_store_with_heads(&_store, valid_heads.clone()).await;
 
                                 match sync_result {
@@ -2082,7 +2081,7 @@ impl GuardianDB {
                                             store_address = %msg.address,
                                             peer = %event.peer,
                                             processed_heads = valid_heads.len(),
-                                            "Sincronização de heads completada com sucesso"
+                                            "Head synchronization completed successfully"
                                         );
                                     }
                                     Err(e) => {
@@ -2091,27 +2090,27 @@ impl GuardianDB {
                                             peer = %event.peer,
                                             error = %e,
                                             attempted_heads = valid_heads.len(),
-                                            "Erro durante sincronização de heads"
+                                            "Error during head synchronization"
                                         );
-                                        // Não fazemos continue aqui para permitir emissão de evento mesmo com erro
+                                        // We do not continue here so the event can still be emitted even on error.
                                     }
                                 }
 
-                                // ETAPA 5: Emissão de evento para notificar componentes interessados
+                                // STEP 5: Emit an event to notify interested components.
                                 let exchange_event = EventExchangeHeads::new(event.peer, msg);
                                 if let Err(e) = emitters.new_heads.emit(exchange_event) {
                                     tracing::error!(
                                         error = %e,
                                         peer = %event.peer,
-                                        "Erro ao emitir evento new_heads"
+                                        "Error emitting new_heads event"
                                     );
                                 } else {
-                                    tracing::trace!(peer = %event.peer, "Evento new_heads emitido com sucesso");
+                                    tracing::trace!(peer = %event.peer, "new_heads event emitted successfully");
                                 }
                             }
                             Err(_) => {
-                                // O canal foi fechado, encerra a tarefa.
-                                tracing::debug!("Canal de eventos fechado, encerrando monitor");
+                                // The channel was closed, shut down the task.
+                                tracing::debug!("Event channel closed, shutting down monitor");
                                 break;
                             }
                         }
@@ -2119,85 +2118,85 @@ impl GuardianDB {
                 }
             }
 
-            tracing::debug!("Monitor do canal direto finalizado");
+            tracing::debug!("Direct channel monitor finished");
         });
 
         Ok(handle)
     }
 
-    /// Método helper para sincronizar uma store com heads recebidos
-    /// Resolve o problema de mutabilidade quando trabalhando com Arc<GuardianStore>
+    /// Helper method to synchronize a store with received heads.
+    /// Solves the mutability problem when working with Arc<GuardianStore>.
     async fn sync_store_with_heads(
         store: &Arc<GuardianStore>,
         heads: Vec<crate::log::entry::Entry>,
     ) -> Result<()> {
-        // Estratégia: Usar interior mutability através de downcasting para BaseStore
-        // Primeiro, tenta fazer downcast para BaseStore diretamente
+        // Strategy: use interior mutability via downcasting to BaseStore.
+        // First, try to downcast to BaseStore directly.
         if let Some(base_store) = store
             .as_any()
             .downcast_ref::<crate::stores::base_store::BaseStore>()
         {
-            // BaseStore funciona com interior mutability
+            // BaseStore works with interior mutability.
             return base_store.sync(heads).await.map_err(|e| {
-                GuardianError::Store(format!("Erro na sincronização BaseStore: {}", e))
+                GuardianError::Store(format!("Error in BaseStore synchronization: {}", e))
             });
         }
-        // Fallback: Para stores que não expõem BaseStore diretamente
-        // EventLogStore - tenta acessar BaseStore interno
+        // Fallback: for stores that do not expose BaseStore directly.
+        // EventLogStore - try to access the inner BaseStore.
         if let Some(event_log_store) = store
             .as_any()
             .downcast_ref::<crate::stores::event_log_store::GuardianDBEventLogStore>(
         ) {
-            // Acessa o BaseStore interno que tem sync(&self)
+            // Access the inner BaseStore, which has sync(&self).
             let base_store = event_log_store.basestore();
             return base_store.sync(heads).await.map_err(|e| {
-                GuardianError::Store(format!("Erro na sincronização EventLogStore: {}", e))
+                GuardianError::Store(format!("Error in EventLogStore synchronization: {}", e))
             });
         }
 
-        // KeyValueStore — usa Store trait diretamente (iroh-docs backend)
+        // KeyValueStore — uses the Store trait directly (iroh-docs backend).
         if let Some(kv_store) = store
             .as_any()
             .downcast_ref::<crate::stores::kv_store::GuardianDBKeyValue>()
         {
             return kv_store.sync(heads).await.map_err(|e| {
-                GuardianError::Store(format!("Erro na sincronização KeyValueStore: {}", e))
+                GuardianError::Store(format!("Error in KeyValueStore synchronization: {}", e))
             });
         }
 
-        // DocumentStore - usa iroh-docs Willow sync automático
+        // DocumentStore - uses automatic iroh-docs Willow sync.
         if store
             .as_any()
             .downcast_ref::<crate::stores::document_store::GuardianDBDocumentStore>()
             .is_some()
         {
-            // iroh-docs gerencia sync via Willow — heads não são necessárias
+            // iroh-docs manages sync via Willow — heads are not needed.
             return Ok(());
         }
 
-        // Se nenhum downcast funcionou, retorna erro
+        // If no downcast worked, return an error.
         Err(GuardianError::Other(
-            "Tipo de store não suportado para sincronização ou downcast falhou".to_string(),
+            "Store type not supported for synchronization, or downcast failed".to_string(),
         ))
     }
 
-    /// Método helper para obter o número total de entradas em uma store
-    /// Usado para gerar eventos informativos sobre o estado da store
+    /// Helper method to get the total number of entries in a store.
+    /// Used to generate informational events about the store's state.
     async fn get_store_total_entries(&self, store: &Arc<GuardianStore>) -> Result<usize> {
-        // Tenta acessar o BaseStore interno para obter informações do oplog
-        // Primeiro, tenta fazer downcast para BaseStore diretamente
+        // Try to access the inner BaseStore to get oplog information.
+        // First, try to downcast to BaseStore directly.
         if let Some(base_store) = store
             .as_any()
             .downcast_ref::<crate::stores::base_store::BaseStore>()
         {
-            // Acessa o oplog para obter o número de entradas
+            // Access the oplog to get the number of entries.
             let op_log = base_store.op_log();
             let log = op_log.read();
             return Ok(log.len());
         }
 
-        // Fallback: Para stores que não expõem BaseStore diretamente
-        // EventLogStore - tenta acessar BaseStore interno
+        // Fallback: for stores that do not expose BaseStore directly.
+        // EventLogStore - try to access the inner BaseStore.
         if let Some(event_log_store) = store
             .as_any()
             .downcast_ref::<crate::stores::event_log_store::GuardianDBEventLogStore>(
@@ -2208,7 +2207,7 @@ impl GuardianDB {
             return Ok(log.len());
         }
 
-        // KeyValueStore — usa Store trait diretamente (iroh-docs backend)
+        // KeyValueStore — uses the Store trait directly (iroh-docs backend).
         if let Some(kv_store) = store
             .as_any()
             .downcast_ref::<crate::stores::kv_store::GuardianDBKeyValue>()
@@ -2218,26 +2217,26 @@ impl GuardianDB {
             return Ok(log.len());
         }
 
-        // DocumentStore - usa iroh-docs, retorna tamanho do índice local
+        // DocumentStore - uses iroh-docs, returns the local index size.
         if let Some(doc_store) = store
             .as_any()
             .downcast_ref::<crate::stores::document_store::GuardianDBDocumentStore>(
         ) {
-            // iroh-docs não usa OpLog — retorna o número de entradas do índice local
+            // iroh-docs does not use an OpLog — return the number of entries in the local index.
             let op_log = doc_store.op_log();
             let log = op_log.read();
             return Ok(log.len());
         }
 
-        // Se nenhum downcast funcionou, retorna erro
+        // If no downcast worked, return an error.
         Err(GuardianError::Other(
-            "Tipo de store não suportado para obter total de entradas ou downcast falhou"
+            "Store type not supported for getting the total number of entries, or downcast failed"
                 .to_string(),
         ))
     }
 
-    /// Função helper estática para criar e iniciar o monitor do canal direto
-    /// durante a inicialização, evitando problemas de referência circular
+    /// Static helper function to create and start the direct channel monitor
+    /// during initialization, avoiding circular reference issues.
     fn start_monitor_task(
         event_bus: Arc<EventBusImpl>,
         cancellation_token: CancellationToken,
@@ -2245,50 +2244,50 @@ impl GuardianDB {
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
             let _enter = span.enter();
-            // Tenta se inscrever nos eventos do pubsub
+            // Try to subscribe to pubsub events.
             let mut receiver = match event_bus.subscribe::<EventPubSubPayload>().await {
                 Ok(rx) => rx,
                 Err(e) => {
-                    tracing::error!("Falha ao se inscrever nos eventos do pubsub: {}", e);
+                    tracing::error!("Failed to subscribe to pubsub events: {}", e);
                     return;
                 }
             };
 
-            tracing::debug!("Monitor do canal direto iniciado");
+            tracing::debug!("Direct channel monitor started");
 
             loop {
                 tokio::select! {
-                    // Escuta o sinal de cancelamento
+                    // Listen for the cancellation signal.
                     _ = cancellation_token.cancelled() => {
-                        tracing::debug!("Monitor do canal direto encerrando");
+                        tracing::debug!("Direct channel monitor shutting down");
                         return;
                     }
-                    // Escuta por novos eventos
+                    // Listen for new events.
                     maybe_event = receiver.recv() => {
                         match maybe_event {
                             Ok(event) => {
                                 tracing::trace!(
                                     peer = %event.peer,
-                                    "Evento recebido no monitor do canal direto"
+                                    "Event received in the direct channel monitor"
                                 );
 
-                                // Processa diferentes tipos de eventos do canal direto:
-                                // 1. Eventos de troca de heads (sincronização de dados)
-                                // 2. Eventos de peer connection/disconnection
-                                // 3. Eventos de mensagens do protocolo
+                                // Process different types of direct channel events:
+                                // 1. Head exchange events (data synchronization)
+                                // 2. Peer connection/disconnection events
+                                // 3. Protocol message events
 
                                 tracing::debug!(
                                     event_type = "pubsub_payload",
                                     from_peer = %event.peer,
                                     payload_size = event.payload.len(),
-                                    "Processando evento de canal direto"
+                                    "Processing direct channel event"
                                 );
 
-                                // Note: O processamento completo é feito pelo monitor principal via monitor_direct_channel()
-                                // que tem acesso ao message_marshaler, stores e emitters
+                                // Note: full processing is done by the main monitor via monitor_direct_channel(),
+                                // which has access to the message_marshaler, stores and emitters.
                             }
                             Err(_) => {
-                                tracing::debug!("Canal de eventos fechado, encerrando monitor");
+                                tracing::debug!("Event channel closed, shutting down monitor");
                                 break;
                             }
                         }
@@ -2298,30 +2297,30 @@ impl GuardianDB {
         })
     }
 
-    /// Verifica as permissões de acesso dos heads usando o Access Controller da store
+    /// Verifies the access permissions of heads using the store's Access Controller.
     ///
-    /// Realiza verificação completa de permissões para cada head:
-    /// 1. Extração da identidade do head
-    /// 2. Verificação de permissões de escrita via Access Controller
-    /// 3. Validação de assinatura da identidade se necessário
-    /// 4. Filtragem de heads não autorizados
+    /// Performs a complete permission check for each head:
+    /// 1. Extract the head's identity
+    /// 2. Verify write permissions via the Access Controller
+    /// 3. Validate the identity signature if necessary
+    /// 4. Filter out unauthorized heads
     ///
-    /// # Argumentos
+    /// # Arguments
     ///
-    /// * `heads` - Lista de heads a serem verificados
-    /// * `store` - Store que contém o Access Controller para verificação
+    /// * `heads` - The list of heads to verify
+    /// * `store` - The store that holds the Access Controller for verification
     ///
-    /// # Retorna
+    /// # Returns
     ///
-    /// * `Ok(Vec<Entry>)` - Lista filtrada contendo apenas heads autorizados
-    /// * `Err(GuardianError)` - Se houve erro crítico na verificação
+    /// * `Ok(Vec<Entry>)` - A filtered list containing only authorized heads
+    /// * `Err(GuardianError)` - If there was a critical error during verification
     ///
-    /// # Política de Segurança
+    /// # Security Policy
     ///
-    /// - Heads sem identidade são **rejeitados** por motivos de segurança
-    /// - Identidades inválidas ou não autorizadas são **rejeitadas**
-    /// - Falhas de verificação são logadas mas não interrompem o processamento
-    /// - Apenas heads explicitamente autorizados são aceitos
+    /// - Heads without an identity are **rejected** for security reasons
+    /// - Invalid or unauthorized identities are **rejected**
+    /// - Verification failures are logged but do not interrupt processing
+    /// - Only explicitly authorized heads are accepted
     async fn verify_heads_permissions(
         &self,
         heads: &[crate::log::entry::Entry],
@@ -2329,16 +2328,16 @@ impl GuardianDB {
     ) -> Result<Vec<crate::log::entry::Entry>> {
         tracing::debug!(
             heads_count = heads.len(),
-            "Iniciando verificação de permissões para heads"
+            "Starting permission verification for heads"
         );
 
         let mut authorized_heads = Vec::new();
         let mut denied_count = 0;
         let mut no_identity_count = 0;
 
-        // Obtém o Access Controller da store para verificação
+        // Get the store's Access Controller for verification.
         let access_control = {
-            // Tenta acessar o BaseStore interno das stores conhecidas
+            // Try to access the inner BaseStore of the known stores.
             if let Some(event_log_store) = store
                 .as_any()
                 .downcast_ref::<crate::stores::event_log_store::GuardianDBEventLogStore>(
@@ -2360,7 +2359,7 @@ impl GuardianDB {
             {
                 base_store.access_controller()
             } else {
-                tracing::warn!("Tipo de store não suportado para verificação de permissões");
+                tracing::warn!("Store type not supported for permission verification");
                 return Err(GuardianError::Store(
                     "Store type not supported for permission verification".to_string(),
                 ));
@@ -2369,12 +2368,12 @@ impl GuardianDB {
 
         tracing::debug!(
             access_control_type = access_control.get_type(),
-            "Access Controller obtido"
+            "Access Controller obtained"
         );
 
-        // Verificação individual de cada head
+        // Verify each head individually.
         for (i, head) in heads.iter().enumerate() {
-            // VERIFICAÇÃO 1: Presença de identidade
+            // CHECK 1: Presence of an identity.
             let identity = match &head.identity {
                 Some(identity) => identity,
                 None => {
@@ -2382,33 +2381,33 @@ impl GuardianDB {
                         head_index = i + 1,
                         total_heads = heads.len(),
                         head_hash = %head.hash,
-                        "Head rejeitado: sem identidade"
+                        "Head rejected: no identity"
                     );
                     no_identity_count += 1;
                     continue;
                 }
             };
 
-            // VERIFICAÇÃO 2: Validação básica da identidade
+            // CHECK 2: Basic identity validation.
             if identity.id().is_empty() || identity.pub_key().is_empty() {
                 tracing::debug!(
                     head_index = i + 1,
                     total_heads = heads.len(),
                     head_hash = %head.hash,
-                    "Head rejeitado: identidade inválida"
+                    "Head rejected: invalid identity"
                 );
                 denied_count += 1;
                 continue;
             }
 
-            // VERIFICAÇÃO 3: Permissões de escrita via Access Controller
+            // CHECK 3: Write permissions via the Access Controller.
             let identity_key = identity.pub_key();
             let has_write_permission = match access_control.get_authorized_by_role("write").await {
                 Ok(authorized_keys) => {
-                    // Verifica se a chave está explicitamente autorizada
+                    // Check whether the key is explicitly authorized.
                     authorized_keys.contains(&identity_key.to_string())
                         || authorized_keys.contains(&identity.id().to_string())
-                        || authorized_keys.contains(&"*".to_string()) // Permissão universal
+                        || authorized_keys.contains(&"*".to_string()) // Universal permission.
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -2416,10 +2415,10 @@ impl GuardianDB {
                         total_heads = heads.len(),
                         error = %e,
                         head_hash = %head.hash,
-                        "Head erro ao verificar permissões"
+                        "Head error while checking permissions"
                     );
 
-                    // Emitir evento de erro de permissão
+                    // Emit a permission error event.
                     let permission_denied_event = EventPermissionDenied::new(
                         store.address().to_string(),
                         identity.id().to_string(),
@@ -2432,10 +2431,10 @@ impl GuardianDB {
                         .permission_denied
                         .emit(permission_denied_event)
                     {
-                        tracing::warn!(error = %emit_err, "Erro ao emitir evento PermissionDenied");
+                        tracing::warn!(error = %emit_err, "Error emitting PermissionDenied event");
                     }
 
-                    false // Em caso de erro, nega acesso por segurança
+                    false // On error, deny access for safety.
                 }
             };
 
@@ -2445,10 +2444,10 @@ impl GuardianDB {
                     total_heads = heads.len(),
                     head_hash = %head.hash,
                     identity_id = identity.id(),
-                    "Head rejeitado: sem permissão de escrita"
+                    "Head rejected: no write permission"
                 );
 
-                // Emitir evento de permissão negada
+                // Emit a permission-denied event.
                 let permission_denied_event = EventPermissionDenied::new(
                     store.address().to_string(),
                     identity.id().to_string(),
@@ -2461,24 +2460,24 @@ impl GuardianDB {
                     .permission_denied
                     .emit(permission_denied_event)
                 {
-                    tracing::warn!(error = %e, "Erro ao emitir evento PermissionDenied");
+                    tracing::warn!(error = %e, "Error emitting PermissionDenied event");
                 }
 
                 denied_count += 1;
                 continue;
             }
 
-            // VERIFICAÇÃO 4: Verifica também permissões administrativas como fallback
+            // CHECK 4: Also check administrative permissions as a fallback.
             let has_admin_permission = match access_control.get_authorized_by_role("admin").await {
                 Ok(admin_keys) => {
                     admin_keys.contains(&identity_key.to_string())
                         || admin_keys.contains(&identity.id().to_string())
                         || admin_keys.contains(&"*".to_string())
                 }
-                Err(_) => false, // Não crítico se admin falhar
+                Err(_) => false, // Not critical if admin fails.
             };
 
-            // VERIFICAÇÃO 5: Aceita head se tem permissão de escrita ou admin
+            // CHECK 5: Accept the head if it has write or admin permission.
             if has_write_permission || has_admin_permission {
                 let permission_type = if has_admin_permission {
                     "admin"
@@ -2491,7 +2490,7 @@ impl GuardianDB {
                     permission_type = permission_type,
                     head_hash = %head.hash,
                     identity_id = identity.id(),
-                    "Head autorizado"
+                    "Head authorized"
                 );
 
                 authorized_heads.push(head.clone());
@@ -2501,10 +2500,10 @@ impl GuardianDB {
                     total_heads = heads.len(),
                     head_hash = %head.hash,
                     identity_id = identity.id(),
-                    "Head rejeitado: sem permissões adequadas"
+                    "Head rejected: no adequate permissions"
                 );
 
-                // Emitir evento de permissão negada final
+                // Emit the final permission-denied event.
                 let permission_denied_event = EventPermissionDenied::new(
                     store.address().to_string(),
                     identity.id().to_string(),
@@ -2517,14 +2516,14 @@ impl GuardianDB {
                     .permission_denied
                     .emit(permission_denied_event)
                 {
-                    tracing::warn!(error = %e, "Erro ao emitir evento PermissionDenied");
+                    tracing::warn!(error = %e, "Error emitting PermissionDenied event");
                 }
 
                 denied_count += 1;
             }
         }
 
-        // Log detalhado dos resultados da verificação
+        // Detailed log of the verification results.
         let authorized_count = authorized_heads.len();
         let total_heads = heads.len();
 
@@ -2534,59 +2533,59 @@ impl GuardianDB {
             denied_heads = denied_count,
             no_identity_heads = no_identity_count,
             access_control_type = access_control.get_type(),
-            "Verificação de permissões concluída"
+            "Permission verification completed"
         );
 
         if authorized_count == 0 && total_heads > 0 {
             tracing::warn!(
                 total_heads = total_heads,
-                "ATENÇÃO: Todos os heads foram rejeitados por falta de permissões"
+                "WARNING: All heads were rejected due to missing permissions"
             );
 
-            // Lista as chaves autorizadas para debug
+            // List the authorized keys for debugging.
             if let Ok(write_keys) = access_control.get_authorized_by_role("write").await {
-                tracing::debug!(write_keys = ?write_keys, "Chaves autorizadas para escrita");
+                tracing::debug!(write_keys = ?write_keys, "Keys authorized for writing");
             }
             if let Ok(admin_keys) = access_control.get_authorized_by_role("admin").await {
-                tracing::debug!(admin_keys = ?admin_keys, "Chaves autorizadas para admin");
+                tracing::debug!(admin_keys = ?admin_keys, "Keys authorized for admin");
             }
         } else if authorized_count < total_heads {
             tracing::info!(
                 authorized_heads = authorized_count,
                 total_heads = total_heads,
                 rejected_heads = total_heads - authorized_count,
-                "Verificação parcial de permissões concluída"
+                "Partial permission verification completed"
             );
         } else if authorized_count == total_heads && total_heads > 0 {
             tracing::debug!(
                 authorized_heads = total_heads,
-                "Verificação completa: todos os heads foram autorizados"
+                "Full verification: all heads were authorized"
             );
         }
 
         Ok(authorized_heads)
     }
 
-    /// Verifica criptograficamente a validade de uma identidade
+    /// Cryptographically verifies the validity of an identity.
     ///
-    /// Realiza verificação completa da identidade usando:
-    /// 1. Validação da chave pública
-    /// 2. Verificação de assinatura usando Ed25519 (consistente com Iroh)
-    /// 3. Validação das assinaturas de identidade e chave pública
-    /// 4. Verificação da integridade dos dados assinados
+    /// Performs a complete identity verification using:
+    /// 1. Public key validation
+    /// 2. Signature verification using Ed25519 (consistent with Iroh)
+    /// 3. Validation of the identity and public key signatures
+    /// 4. Integrity verification of the signed data
     ///
-    /// # Argumentos
+    /// # Arguments
     ///
-    /// * `identity` - A identidade a ser verificada
+    /// * `identity` - The identity to verify
     ///
-    /// # Retorna
+    /// # Returns
     ///
-    /// * `Ok(())` se a identidade é válida
-    /// * `Err(GuardianError)` se a verificação falhou
+    /// * `Ok(())` if the identity is valid
+    /// * `Err(GuardianError)` if verification failed
     async fn verify_identity_cryptographically(&self, identity: &Identity) -> Result<()> {
         use ed25519_dalek::VerifyingKey;
 
-        // ETAPA 1: Validação básica dos campos obrigatórios
+        // STEP 1: Basic validation of the required fields.
         if identity.id().is_empty() {
             return Err(GuardianError::Store(
                 "Identity ID cannot be empty".to_string(),
@@ -2599,7 +2598,7 @@ impl GuardianDB {
             ));
         }
 
-        // ETAPA 2: Validação da chave pública usando Ed25519
+        // STEP 2: Public key validation using Ed25519.
         let pub_key_hex = identity.pub_key();
         let pub_key_bytes = match hex::decode(pub_key_hex) {
             Ok(bytes) => bytes,
@@ -2631,10 +2630,10 @@ impl GuardianDB {
             }
         };
 
-        // ETAPA 3: Verificação das assinaturas da identidade
+        // STEP 3: Verify the identity's signatures.
         let signatures = identity.signatures();
 
-        // Verifica assinatura do ID
+        // Verify the ID signature.
         if !signatures.id().is_empty() {
             match self.verify_signature_with_ed25519(identity.id(), signatures.id(), &public_key) {
                 Ok(true) => {
@@ -2654,9 +2653,9 @@ impl GuardianDB {
             }
         }
 
-        // Verifica assinatura da chave pública
+        // Verify the public key signature.
         if !signatures.pub_key().is_empty() {
-            // Reconstrói os dados que foram assinados para a chave pública
+            // Reconstruct the data that was signed for the public key.
             let pub_key_data = format!("{}{}", identity.pub_key(), signatures.id());
 
             match self.verify_signature_with_ed25519(
@@ -2681,10 +2680,10 @@ impl GuardianDB {
             }
         }
 
-        // ETAPA 4: Verificação adicional de consistência da chave pública
+        // STEP 4: Additional public key consistency check.
         if let Some(_public_key) = identity.public_key() {
-            // A chave pública já foi validada via Ed25519 acima
-            // NodeId do Iroh é derivado diretamente da chave pública Ed25519
+            // The public key was already validated via Ed25519 above.
+            // Iroh's NodeId is derived directly from the Ed25519 public key.
             tracing::debug!(
                 identity_id = %identity.id(),
                 "Identity cryptographic verification completed successfully"
@@ -2700,19 +2699,19 @@ impl GuardianDB {
         Ok(())
     }
 
-    /// Verifica uma assinatura usando Ed25519 (consistente com Iroh)
+    /// Verifies a signature using Ed25519 (consistent with Iroh).
     ///
-    /// # Argumentos
+    /// # Arguments
     ///
-    /// * `message` - A mensagem original que foi assinada
-    /// * `signature_str` - A assinatura em formato hex string
-    /// * `public_key` - A chave pública Ed25519
+    /// * `message` - The original message that was signed
+    /// * `signature_str` - The signature as a hex string
+    /// * `public_key` - The Ed25519 public key
     ///
-    /// # Retorna
+    /// # Returns
     ///
-    /// * `Ok(true)` se a assinatura é válida
-    /// * `Ok(false)` se a assinatura é inválida
-    /// * `Err(GuardianError)` se houve erro no processo de verificação
+    /// * `Ok(true)` if the signature is valid
+    /// * `Ok(false)` if the signature is invalid
+    /// * `Err(GuardianError)` if there was an error during verification
     fn verify_signature_with_ed25519(
         &self,
         message: &str,
@@ -2721,7 +2720,7 @@ impl GuardianDB {
     ) -> Result<bool> {
         use ed25519_dalek::{Signature, Verifier};
 
-        // Decodifica assinatura de hex
+        // Decode the signature from hex.
         let sig_bytes = match hex::decode(signature_str) {
             Ok(bytes) => bytes,
             Err(e) => {
@@ -2730,7 +2729,7 @@ impl GuardianDB {
                     error = %e,
                     "Failed to decode signature from hex"
                 );
-                return Ok(false); // Assinatura inválida, não erro fatal
+                return Ok(false); // Invalid signature, not a fatal error.
             }
         };
 
@@ -2743,7 +2742,7 @@ impl GuardianDB {
             return Ok(false);
         }
 
-        // Parse da assinatura
+        // Parse the signature.
         let signature = match Signature::from_slice(&sig_bytes) {
             Ok(sig) => sig,
             Err(e) => {
@@ -2752,11 +2751,11 @@ impl GuardianDB {
                     error = %e,
                     "Failed to parse signature"
                 );
-                return Ok(false); // Assinatura inválida, não erro fatal
+                return Ok(false); // Invalid signature, not a fatal error.
             }
         };
 
-        // Verifica a assinatura
+        // Verify the signature.
         match public_key.verify(message.as_bytes(), &signature) {
             Ok(()) => {
                 tracing::debug!("Signature verification successful");
@@ -2764,43 +2763,43 @@ impl GuardianDB {
             }
             Err(e) => {
                 tracing::debug!(error = %e, "Signature verification failed");
-                Ok(false) // Assinatura inválida, não erro fatal
+                Ok(false) // Invalid signature, not a fatal error.
             }
         }
     }
 
-    /// Processa um evento de troca de "heads", sincronizando as novas entradas com a store local.
+    /// Processes a "heads" exchange event, synchronizing the new entries with the local store.
     ///
-    /// Realiza a sincronização completa dos heads recebidos, incluindo:
-    /// 1. Validação de integridade dos heads
-    /// 2. Verificação de permissões de acesso
-    /// 3. Detecção de duplicatas existentes
-    /// 4. Sincronização efetiva com a store
-    /// 5. Emissão de eventos de progresso
+    /// Performs the full synchronization of the received heads, including:
+    /// 1. Head integrity validation
+    /// 2. Access permission verification
+    /// 3. Detection of existing duplicates
+    /// 4. Actual synchronization with the store
+    /// 5. Emission of progress events
     ///
-    /// # Argumentos
+    /// # Arguments
     ///
-    /// * `event` - Evento contendo os heads a serem sincronizados e metadados
-    /// * `store` - Referência à store que receberá os heads
+    /// * `event` - Event containing the heads to synchronize and metadata
+    /// * `store` - Reference to the store that will receive the heads
     ///
-    /// # Processamento
+    /// # Processing
     ///
-    /// 1. **Validação Básica**: Verifica se os heads possuem dados válidos (hash, payload)
-    /// 2. **Controle de Acesso**: Usa o access controller da store para validar permissões
-    /// 3. **Detecção de Duplicatas**: Consulta o oplog para evitar reprocessamento
-    /// 4. **Sincronização**: Delega para o método `sync()` da store que implementa a lógica completa
-    /// 5. **Eventos**: Emite eventos de progresso para componentes interessados
+    /// 1. **Basic Validation**: checks that the heads have valid data (hash, payload)
+    /// 2. **Access Control**: uses the store's access controller to validate permissions
+    /// 3. **Duplicate Detection**: queries the oplog to avoid reprocessing
+    /// 4. **Synchronization**: delegates to the store's `sync()` method, which implements the full logic
+    /// 5. **Events**: emits progress events for interested components
     ///
     /// # Performance
     ///
-    /// - **O(n)** onde n = número de heads recebidos
-    /// - **Paralelização**: Validação sequencial, mas sync em batch para eficiência
-    /// - **Cache-aware**: Aproveita índices existentes para detecção de duplicatas
+    /// - **O(n)** where n = number of received heads
+    /// - **Parallelization**: sequential validation, but batch sync for efficiency
+    /// - **Cache-aware**: leverages existing indexes for duplicate detection
     ///
-    /// # Erros
+    /// # Errors
     ///
-    /// - Retorna erro se a sincronização da store falhar
-    /// - Heads individuais inválidos são ignorados (logged) mas não causam falha geral
+    /// - Returns an error if the store synchronization fails
+    /// - Individual invalid heads are ignored (logged) but do not cause an overall failure
     pub async fn handle_event_exchange_heads(
         &self,
         event: &MessageExchangeHeads,
@@ -2813,50 +2812,50 @@ impl GuardianDB {
             node_id = %self.node_id(),
             count = heads.len(),
             store_address = store_address,
-            "Processando evento de exchange heads"
+            "Processing exchange heads event"
         );
 
         if heads.is_empty() {
-            tracing::debug!("Nenhum head recebido para sincronização");
+            tracing::debug!("No heads received for synchronization");
             return Ok(());
         }
 
-        // ETAPA 1: Validação básica e filtragem de heads inválidos
+        // STEP 1: Basic validation and filtering of invalid heads.
         let mut valid_heads = Vec::new();
         let mut skipped_count = 0;
 
         for (i, head) in heads.iter().enumerate() {
-            // Validação de integridade básica
+            // Basic integrity validation.
             let empty_hash = Hash::from([0u8; 32]);
             if head.hash == empty_hash || head.payload.is_empty() {
                 tracing::debug!(
                     head_index = i + 1,
                     total_heads = heads.len(),
-                    "Head ignorado: dados inválidos (hash ou payload vazio)"
+                    "Head ignored: invalid data (empty hash or payload)"
                 );
                 skipped_count += 1;
                 continue;
             }
 
-            // Validação de estrutura
+            // Structure validation.
             if head.id.is_empty() {
                 tracing::debug!(
                     head_index = i + 1,
                     total_heads = heads.len(),
-                    "Head ignorado: ID vazio"
+                    "Head ignored: empty ID"
                 );
                 skipped_count += 1;
                 continue;
             }
 
-            // Validação de identidade (se disponível)
+            // Identity validation (if available).
             if let Some(identity) = &head.identity {
                 if identity.id().is_empty() || identity.pub_key().is_empty() {
                     tracing::warn!(
                         head_index = i + 1,
                         total_heads = heads.len(),
                         head_hash = %head.hash,
-                        "Head com identidade inválida"
+                        "Head with invalid identity"
                     );
                 } else {
                     tracing::debug!(
@@ -2864,17 +2863,17 @@ impl GuardianDB {
                         total_heads = heads.len(),
                         head_hash = %head.hash,
                         identity_id = identity.id(),
-                        "Head com identidade válida"
+                        "Head with valid identity"
                     );
 
-                    // Verificação criptográfica da identidade
+                    // Cryptographic verification of the identity.
                     match self.verify_identity_cryptographically(identity).await {
                         Ok(()) => {
                             tracing::debug!(
                                 head_index = i + 1,
                                 total_heads = heads.len(),
                                 head_hash = %head.hash,
-                                "Head identidade verificada criptograficamente"
+                                "Head identity verified cryptographically"
                             );
                         }
                         Err(e) => {
@@ -2883,10 +2882,10 @@ impl GuardianDB {
                                 total_heads = heads.len(),
                                 head_hash = %head.hash,
                                 error = %e,
-                                "Head falha na verificação criptográfica da identidade"
+                                "Head failed cryptographic identity verification"
                             );
-                            // Continua processamento mesmo com falha na verificação para compatibilidade
-                            // Note: Em ambiente de produção, você pode escolher rejeitar heads com identidades inválidas
+                            // Continue processing even on verification failure, for compatibility.
+                            // Note: in production you may choose to reject heads with invalid identities.
                         }
                     }
                 }
@@ -2900,15 +2899,12 @@ impl GuardianDB {
                 head_hash = %head.hash,
                 clock_id = head.clock.id(),
                 clock_time = head.clock.time(),
-                "Head validado"
+                "Head validated"
             );
         }
 
         if valid_heads.is_empty() {
-            tracing::warn!(
-                total_heads = heads.len(),
-                "Todos os heads recebidos são inválidos"
-            );
+            tracing::warn!(total_heads = heads.len(), "All received heads are invalid");
             return Ok(());
         }
 
@@ -2917,35 +2913,35 @@ impl GuardianDB {
                 valid_heads = valid_heads.len(),
                 total_heads = heads.len(),
                 skipped_count = skipped_count,
-                "Validação concluída com heads ignorados"
+                "Validation completed with skipped heads"
             );
         }
 
-        // ETAPA 2: Verificação de permissões de acesso via Access Controller
+        // STEP 2: Verify access permissions via the Access Controller.
         tracing::debug!(
             valid_heads_count = valid_heads.len(),
-            "Verificando permissões de acesso para heads"
+            "Verifying access permissions for heads"
         );
 
-        // Verificação completa de permissões usando o Access Controller da store
+        // Full permission verification using the store's Access Controller.
         let permitted_heads = self.verify_heads_permissions(&valid_heads, &store).await?;
 
-        // ETAPA 3: Detecção de duplicatas consultando oplog existente
+        // STEP 3: Detect duplicates by querying the existing oplog.
         tracing::debug!(
             permitted_heads_count = permitted_heads.len(),
-            "Verificando duplicatas no oplog para heads"
+            "Checking the oplog for duplicate heads"
         );
 
         let mut new_heads = Vec::new();
         let mut duplicate_count = 0;
 
-        // Para cada head, verifica se já existe no oplog da store
+        // For each head, check whether it already exists in the store's oplog.
         for (i, head) in permitted_heads.iter().enumerate() {
-            // Verifica se o head já existe no oplog da store
+            // Check whether the head already exists in the store's oplog.
             let head_hash = head.hash();
             let already_exists =
                 {
-                    // Tenta acessar o oplog através dos tipos de store conhecidos
+                    // Try to access the oplog through the known store types.
                     if let Some(event_log_store) = store.as_any()
                     .downcast_ref::<crate::stores::event_log_store::GuardianDBEventLogStore>()
                 {
@@ -2967,9 +2963,9 @@ impl GuardianDB {
                         head_index = i + 1,
                         total_heads = permitted_heads.len(),
                         head_hash = %head_hash,
-                        "Tipo de store não suportado para verificação de duplicatas, assumindo novo"
+                        "Store type not supported for duplicate detection, assuming new"
                     );
-                    false // Se não conseguimos verificar, assumimos que é novo
+                    false // If we cannot check, assume it is new.
                 }
                 };
 
@@ -2978,7 +2974,7 @@ impl GuardianDB {
                     head_index = i + 1,
                     total_heads = permitted_heads.len(),
                     head_hash = %head_hash,
-                    "Head já existe no oplog (duplicata)"
+                    "Head already exists in the oplog (duplicate)"
                 );
                 duplicate_count += 1;
             } else {
@@ -2986,7 +2982,7 @@ impl GuardianDB {
                     head_index = i + 1,
                     total_heads = permitted_heads.len(),
                     head_hash = %head_hash,
-                    "Head é novo, adicionando para sincronização"
+                    "Head is new, adding it for synchronization"
                 );
                 new_heads.push(head.clone());
             }
@@ -2995,7 +2991,7 @@ impl GuardianDB {
         if new_heads.is_empty() {
             tracing::debug!(
                 duplicate_count = duplicate_count,
-                "Todos os heads são duplicatas, sincronização desnecessária"
+                "All heads are duplicates, synchronization unnecessary"
             );
             return Ok(());
         }
@@ -3005,28 +3001,28 @@ impl GuardianDB {
                 new_heads = new_heads.len(),
                 total_heads = heads.len(),
                 duplicate_count = duplicate_count,
-                "Duplicatas detectadas"
+                "Duplicates detected"
             );
         }
 
-        // ETAPA 4: Sincronização efetiva com a store
+        // STEP 4: Actual synchronization with the store.
         tracing::debug!(
             valid_heads = new_heads.len(),
             store_address = store_address,
-            "Iniciando sincronização com a store"
+            "Starting synchronization with the store"
         );
 
-        // Armazena o count antes de mover o vector e mede o tempo de sincronização
+        // Store the count before moving the vector and measure the sync time.
         let new_heads_count = new_heads.len();
         let sync_start_time = std::time::Instant::now();
 
-        // Cria uma cópia das entradas para uso nos eventos
+        // Create a copy of the entries for use in the events.
         let entries_for_events = new_heads.clone();
 
-        // Hlper method que resolve problemas de mutabilidade
+        // Helper method that solves mutability problems.
         let sync_result = Self::sync_store_with_heads(&store, new_heads).await;
 
-        // Calcula duração da sincronização
+        // Compute the synchronization duration.
         let sync_duration = sync_start_time.elapsed();
         let duration_ms = sync_duration.as_millis() as u64;
 
@@ -3036,28 +3032,28 @@ impl GuardianDB {
                     processed_count = new_heads_count,
                     store_address = store_address,
                     duration_ms = duration_ms,
-                    "Sincronização de heads concluída com sucesso"
+                    "Head synchronization completed successfully"
                 );
 
-                // ETAPA 5: Emissão de eventos de sucesso
-                // Emite evento de sincronização para componentes interessados
+                // STEP 5: Emit success events.
+                // Emit a synchronization event for interested components.
                 let exchange_event = EventExchangeHeads::new(self.node_id(), event.clone());
 
                 if let Err(e) = self.emitters.new_heads.emit(exchange_event) {
-                    tracing::warn!(error = %e, "Falha ao emitir evento new_heads");
+                    tracing::warn!(error = %e, "Failed to emit new_heads event");
                 } else {
                     tracing::trace!(
                         processed_heads = new_heads_count,
-                        "Evento new_heads emitido com sucesso"
+                        "new_heads event emitted successfully"
                     );
                 }
 
-                // ETAPA 6: Emissão de eventos específicos da store
-                // Obtém informações da store para os eventos
+                // STEP 6: Emit store-specific events.
+                // Get store information for the events.
                 let store_type = store.store_type();
                 let total_entries = self.get_store_total_entries(&store).await.unwrap_or(0);
 
-                // EventStoreUpdated: Notifica mudanças na store
+                // EventStoreUpdated: notifies changes in the store.
                 let store_updated_event = EventStoreUpdated::new(
                     store_address.clone(),
                     store_type.to_string(),
@@ -3066,16 +3062,16 @@ impl GuardianDB {
                 );
 
                 if let Err(e) = self.emitters.store_updated.emit(store_updated_event) {
-                    tracing::warn!(error = %e, "Falha ao emitir evento store_updated");
+                    tracing::warn!(error = %e, "Failed to emit store_updated event");
                 } else {
                     tracing::debug!(
                         store_address = store_address,
                         entries_added = new_heads_count,
-                        "Evento store_updated emitido com sucesso"
+                        "store_updated event emitted successfully"
                     );
                 }
 
-                // EventSyncCompleted: Notifica conclusão da sincronização
+                // EventSyncCompleted: notifies the completion of the synchronization.
                 let sync_completed_event = EventSyncCompleted::new(
                     store_address.clone(),
                     self.node_id().to_string(),
@@ -3085,16 +3081,16 @@ impl GuardianDB {
                 );
 
                 if let Err(e) = self.emitters.sync_completed.emit(sync_completed_event) {
-                    tracing::warn!(error = %e, "Falha ao emitir evento sync_completed");
+                    tracing::warn!(error = %e, "Failed to emit sync_completed event");
                 } else {
                     tracing::debug!(
                         store_address = store_address,
                         duration_ms = duration_ms,
-                        "Evento sync_completed emitido com sucesso"
+                        "sync_completed event emitted successfully"
                     );
                 }
 
-                // EventNewEntries: Notifica novas entradas adicionadas
+                // EventNewEntries: notifies new entries that were added.
                 if !entries_for_events.is_empty() {
                     let new_entries_event = EventNewEntries::new(
                         store_address.clone(),
@@ -3103,12 +3099,12 @@ impl GuardianDB {
                     );
 
                     if let Err(e) = self.emitters.new_entries.emit(new_entries_event) {
-                        tracing::warn!(error = %e, "Falha ao emitir evento new_entries");
+                        tracing::warn!(error = %e, "Failed to emit new_entries event");
                     } else {
                         tracing::debug!(
                             store_address = store_address,
                             new_entries_count = new_heads_count,
-                            "Evento new_entries emitido com sucesso"
+                            "new_entries event emitted successfully"
                         );
                     }
                 }
@@ -3119,11 +3115,11 @@ impl GuardianDB {
                     store_address = store_address,
                     heads_count = new_heads_count,
                     duration_ms = duration_ms,
-                    "Falha na sincronização de heads"
+                    "Head synchronization failed"
                 );
 
-                // Emite eventos de erro para componentes interessados
-                // EventSyncError: Erro geral de sincronização
+                // Emit error events for interested components.
+                // EventSyncError: general synchronization error.
                 let error_type = match &e {
                     GuardianError::Store(_) => SyncErrorType::StoreError,
                     GuardianError::Network(_) => SyncErrorType::NetworkError,
@@ -3143,27 +3139,27 @@ impl GuardianDB {
                     tracing::warn!(
                         error = %emit_err,
                         original_error = %e,
-                        "Falha ao emitir evento sync_error"
+                        "Failed to emit sync_error event"
                     );
                 } else {
                     tracing::debug!(
                         store_address = store_address,
                         error_type = ?error_type,
-                        "Evento sync_error emitido com sucesso"
+                        "sync_error event emitted successfully"
                     );
                 }
 
-                // EventSyncCompleted com success = false
+                // EventSyncCompleted with success = false.
                 let sync_completed_event = EventSyncCompleted::new(
                     store_address.clone(),
                     self.node_id().to_string(),
-                    0, // heads_synced = 0 devido ao erro
+                    0, // heads_synced = 0 due to the error.
                     duration_ms,
                     false, // success = false
                 );
 
                 if let Err(emit_err) = self.emitters.sync_completed.emit(sync_completed_event) {
-                    tracing::warn!(error = %emit_err, "Falha ao emitir evento sync_completed (erro)");
+                    tracing::warn!(error = %emit_err, "Failed to emit sync_completed event (error)");
                 }
 
                 return Err(e);
@@ -3175,14 +3171,14 @@ impl GuardianDB {
             heads_processed = new_heads_count,
             heads_skipped = skipped_count,
             store_address = store_address,
-            "Processamento de exchange heads completado com sucesso"
+            "Exchange heads processing completed successfully"
         );
 
         Ok(())
     }
 }
 
-/// Função auxiliar para criar um canal de comunicação direta.
+/// Helper function to create a direct communication channel.
 pub async fn make_direct_channel(
     event_bus: &EventBusImpl,
     factory: DirectChannelFactory,
@@ -3191,36 +3187,33 @@ pub async fn make_direct_channel(
     let emitter = crate::p2p::PayloadEmitter::new(event_bus)
         .await
         .map_err(|e| {
-            GuardianError::Other(format!(
-                "não foi possível inicializar o emitter do pubsub: {}",
-                e
-            ))
+            GuardianError::Other(format!("could not initialize the pubsub emitter: {}", e))
         })?;
 
-    // Usa a factory fornecida para criar o canal direto
+    // Use the provided factory to create the direct channel.
     let channel = factory(Arc::new(emitter), Some((*options).clone()))
         .await
-        .map_err(|e| GuardianError::Other(format!("Falha ao criar canal direto: {}", e)))?;
+        .map_err(|e| GuardianError::Other(format!("Failed to create direct channel: {}", e)))?;
 
-    tracing::debug!("Canal direto criado com sucesso usando factory fornecida");
+    tracing::debug!("Direct channel created successfully using the provided factory");
     Ok(channel)
 }
 
-/// Implementação do Drop trait para garantir cleanup seguro do GuardianDB
+/// Drop trait implementation to ensure safe GuardianDB cleanup.
 impl Drop for GuardianDB {
     fn drop(&mut self) {
-        // Abort da task do monitor para evitar acesso a memória já liberada
+        // Abort the monitor task to avoid accessing already-freed memory.
         self._monitor_handle.abort();
 
-        // Cancela o token para sinalizar a todas as tasks que devem parar
+        // Cancel the token to signal all tasks that they must stop.
         self.cancellation_token.cancel();
 
-        // Não podemos usar async no Drop, então apenas fazemos abort e cancel
-        // O resto do cleanup será feito pelos destructors automáticos dos Arcs
+        // We cannot use async in Drop, so we only abort and cancel.
+        // The rest of the cleanup is done by the Arcs' automatic destructors.
     }
 }
 
-/// Implementação da trait BaseGuardianDB para GuardianDB
+/// BaseGuardianDB trait implementation for GuardianDB.
 #[async_trait::async_trait]
 impl BaseGuardianDB for GuardianDB {
     type Error = GuardianError;
@@ -3230,7 +3223,7 @@ impl BaseGuardianDB for GuardianDB {
     }
 
     fn identity(&self) -> Arc<Identity> {
-        // Cria um clone do Arc<Identity> a partir do RwLock
+        // Create a clone of the Arc<Identity> from the RwLock.
         let identity_guard = self.identity.read();
         Arc::new(identity_guard.clone())
     }
@@ -3240,7 +3233,7 @@ impl BaseGuardianDB for GuardianDB {
         address: &str,
         options: &mut CreateDBOptions,
     ) -> std::result::Result<Arc<dyn Store<Error = GuardianError>>, Self::Error> {
-        // Cria uma cópia das opções para usar com o método interno
+        // Create a copy of the options to use with the internal method.
         let options_copy = CreateDBOptions {
             event_bus: options.event_bus.clone(),
             directory: options.directory.clone(),
@@ -3249,7 +3242,7 @@ impl BaseGuardianDB for GuardianDB {
             create: options.create,
             store_type: options.store_type.clone(),
             access_controller_address: options.access_controller_address.clone(),
-            access_controller: None, // Será resolvido internamente se necessário
+            access_controller: None, // Will be resolved internally if needed.
             replicate: options.replicate,
             keystore: options.keystore.clone(),
             cache: options.cache.clone(),
@@ -3260,12 +3253,14 @@ impl BaseGuardianDB for GuardianDB {
             span: options.span.clone(),
             close_func: None,
             store_specific_opts: None,
+            doc_ticket: options.doc_ticket.clone(),
+            read_only: options.read_only,
         };
 
-        // Chama o método open interno do GuardianDB
+        // Call the internal GuardianDB open method.
         let arc_store = GuardianDB::open(self, address, options_copy).await?;
 
-        // Converte Arc<GuardianStore> para Arc<dyn Store>
+        // Convert Arc<GuardianStore> into Arc<dyn Store>.
         let store_dyn: Arc<dyn Store<Error = GuardianError>> =
             arc_store as Arc<dyn Store<Error = GuardianError>>;
 
@@ -3273,9 +3268,9 @@ impl BaseGuardianDB for GuardianDB {
     }
 
     fn get_store(&self, address: &str) -> Option<Arc<dyn Store<Error = GuardianError>>> {
-        // Usa o método get_store interno do GuardianDB
+        // Use the internal GuardianDB get_store method.
         if let Some(arc_store) = GuardianDB::get_store(self, address) {
-            // Converte Arc<GuardianStore> para Arc<dyn Store>
+            // Convert Arc<GuardianStore> into Arc<dyn Store>.
             let store_dyn: Arc<dyn Store<Error = GuardianError>> =
                 arc_store as Arc<dyn Store<Error = GuardianError>>;
             Some(store_dyn)
@@ -3290,7 +3285,7 @@ impl BaseGuardianDB for GuardianDB {
         store_type: &str,
         options: &mut CreateDBOptions,
     ) -> std::result::Result<Arc<dyn Store<Error = GuardianError>>, Self::Error> {
-        // Cria uma cópia das opções para usar com o método interno
+        // Create a copy of the options to use with the internal method.
         let options_copy = CreateDBOptions {
             event_bus: options.event_bus.clone(),
             directory: options.directory.clone(),
@@ -3310,12 +3305,14 @@ impl BaseGuardianDB for GuardianDB {
             span: options.span.clone(),
             close_func: None,
             store_specific_opts: None,
+            doc_ticket: options.doc_ticket.clone(),
+            read_only: options.read_only,
         };
 
-        // Chama o método create interno do GuardianDB
+        // Call the internal GuardianDB create method.
         let arc_store = GuardianDB::create(self, name, store_type, Some(options_copy)).await?;
 
-        // Converte Arc<GuardianStore> para Arc<dyn Store>
+        // Convert Arc<GuardianStore> into Arc<dyn Store>.
         let store_dyn: Arc<dyn Store<Error = GuardianError>> =
             arc_store as Arc<dyn Store<Error = GuardianError>>;
 
@@ -3328,25 +3325,25 @@ impl BaseGuardianDB for GuardianDB {
         store_type: &str,
         options: &DetermineAddressOptions,
     ) -> std::result::Result<Box<dyn Address>, Self::Error> {
-        // Usa o método determine_address interno do GuardianDB
+        // Use the internal GuardianDB determine_address method.
         let guardian_address =
             GuardianDB::determine_address(self, name, store_type, Some(options.clone())).await?;
 
-        // Converte GuardianDBAddress para Box<dyn Address>
+        // Convert GuardianDBAddress into Box<dyn Address>.
         let boxed_address: Box<dyn Address> = Box::new(guardian_address);
 
         Ok(boxed_address)
     }
 
     fn register_store_type(&mut self, store_type: &str, constructor: StoreConstructor) {
-        // Usa o método register_store_type existente (evita recursão chamando método interno)
+        // Use the existing register_store_type logic (avoids recursion by calling the internal method).
         let mut types = self.store_types.write();
         types.insert(store_type.to_string(), constructor);
         tracing::debug!("Registered store type: {}", store_type);
     }
 
     fn unregister_store_type(&mut self, store_type: &str) {
-        // Usa o método unregister_store_type existente (evita recursão chamando método interno)
+        // Use the existing unregister_store_type logic (avoids recursion by calling the internal method).
         let mut types = self.store_types.write();
         types.remove(store_type);
         tracing::debug!("Unregistered store type: {}", store_type);
@@ -3356,7 +3353,7 @@ impl BaseGuardianDB for GuardianDB {
         &mut self,
         constructor: AccessControllerConstructor,
     ) -> std::result::Result<(), Self::Error> {
-        // Registra com tipo padrão "default" para evitar recursão
+        // Register with the "default" type to avoid recursion.
         let mut types = self.access_control_types.write();
         types.insert("default".to_string(), constructor);
         tracing::debug!("Registered access controller type: default");
@@ -3364,7 +3361,7 @@ impl BaseGuardianDB for GuardianDB {
     }
 
     fn unregister_access_controller_type(&mut self, controller_type: &str) {
-        // Usa método interno para evitar recursão
+        // Use the internal method to avoid recursion.
         let mut types = self.access_control_types.write();
         types.remove(controller_type);
         tracing::debug!("Unregistered access controller type: {}", controller_type);
@@ -3374,7 +3371,7 @@ impl BaseGuardianDB for GuardianDB {
         &self,
         controller_type: &str,
     ) -> Option<AccessControllerConstructor> {
-        // Usa acesso direto para evitar recursão
+        // Use direct access to avoid recursion.
         let types = self.access_control_types.read();
         types.get(controller_type).cloned()
     }

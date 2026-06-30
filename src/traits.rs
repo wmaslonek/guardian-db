@@ -8,9 +8,9 @@ use crate::guardian::error::GuardianError;
 use crate::log::{Log, entry::Entry, identity::Identity};
 use crate::p2p::EventBus;
 use crate::p2p::network::client::IrohClient;
-use crate::stores::{operation::Operation, replicator::replication_info::ReplicationInfo};
+use crate::stores::operation::Operation;
 use futures::stream::Stream;
-use iroh::NodeId;
+use iroh::EndpointId as NodeId;
 use iroh_blobs::Hash;
 use opentelemetry::global::{BoxedSpan, BoxedTracer};
 use opentelemetry::trace::{Tracer, noop::NoopTracer};
@@ -25,7 +25,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::Span;
 
-// Type aliases para reduzir complexidade de tipos
+// Type aliases to reduce type complexity.
 type KeyExtractorFn =
     Arc<dyn Fn(&serde_json::Value) -> Result<String, GuardianError> + Send + Sync>;
 type MarshalFn = Arc<dyn Fn(&serde_json::Value) -> Result<Vec<u8>, GuardianError> + Send + Sync>;
@@ -35,17 +35,17 @@ type CleanupCallback = Box<
     dyn FnOnce() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> + Send + Sync,
 >;
 
-// Definição local de SortFn (movida do replicator)
+// Local definition of SortFn (moved from the replicator).
 pub type SortFn = fn(&Entry, &Entry) -> std::cmp::Ordering;
 
-// Type aliases para melhorar legibilidade de assinaturas complexas
-/// Alias para documentos dinâmicos thread-safe
+// Type aliases to improve readability of complex signatures.
+/// Alias for thread-safe dynamic documents.
 pub type Document = Box<dyn Any + Send + Sync>;
 
-/// Alias para resultado padrão com GuardianError
+/// Alias for the standard result with GuardianError.
 pub type GuardianResult<T> = std::result::Result<T, GuardianError>;
 
-/// Alias para filtros de query assíncronos
+/// Alias for asynchronous query filters.
 pub type AsyncDocumentFilter = Pin<
     Box<
         dyn Fn(
@@ -57,21 +57,21 @@ pub type AsyncDocumentFilter = Pin<
     >,
 >;
 
-/// Alias para callback de progresso
+/// Alias for the progress callback.
 pub type ProgressCallback = mpsc::Sender<Entry>;
 
-/// Wrapper para diferentes tipos de tracer, integrado com o sistema tracing
+/// Wrapper for different tracer types, integrated with the tracing system.
 ///
-/// Este enum permite usar tanto tracers OpenTelemetry quanto o sistema
-/// tracing nativo do Rust de forma transparente.
+/// This enum allows using both OpenTelemetry tracers and Rust's native
+/// tracing system transparently.
 #[derive(Default)]
 pub enum TracerWrapper {
-    /// Tracer OpenTelemetry para observabilidade distribuída
+    /// OpenTelemetry tracer for distributed observability.
     OpenTelemetry(Arc<BoxedTracer>),
-    /// Tracer baseado no sistema tracing nativo do Rust
+    /// Tracer based on Rust's native tracing system.
     #[default]
     Tracing,
-    /// Tracer noop para quando telemetria está desabilitada
+    /// No-op tracer for when telemetry is disabled.
     Noop(NoopTracer),
 }
 
@@ -86,50 +86,50 @@ impl Clone for TracerWrapper {
 }
 
 impl TracerWrapper {
-    /// Cria um novo TracerWrapper usando o sistema tracing nativo
+    /// Creates a new TracerWrapper using the native tracing system.
     pub fn new_tracing() -> Self {
         TracerWrapper::Tracing
     }
 
-    /// Cria um novo TracerWrapper usando OpenTelemetry
+    /// Creates a new TracerWrapper using OpenTelemetry.
     pub fn new_opentelemetry(tracer: Arc<BoxedTracer>) -> Self {
         TracerWrapper::OpenTelemetry(tracer)
     }
 
-    /// Cria um TracerWrapper noop (sem operação)
+    /// Creates a no-op TracerWrapper.
     pub fn new_noop() -> Self {
         TracerWrapper::Noop(NoopTracer::new())
     }
 
-    /// Inicia um novo span instrumentado
+    /// Starts a new instrumented span.
     ///
-    /// Este método cria spans de forma consistente independentemente
-    /// do tipo de tracer sendo usado.
+    /// This method creates spans consistently regardless of
+    /// the type of tracer being used.
     pub fn start_span(&self, name: &str) -> TracerSpan {
         match self {
             TracerWrapper::OpenTelemetry(tracer) => {
-                // Para OpenTelemetry, cria um span usando a trait Tracer
+                // For OpenTelemetry, create a span using the Tracer trait.
                 let span = tracer.start(name.to_string());
                 TracerSpan::OpenTelemetry(span)
             }
             TracerWrapper::Tracing => {
-                // Para tracing nativo, usa a macro tracing::span!
+                // For native tracing, use the tracing::span! macro.
                 let span = tracing::info_span!("guardian_db", operation = name);
                 TracerSpan::Tracing(span)
             }
             TracerWrapper::Noop(_) => {
-                // Para noop, retorna um span vazio
+                // For no-op, return an empty span.
                 TracerSpan::Noop
             }
         }
     }
 
-    /// Verifica se o tracer está ativo (não é noop)
+    /// Checks whether the tracer is active (not a no-op).
     pub fn is_active(&self) -> bool {
         !matches!(self, TracerWrapper::Noop(_))
     }
 
-    /// Retorna o tipo do tracer como string para logs/debug
+    /// Returns the tracer type as a string for logs/debugging.
     pub fn tracer_type(&self) -> &'static str {
         match self {
             TracerWrapper::OpenTelemetry(_) => "opentelemetry",
@@ -139,21 +139,21 @@ impl TracerWrapper {
     }
 }
 
-/// Enum para representar diferentes tipos de spans instrumentados
+/// Enum to represent different types of instrumented spans.
 ///
-/// Permite trabalhar com spans de diferentes sistemas de tracing
-/// de forma unificada.
+/// Allows working with spans from different tracing systems
+/// in a unified way.
 pub enum TracerSpan {
-    /// Span OpenTelemetry para observabilidade distribuída
+    /// OpenTelemetry span for distributed observability.
     OpenTelemetry(BoxedSpan),
-    /// Span do sistema tracing nativo do Rust
+    /// Span from Rust's native tracing system.
     Tracing(tracing::Span),
-    /// Span noop para quando telemetria está desabilitada
+    /// No-op span for when telemetry is disabled.
     Noop,
 }
 
 impl TracerSpan {
-    /// Adiciona um atributo/campo ao span
+    /// Adds an attribute/field to the span.
     pub fn set_attribute<T: Into<opentelemetry::Value>>(&mut self, key: &str, value: T) {
         match self {
             TracerSpan::OpenTelemetry(span) => {
@@ -161,18 +161,18 @@ impl TracerSpan {
                 span.set_attribute(opentelemetry::KeyValue::new(key.to_string(), value));
             }
             TracerSpan::Tracing(span) => {
-                // Para tracing, registra como evento dentro do span
+                // For tracing, record it as an event within the span.
                 span.in_scope(|| {
                     tracing::info!(key = %format!("{:?}", value.into()), "span_attribute");
                 });
             }
             TracerSpan::Noop => {
-                // Noop - não faz nada
+                // No-op - does nothing.
             }
         }
     }
 
-    /// Registra um evento no span
+    /// Records an event on the span.
     pub fn add_event(&mut self, name: &str, attributes: Vec<(&str, &str)>) {
         match self {
             TracerSpan::OpenTelemetry(span) => {
@@ -184,7 +184,7 @@ impl TracerSpan {
                 span.add_event(name.to_string(), attrs);
             }
             TracerSpan::Tracing(span) => {
-                // Para tracing, registra como evento estruturado
+                // For tracing, record it as a structured event.
                 span.in_scope(|| {
                     let fields: std::collections::HashMap<&str, &str> =
                         attributes.into_iter().collect();
@@ -192,12 +192,12 @@ impl TracerSpan {
                 });
             }
             TracerSpan::Noop => {
-                // Noop - não faz nada
+                // No-op - does nothing.
             }
         }
     }
 
-    /// Marca o span como erro
+    /// Marks the span as an error.
     pub fn set_error<E: std::fmt::Display>(&mut self, error: E) {
         match self {
             TracerSpan::OpenTelemetry(span) => {
@@ -217,43 +217,43 @@ impl TracerSpan {
                 });
             }
             TracerSpan::Noop => {
-                // Noop - não faz nada
+                // No-op - does nothing.
             }
         }
     }
 
-    /// Finaliza o span explicitamente
+    /// Finishes the span explicitly.
     pub fn finish(mut self) {
         match &mut self {
             TracerSpan::OpenTelemetry(_span) => {
-                // OpenTelemetry spans são finalizados automaticamente no Drop
-                // Mas podemos marcar como concluído aqui se necessário
+                // OpenTelemetry spans are finished automatically on Drop,
+                // but we can mark them as complete here if needed.
             }
             TracerSpan::Tracing(_span) => {
-                // Tracing spans são finalizados automaticamente quando saem de escopo
-                // Não é necessário fazer nada aqui
+                // Tracing spans are finished automatically when they go out of scope.
+                // Nothing needs to be done here.
             }
             TracerSpan::Noop => {
-                // Noop - não faz nada
+                // No-op - does nothing.
             }
         }
-        // O Drop será chamado automaticamente quando self sair de escopo
+        // Drop will be called automatically when self goes out of scope.
     }
 }
 
 impl Drop for TracerSpan {
     fn drop(&mut self) {
-        // Para OpenTelemetry, garantimos que o span seja finalizado
+        // For OpenTelemetry, we ensure the span is finished.
         match self {
             TracerSpan::OpenTelemetry(_span) => {
-                // OpenTelemetry spans são finalizados automaticamente quando Drop
-                // Não precisamos chamar end() explicitamente aqui
+                // OpenTelemetry spans are finished automatically on Drop.
+                // We do not need to call end() explicitly here.
             }
             TracerSpan::Tracing(_) => {
-                // Tracing spans são finalizados automaticamente quando saem de escopo
+                // Tracing spans are finished automatically when they go out of scope.
             }
             TracerSpan::Noop => {
-                // Noop - não faz nada
+                // No-op - does nothing.
             }
         }
     }
@@ -269,13 +269,13 @@ pub struct MessageExchangeHeads {
 }
 
 pub trait MessageMarshaler: Send + Sync {
-    /// Define um tipo de erro associado para flexibilidade na implementação.
+    /// Defines an associated error type for implementation flexibility.
     type Error: std::error::Error + Send + Sync + 'static;
 
-    /// Serializa uma mensagem para um vetor de bytes.
+    /// Serializes a message into a byte vector.
     fn marshal(&self, msg: &MessageExchangeHeads) -> Result<Vec<u8>, Self::Error>;
 
-    /// Desserializa um vetor de bytes para uma mensagem.
+    /// Deserializes a byte vector into a message.
     fn unmarshal(&self, data: &[u8]) -> Result<MessageExchangeHeads, Self::Error>;
 }
 
@@ -299,6 +299,15 @@ pub struct CreateDBOptions {
     pub span: Option<Span>,
     pub close_func: Option<Box<dyn FnOnce() + Send>>,
     pub store_specific_opts: Option<Box<dyn Any + Send + Sync>>,
+    /// `DocTicket` (serialized) to import an iroh-docs namespace shared by a peer.
+    /// Used by iroh-docs-based stores (KeyValue/Document) for secure replication via
+    /// capability: when present, the store imports the ticket's namespace instead of creating a new one.
+    pub doc_ticket: Option<String>,
+    /// Marks this store as a **read-only replica**. When `Some(true)`, iroh-docs-based stores
+    /// refuse local writes (`put`/`delete`) and never create a new namespace — they only import
+    /// an existing one (from `doc_ticket` or a peer). This enforces, at the node level, that a
+    /// designated reader cannot originate writes even if the namespace write secret is present.
+    pub read_only: Option<bool>,
 }
 
 impl Clone for CreateDBOptions {
@@ -322,11 +331,13 @@ impl Clone for CreateDBOptions {
             span: self.span.clone(),
             close_func: None,          // Cannot clone Box<dyn FnOnce()>
             store_specific_opts: None, // Cannot clone Box<dyn Any>
+            doc_ticket: self.doc_ticket.clone(),
+            read_only: self.read_only,
         }
     }
 }
 
-// Usando Arc<dyn Fn> em vez de Box<dyn Fn> para permitir clonagem
+// Using Arc<dyn Fn> instead of Box<dyn Fn> to allow cloning.
 pub type StoreConstructor = Arc<
     dyn Fn(
             Arc<IrohClient>,
@@ -344,16 +355,16 @@ pub type StoreConstructor = Arc<
 
 #[derive(Clone)]
 pub struct CreateDocumentDBOptions {
-    /// Extrai a chave de um documento genérico.
+    /// Extracts the key from a generic document.
     pub key_extractor: KeyExtractorFn,
 
-    /// Serializa um documento genérico para bytes.
+    /// Serializes a generic document to bytes.
     pub marshal: MarshalFn,
 
-    /// Desserializa bytes para um documento genérico.
+    /// Deserializes bytes into a generic document.
     pub unmarshal: UnmarshalFn,
 
-    /// Cria uma nova instância vazia do tipo de item do documento.
+    /// Creates a new empty instance of the document's item type.
     pub item_factory: ItemFactoryFn,
 }
 
@@ -366,26 +377,26 @@ pub struct DetermineAddressOptions {
 
 #[async_trait::async_trait]
 pub trait BaseGuardianDB: Send + Sync {
-    /// Define um tipo de erro associado para flexibilidade na implementação.
+    /// Defines an associated error type for implementation flexibility.
     type Error: Error + Send + Sync + 'static;
 
-    /// Retorna o Client do GuardianDB.
+    /// Returns the GuardianDB Client.
     fn client(&self) -> Arc<IrohClient>;
 
-    /// Retorna a identidade utilizada pelo GuardianDB.
+    /// Returns the identity used by GuardianDB.
     fn identity(&self) -> Arc<Identity>;
 
-    /// Cria ou abre uma store com o endereço e opções fornecidos.
+    /// Creates or opens a store with the provided address and options.
     async fn open(
         &self,
         address: &str,
         options: &mut CreateDBOptions,
     ) -> Result<Arc<dyn Store<Error = GuardianError>>, Self::Error>;
 
-    /// Retorna uma instância da store se ela já estiver aberta.
+    /// Returns a store instance if it is already open.
     fn get_store(&self, address: &str) -> Option<Arc<dyn Store<Error = GuardianError>>>;
 
-    /// Cria uma nova store com o nome, tipo e opções fornecidos.
+    /// Creates a new store with the provided name, type and options.
     async fn create(
         &self,
         name: &str,
@@ -393,7 +404,7 @@ pub trait BaseGuardianDB: Send + Sync {
         options: &mut CreateDBOptions,
     ) -> Result<Arc<dyn Store<Error = GuardianError>>, Self::Error>;
 
-    /// Determina o endereço de um banco de dados com base nos seus parâmetros.
+    /// Determines a database's address based on its parameters.
     async fn determine_address(
         &self,
         name: &str,
@@ -401,63 +412,63 @@ pub trait BaseGuardianDB: Send + Sync {
         options: &DetermineAddressOptions,
     ) -> Result<Box<dyn Address>, Self::Error>;
 
-    /// Registra um novo tipo de Store.
+    /// Registers a new Store type.
     fn register_store_type(&mut self, store_type: &str, constructor: StoreConstructor);
 
-    /// Desregistra um tipo de Store.
+    /// Unregisters a Store type.
     fn unregister_store_type(&mut self, store_type: &str);
 
-    /// Registra um novo tipo de Access Controller.
+    /// Registers a new Access Controller type.
     fn register_access_controller_type(
         &mut self,
         constructor: AccessControllerConstructor,
     ) -> Result<(), Self::Error>;
 
-    /// Desregistra um tipo de Access Controller.
+    /// Unregisters an Access Controller type.
     fn unregister_access_controller_type(&mut self, controller_type: &str);
 
-    /// Obtém um construtor de Access Controller pelo seu tipo.
+    /// Gets an Access Controller constructor by its type.
     fn get_access_controller_type(
         &self,
         controller_type: &str,
     ) -> Option<AccessControllerConstructor>;
 
-    /// Retorna o barramento de eventos.
+    /// Returns the event bus.
     fn event_bus(&self) -> EventBus;
 
-    /// Retorna o span para tracing.
+    /// Returns the span for tracing.
     fn span(&self) -> &tracing::Span;
 
-    /// Retorna o tracer para telemetria.
+    /// Returns the tracer for telemetry.
     fn tracer(&self) -> Arc<TracerWrapper>;
 }
 
-/// Expõe um método para criar ou abrir uma `DocumentStore`.
+/// Exposes a method to create or open a `DocumentStore`.
 #[async_trait::async_trait]
 pub trait GuardianDBDocumentStoreProvider {
-    /// Define um tipo de erro associado para este trait.
+    /// Defines an associated error type for this trait.
     type Error: Error + Send + Sync + 'static;
 
-    /// Cria ou abre uma DocumentStore.
+    /// Creates or opens a DocumentStore.
     async fn docs(
         &self,
         address: &str,
         options: &mut CreateDBOptions,
     ) -> Result<Box<dyn DocumentStore<Error = GuardianError>>, Self::Error>;
 }
-/// Combina as traits `BaseGuardianDB` e `GuardianDBDocumentStoreProvider`.
+/// Combines the `BaseGuardianDB` and `GuardianDBDocumentStoreProvider` traits.
 pub trait GuardianDBDocumentStore: BaseGuardianDB + GuardianDBDocumentStoreProvider {}
 
-// Implementação "blanket" que aplica automaticamente a trait `GuardianDBDocumentStore`
+// "Blanket" implementation that automatically applies the `GuardianDBDocumentStore` trait.
 impl<T: BaseGuardianDB + GuardianDBDocumentStoreProvider> GuardianDBDocumentStore for T {}
 
-/// Expõe um método para criar ou abrir uma `KeyValueStore`.
+/// Exposes a method to create or open a `KeyValueStore`.
 #[async_trait::async_trait]
 pub trait GuardianDBKVStoreProvider: Send + Sync {
-    /// Define um tipo de erro associado para este trait.
+    /// Defines an associated error type for this trait.
     type Error: Error + Send + Sync + 'static;
 
-    /// Cria ou abre uma KeyValueStore.
+    /// Creates or opens a KeyValueStore.
     async fn key_value(
         &self,
         address: &str,
@@ -465,20 +476,20 @@ pub trait GuardianDBKVStoreProvider: Send + Sync {
     ) -> Result<Box<dyn KeyValueStore<Error = GuardianError>>, Self::Error>;
 }
 
-/// Combina as traits `BaseGuardianDB` e `GuardianDBKVStoreProvider`.
+/// Combines the `BaseGuardianDB` and `GuardianDBKVStoreProvider` traits.
 pub trait GuardianDBKVStore: BaseGuardianDB + GuardianDBKVStoreProvider {}
 
-// Implementação "blanket" que aplica automaticamente a trait `GuardianDBKVStore`
-// a qualquer tipo que já satisfaça as condições.
+// "Blanket" implementation that automatically applies the `GuardianDBKVStore` trait
+// to any type that already satisfies the conditions.
 impl<T: BaseGuardianDB + GuardianDBKVStoreProvider> GuardianDBKVStore for T {}
 
-/// Expõe um método para criar ou abrir uma `EventLogStore`.
+/// Exposes a method to create or open an `EventLogStore`.
 #[async_trait::async_trait]
 pub trait GuardianDBLogStoreProvider {
-    /// Define um tipo de erro associado para este trait.
+    /// Defines an associated error type for this trait.
     type Error: Error + Send + Sync + 'static;
 
-    /// Cria ou abre uma EventLogStore (um log de eventos append-only).
+    /// Creates or opens an EventLogStore (an append-only event log).
     async fn log(
         &self,
         address: &str,
@@ -486,13 +497,13 @@ pub trait GuardianDBLogStoreProvider {
     ) -> Result<Box<dyn EventLogStore<Error = GuardianError>>, Self::Error>;
 }
 
-/// Combina as traits `BaseGuardianDB` e `GuardianDBLogStoreProvider`.
+/// Combines the `BaseGuardianDB` and `GuardianDBLogStoreProvider` traits.
 pub trait GuardianDBLogStore: BaseGuardianDB + GuardianDBLogStoreProvider {}
 
-// Implementação "blanket" para `GuardianDBLogStore`.
+// "Blanket" implementation for `GuardianDBLogStore`.
 impl<T: BaseGuardianDB + GuardianDBLogStoreProvider> GuardianDBLogStore for T {}
 
-/// Combina todas as traits principais do GuardianDB.
+/// Combines all of GuardianDB's main traits.
 pub trait GuardianDB:
     BaseGuardianDB
     + GuardianDBKVStoreProvider
@@ -501,8 +512,8 @@ pub trait GuardianDB:
 {
 }
 
-// A implementação "blanket" permite que qualquer tipo que já satisfaça todas
-// as constraints seja automaticamente considerado `GuardianDB`.
+// The "blanket" implementation allows any type that already satisfies all
+// the constraints to be automatically considered a `GuardianDB`.
 impl<
     T: BaseGuardianDB
         + GuardianDBKVStoreProvider
@@ -514,19 +525,19 @@ impl<
 
 #[derive(Default, Debug, Clone)]
 pub struct StreamOptions {
-    /// "Greater Than": Retorna entradas que são posteriores ao Hash fornecido.
+    /// "Greater Than": Returns entries that come after the provided Hash.
     pub gt: Option<Hash>,
 
-    /// "Greater Than or Equal": Retorna entradas que são o Hash fornecido ou posteriores.
+    /// "Greater Than or Equal": Returns entries that are the provided Hash or later.
     pub gte: Option<Hash>,
 
-    /// "Less Than": Retorna entradas que são anteriores ao Hash fornecido.
+    /// "Less Than": Returns entries that come before the provided Hash.
     pub lt: Option<Hash>,
 
-    /// "Less Than or Equal": Retorna entradas que são o Hash fornecido ou anteriores.
+    /// "Less Than or Equal": Returns entries that are the provided Hash or earlier.
     pub lte: Option<Hash>,
 
-    /// Limita o número de entradas a serem retornadas.
+    /// Limits the number of entries to be returned.
     pub amount: Option<i32>,
 }
 
@@ -534,7 +545,7 @@ pub trait StoreEvents {
     fn subscribe(&mut self);
 }
 
-/// Define as operações comuns a todos os tipos de stores.
+/// Defines the operations common to all store types.
 #[async_trait::async_trait]
 pub trait Store: Send + Sync {
     type Error: std::error::Error + Send + Sync + 'static;
@@ -542,174 +553,178 @@ pub trait Store: Send + Sync {
     #[deprecated(note = "use event_bus() instead")]
     fn events(&self) -> &dyn EmitterInterface;
 
-    /// Fecha a store e libera seus recursos.
-    /// Modificado para aceitar &self em vez de &mut self para compatibilidade com Arc<T>
+    /// Closes the store and releases its resources.
+    /// Modified to accept &self instead of &mut self for compatibility with Arc<T>.
     async fn close(&self) -> Result<(), Self::Error>;
 
-    /// Retorna o endereço da store.
+    /// Returns the store's address.
     fn address(&self) -> &dyn Address;
 
-    /// Retorna o índice da store, que mantém o estado atual dos dados.
-    /// Retorna Box para evitar problemas de lifetime com RwLock
+    /// Returns the store's index, which maintains the current state of the data.
+    /// Returns Box to avoid lifetime issues with RwLock.
     fn index(&self) -> Box<dyn StoreIndex<Error = Self::Error> + Send + Sync>;
 
-    /// Retorna o tipo da store como uma string (ex: "eventlog", "kvstore").
+    /// Returns the store type as a string (e.g. "eventlog", "kvstore").
     fn store_type(&self) -> &str;
 
-    /// Retorna o status atual da replicação.
-    fn replication_status(&self) -> ReplicationInfo;
-
-    /// Retorna o cache da store.
+    /// Returns the store's cache.
     fn cache(&self) -> Arc<dyn Datastore>;
 
-    /// Remove todo o conteúdo local da store.
+    /// Removes all of the store's local content.
     async fn drop(&self) -> Result<(), Self::Error>;
 
-    /// Carrega as `amount` entradas mais recentes da rede.
+    /// Loads the `amount` most recent entries from the network.
     async fn load(&self, amount: usize) -> Result<(), Self::Error>;
 
-    /// Sincroniza a store com uma lista de `heads` (entradas mais recentes) de outro par.
+    /// Synchronizes the store with a list of `heads` (most recent entries) from another peer.
     async fn sync(&self, heads: Vec<Entry>) -> Result<(), Self::Error>;
 
-    /// Carrega mais entradas a partir de um conjunto de CIDs conhecidos.
+    /// Loads more entries from a set of known CIDs.
     async fn load_more_from(&self, amount: u64, entries: Vec<Entry>);
 
-    /// Carrega o conteúdo da store a partir de um snapshot.
+    /// Loads the store's content from a snapshot.
     async fn load_from_snapshot(&self) -> Result<(), Self::Error>;
 
-    /// Retorna o log de operações (OpLog) subjacente.
-    /// Modificado para retornar Arc para evitar problemas de lifetime
+    /// Returns the underlying operation log (OpLog).
+    /// Modified to return Arc to avoid lifetime issues.
     fn op_log(&self) -> Arc<RwLock<Log>>;
 
-    /// Retorna o Client do GuardianDB.
+    /// Returns the GuardianDB Client.
     fn client(&self) -> Arc<IrohClient>;
 
-    /// Retorna o nome do banco de dados.
+    /// Returns the database name.
     fn db_name(&self) -> &str;
 
-    /// Retorna a identidade usada pela store.
+    /// Returns the identity used by the store.
     fn identity(&self) -> &Identity;
 
-    /// Retorna o controlador de acesso da store.
+    /// Returns the store's access controller.
     fn access_controller(&self) -> &dyn AccessController;
 
-    /// Adiciona uma nova operação à store.
+    /// Adds a new operation to the store.
     async fn add_operation(
         &self,
         op: Operation,
         on_progress_callback: Option<ProgressCallback>,
     ) -> Result<Entry, Self::Error>;
 
-    /// Retorna o span.
-    /// Modificado para retornar Arc para evitar problemas de lifetime
+    /// Returns the span.
+    /// Modified to return Arc to avoid lifetime issues.
     fn span(&self) -> Arc<Span>;
 
-    /// Retorna o tracer para telemetria.
+    /// Returns the tracer for telemetry.
     fn tracer(&self) -> Arc<TracerWrapper>;
 
-    /// Retorna o barramento de eventos.
+    /// Returns the event bus.
     fn event_bus(&self) -> Arc<EventBus>;
 
-    /// Método auxiliar para downcast
+    /// Helper method for downcasting.
     fn as_any(&self) -> &dyn std::any::Any;
 }
 
-/// Uma store que se comporta como um log de eventos "append-only" distribuído.
-/// Herda todas as funcionalidades da trait `Store` e adiciona operações
-/// específicas para logs sequenciais imutáveis.
+/// A store that behaves like a distributed "append-only" event log.
+/// Inherits all functionality from the `Store` trait and adds operations
+/// specific to immutable sequential logs.
 ///
-/// Ideal para casos de uso como auditoria, event sourcing, e sistemas
-/// que requerem histórico completo e ordenado de eventos.
+/// Ideal for use cases such as auditing, event sourcing, and systems
+/// that require a complete, ordered event history.
 #[async_trait::async_trait]
 pub trait EventLogStore: Store {
-    /// Adiciona um novo dado ao log.
-    /// Os dados são anexados de forma sequencial e imutável.
+    /// Adds a new piece of data to the log.
+    /// The data is appended sequentially and immutably.
     ///
-    /// # Argumentos
-    /// * `data` - Os dados binários a serem adicionados ao log
+    /// # Arguments
+    /// * `data` - The binary data to be added to the log
     ///
-    /// # Retorna
-    /// A operação ADD criada, contendo metadados do evento adicionado
+    /// # Returns
+    /// The created ADD operation, containing metadata of the added event
     async fn add(&self, data: Vec<u8>) -> Result<Operation, Self::Error>;
 
-    /// Obtém uma entrada específica do log pelo seu Hash.
-    /// Permite acesso direto a qualquer entrada histórica.
+    /// Gets a specific log entry by its Hash.
+    /// Allows direct access to any historical entry.
     ///
-    /// # Argumentos
-    /// * `hash` - O Hash da entrada desejada
+    /// # Arguments
+    /// * `hash` - The Hash of the desired entry
     ///
-    /// # Retorna
-    /// A operação correspondente ao Hash, ou erro se não encontrada
+    /// # Returns
+    /// The operation corresponding to the Hash, or an error if not found
     async fn get(&self, hash: &Hash) -> Result<Operation, Self::Error>;
 
-    /// Retorna um stream de operações, com opções de filtro.
-    /// Em Rust, em vez de passar um canal, é idiomático retornar um `Stream`.
+    /// Returns a stream of operations, with filter options.
+    /// In Rust, instead of passing a channel, it is idiomatic to return a `Stream`.
     ///
     /// # TODO
-    /// Esta funcionalidade requer implementação cuidadosa de Stream para evitar
-    /// problemas de lifetime. Por enquanto, use `list()` para casos síncronos.
+    /// This functionality requires careful Stream implementation to avoid
+    /// lifetime issues. For now, use `list()` for synchronous cases.
     ///
-    /// # Implementação futura
+    /// # Future implementation
     /// ```ignore
     /// async fn stream(&self, options: Option<StreamOptions>)
     ///     -> Result<Pin<Box<dyn Stream<Item = Operation> + Send>>, Self::Error>;
     /// ```
-    /// Retorna uma lista de operações que ocorreram na store, com opções de filtro.
-    /// Permite consultas históricas com critérios específicos de tempo/posição.
+    /// Returns a list of operations that occurred in the store, with filter options.
+    /// Allows historical queries with specific time/position criteria.
     ///
-    /// # Argumentos
-    /// * `options` - Filtros opcionais para limitar/ordenar os resultados
+    /// # Arguments
+    /// * `options` - Optional filters to limit/order the results
     ///
-    /// # Retorna
-    /// Lista ordenada de operações que atendem aos critérios
+    /// # Returns
+    /// An ordered list of operations that meet the criteria
     async fn list(&self, options: Option<StreamOptions>) -> Result<Vec<Operation>, Self::Error>;
 }
 
-/// Uma store que se comporta como um banco de dados chave-valor distribuído.
-/// Herda todas as funcionalidades da trait `Store` e adiciona operações
-/// específicas para pares chave-valor com semântica CRDT.
+/// A store that behaves like a distributed key-value database.
+/// Inherits all functionality from the `Store` trait and adds operations
+/// specific to key-value pairs with CRDT semantics.
 ///
-/// Todas as operações são replicadas automaticamente através da rede
-/// e mantêm consistência eventual entre os peers.
+/// All operations are replicated automatically across the network
+/// and maintain eventual consistency among peers.
 #[async_trait::async_trait]
 pub trait KeyValueStore: Store {
-    /// Retorna todos os pares chave-valor da store em um mapa.
-    /// Esta operação lê o estado atual do índice local.
+    /// Returns all of the store's key-value pairs in a map.
+    /// This operation reads the current state of the local index.
     fn all(&self) -> std::collections::HashMap<String, Vec<u8>>;
 
-    /// Define um valor para uma chave específica.
-    /// Cria uma nova operação PUT no log distribuído que será replicada.
+    /// Sets a value for a specific key.
+    /// Creates a new PUT operation in the distributed log that will be replicated.
     ///
-    /// # Argumentos
-    /// * `key` - A chave para associar ao valor (não pode estar vazia)
-    /// * `value` - Os dados binários a serem armazenados
+    /// # Arguments
+    /// * `key` - The key to associate with the value (cannot be empty)
+    /// * `value` - The binary data to be stored
     ///
-    /// # Retorna
-    /// A operação PUT criada, ou erro se a operação falhar
+    /// # Returns
+    /// The created PUT operation, or an error if the operation fails
     async fn put(&self, key: &str, value: Vec<u8>) -> Result<Operation, Self::Error>;
 
-    /// Remove uma chave e seu valor associado.
-    /// Cria uma nova operação DEL no log distribuído que será replicada.
+    /// Removes a key and its associated value.
+    /// Creates a new DEL operation in the distributed log that will be replicated.
     ///
-    /// # Argumentos
-    /// * `key` - A chave a ser removida
+    /// # Arguments
+    /// * `key` - The key to be removed
     ///
-    /// # Retorna
-    /// A operação DEL criada, ou erro se a chave não existir ou operação falhar
+    /// # Returns
+    /// The created DEL operation, or an error if the key does not exist or the operation fails
     async fn delete(&self, key: &str) -> Result<Operation, Self::Error>;
 
-    /// Obtém o valor associado a uma chave.
-    /// Consulta o índice local para o estado mais recente.
+    /// Gets the value associated with a key.
+    /// Queries the local index for the most recent state.
     ///
-    /// # Argumentos
-    /// * `key` - A chave a ser procurada
+    /// # Arguments
+    /// * `key` - The key to look up
     ///
-    /// # Retorna
-    /// `Some(Vec<u8>)` se a chave existir, `None` se não existir, ou erro se houver falha no acesso
+    /// # Returns
+    /// `Some(Vec<u8>)` if the key exists, `None` if it does not, or an error if access fails
     async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Self::Error>;
+
+    /// Generates a (serialized) `DocTicket` that grants a peer access to synchronize this store.
+    ///
+    /// The ticket is a capability: only whoever receives it can import the underlying
+    /// iroh-docs namespace and replicate the data. The peer must open the store passing
+    /// the ticket in [`CreateDBOptions::doc_ticket`]. Stores that do not use iroh-docs should return an error.
+    async fn share_ticket(&self) -> Result<String, Self::Error>;
 }
 
-/// Uma struct simples para passar opções ao método `get` de uma DocumentStore.
+/// A simple struct for passing options to a DocumentStore's `get` method.
 #[derive(Default, Debug, Clone, Copy)]
 pub struct DocumentStoreGetOptions {
     pub case_insensitive: bool,
@@ -723,216 +738,231 @@ pub struct DocumentStoreQueryOptions {
     pub sort: Option<String>,
 }
 
-/// Uma store que lida com documentos (objetos semi-estruturados).
+/// A store that handles documents (semi-structured objects).
 ///
-/// Esta trait combina funcionalidades de store básica com operações específicas
-/// para documentos, incluindo consultas avançadas e operações em lote.
+/// This trait combines basic store functionality with document-specific
+/// operations, including advanced queries and batch operations.
 #[async_trait::async_trait]
 pub trait DocumentStore: Store {
-    /// Armazena um único documento.
-    /// O documento deve implementar as traits Send + Sync para thread safety.
+    /// Stores a single document.
+    /// The document must implement the Send + Sync traits for thread safety.
     async fn put(&self, document: Document) -> Result<Operation, Self::Error>;
 
-    /// Deleta um documento pela sua chave.
-    /// Retorna a operação de deleção que foi aplicada ao log.
+    /// Deletes a document by its key.
+    /// Returns the delete operation that was applied to the log.
     async fn delete(&self, key: &str) -> Result<Operation, Self::Error>;
 
-    /// Adiciona múltiplos documentos em operações separadas e retorna a última.
-    /// Cada documento é processado individualmente, criando uma entrada separada no log.
+    /// Adds multiple documents in separate operations and returns the last one.
+    /// Each document is processed individually, creating a separate log entry.
     async fn put_batch(&self, values: Vec<Document>) -> Result<Operation, Self::Error>;
 
-    /// Adiciona múltiplos documentos em uma única operação e a retorna.
-    /// Todos os documentos são incluídos em uma única entrada do log.
+    /// Adds multiple documents in a single operation and returns it.
+    /// All documents are included in a single log entry.
     async fn put_all(&self, values: Vec<Document>) -> Result<Operation, Self::Error>;
 
-    /// Recupera documentos por uma chave, com opções de busca.
-    /// Suporta busca case-insensitive e correspondências parciais baseadas nas opções.
+    /// Retrieves documents by a key, with search options.
+    /// Supports case-insensitive search and partial matches based on the options.
     async fn get(
         &self,
         key: &str,
         opts: Option<DocumentStoreGetOptions>,
     ) -> Result<Vec<Document>, Self::Error>;
 
-    /// Encontra documentos usando uma função de filtro (predicado).
+    /// Finds documents using a filter function (predicate).
     async fn query(&self, filter: AsyncDocumentFilter) -> Result<Vec<Document>, Self::Error>;
+
+    /// Generates a (serialized) `DocTicket` that grants a peer access to synchronize this store.
+    ///
+    /// Replication capability: the peer must open the store passing the ticket in
+    /// [`CreateDBOptions::doc_ticket`]. Stores that do not use iroh-docs should return an error.
+    async fn share_ticket(&self) -> Result<String, Self::Error>;
 }
 
-/// Index contém o estado atual de uma store. Ele processa o log de
-/// operações (`OpLog`) para construir a visão mais recente dos dados,
-/// implementando a lógica do CRDT.
+/// Index holds the current state of a store. It processes the operation
+/// log (`OpLog`) to build the most recent view of the data,
+/// implementing the CRDT logic.
 pub trait StoreIndex: Send + Sync {
     type Error: Error + Send + Sync + 'static;
 
-    /// Verifica se uma chave existe no índice.
-    /// Método seguro que não requer acesso aos dados em si.
+    /// Checks whether a key exists in the index.
+    /// A safe method that does not require access to the data itself.
     fn contains_key(&self, key: &str) -> std::result::Result<bool, Self::Error>;
 
-    /// Retorna uma cópia dos dados para uma chave específica como bytes.
-    /// Método seguro que funciona com qualquer implementação de sincronização.
+    /// Returns a copy of the data for a specific key as bytes.
+    /// A safe method that works with any synchronization implementation.
     fn get_bytes(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, Self::Error>;
 
-    /// Retorna todas as chaves disponíveis no índice.
-    /// Útil para iteração e operações de listagem.
+    /// Returns all keys available in the index.
+    /// Useful for iteration and listing operations.
     fn keys(&self) -> std::result::Result<Vec<String>, Self::Error>;
 
-    /// Retorna o número de entradas no índice.
+    /// Returns the number of entries in the index.
     fn len(&self) -> std::result::Result<usize, Self::Error>;
 
-    /// Verifica se o índice está vazio.
+    /// Checks whether the index is empty.
     fn is_empty(&self) -> std::result::Result<bool, Self::Error>;
 
-    /// Atualiza o índice aplicando novas entradas do log de operações.
-    /// Recebe `&mut self` pois este método modifica o estado do índice.
+    /// Updates the index by applying new entries from the operation log.
+    /// Takes `&mut self` because this method modifies the index state.
     fn update_index(
         &mut self,
         log: &Log,
         entries: &[Entry],
     ) -> std::result::Result<(), Self::Error>;
 
-    /// Limpa todos os dados do índice.
-    /// Útil para reset ou reconstrução completa.
+    /// Clears all data from the index.
+    /// Useful for reset or full rebuild.
     fn clear(&mut self) -> std::result::Result<(), Self::Error>;
 
-    // === MÉTODOS OPCIONAIS PARA OTIMIZAÇÃO ===
+    // === OPTIONAL OPTIMIZATION METHODS ===
 
-    /// Retorna um range de entradas completas (se suportado pelo índice).
+    /// Returns a range of full entries (if supported by the index).
     ///
-    /// Este método opcional permite que índices que mantêm Entry completas
-    /// exponham acesso direto otimizado para queries de range.
+    /// This optional method allows indexes that keep full Entries
+    /// to expose optimized direct access for range queries.
     ///
-    /// # Argumentos
+    /// # Arguments
     ///
-    /// * `start` - Índice inicial (inclusivo)
-    /// * `end` - Índice final (exclusivo)
+    /// * `start` - Starting index (inclusive)
+    /// * `end` - Ending index (exclusive)
     ///
-    /// # Retorna
+    /// # Returns
     ///
-    /// `Some(Vec<Entry>)` se o índice suporta acesso direto a Entry
-    /// `None` se o índice não suporta ou range inválido
+    /// `Some(Vec<Entry>)` if the index supports direct access to Entry
+    /// `None` if the index does not support it or the range is invalid
     ///
     /// # Performance
     ///
-    /// - O(1) para validação de range
-    /// - O(end - start) para coleção dos resultados
-    /// - Evita deserialização de bytes para Entry
+    /// - O(1) for range validation
+    /// - O(end - start) for collecting the results
+    /// - Avoids deserializing bytes into Entry
     fn get_entries_range(&self, _start: usize, _end: usize) -> Option<Vec<Entry>> {
-        // ***Implementação padrão retorna None - índices que suportam podem override
+        // ***Default implementation returns None - indexes that support it can override.
         None
     }
 
-    /// Retorna as últimas N entradas (se suportado pelo índice).
+    /// Returns the last N entries (if supported by the index).
     ///
-    /// Otimização comum para EventLogStore onde frequentemente
-    /// queremos as entradas mais recentes.
+    /// A common optimization for EventLogStore where we frequently
+    /// want the most recent entries.
     ///
-    /// # Argumentos
+    /// # Arguments
     ///
-    /// * `count` - Número de entradas a retornar
+    /// * `count` - Number of entries to return
     ///
-    /// # Retorna
+    /// # Returns
     ///
-    /// `Some(Vec<Entry>)` se o índice suporta acesso direto
-    /// `None` se não suportado
+    /// `Some(Vec<Entry>)` if the index supports direct access
+    /// `None` if not supported
     fn get_last_entries(&self, _count: usize) -> Option<Vec<Entry>> {
-        // ***Implementação padrão retorna None
+        // ***Default implementation returns None.
         None
     }
 
-    /// Retorna uma Entry específica por Hash (se suportado pelo índice).
+    /// Returns a specific Entry by Hash (if supported by the index).
     ///
-    /// Permite busca O(1) ou O(log n) por Hash ao invés de busca linear.
+    /// Allows O(1) or O(log n) lookup by Hash instead of a linear search.
     ///
-    /// # Argumentos
+    /// # Arguments
     ///
-    /// * `hash` - Hash da entrada desejada
+    /// * `hash` - Hash of the desired entry
     ///
-    /// # Retorna
+    /// # Returns
     ///
-    /// `Some(Entry)` se encontrada e suportada
-    /// `None` se não encontrada ou não suportada
+    /// `Some(Entry)` if found and supported
+    /// `None` if not found or not supported
     fn get_entry_by_hash(&self, _hash: &Hash) -> Option<Entry> {
-        // ***Implementação padrão retorna None
+        // ***Default implementation returns None.
         None
     }
 
-    /// Verifica se o índice suporta queries otimizadas com Entry completas.
+    /// Checks whether the index supports optimized queries with full Entries.
     ///
-    /// Permite que o código cliente determine se pode usar os métodos
-    /// opcionais de otimização.
+    /// Allows client code to determine whether it can use the optional
+    /// optimization methods.
     fn supports_entry_queries(&self) -> bool {
-        // ***Implementação padrão retorna false
+        // ***Default implementation returns false.
         false
     }
 }
 
-/// Opções detalhadas para a criação de uma nova instância de Store.
-/// Esta struct é o ponto central de configuração para todas as funcionalidades
-/// avançadas de uma store, incluindo índices, cache, replicação e telemetria.
+/// Detailed options for creating a new Store instance.
+/// This struct is the central configuration point for all of a store's
+/// advanced features, including indexes, cache, replication and telemetry.
 pub struct NewStoreOptions {
     // === CORE CONFIGURATION ===
-    /// Barramento de eventos para comunicação interna
+    /// Event bus for internal communication.
     pub event_bus: Option<EventBus>,
 
-    /// Construtor do índice personalizado para a store
+    /// Constructor of the custom index for the store.
     pub index: Option<IndexConstructor>,
 
-    /// Controlador de acesso para permissões e autenticação
+    /// Access controller for permissions and authentication.
     pub access_controller: Option<Arc<dyn AccessController>>,
 
-    /// Diretório base para armazenamento de dados
+    /// Base directory for data storage.
     pub directory: String,
 
-    /// Função de ordenação personalizada para entradas do log
+    /// Custom sorting function for log entries.
     pub sort_fn: Option<SortFn>,
 
     // === NETWORKING & P2P ===
-    /// Identificador único do peer na rede P2P (usando NodeId do Iroh)
+    /// Unique peer identifier in the P2P network (using Iroh's NodeId).
     pub node_id: NodeId,
 
-    /// Interface PubSub para comunicação distribuída
+    /// PubSub interface for distributed communication.
     pub pubsub: Option<Arc<dyn PubSubInterface<Error = GuardianError>>>,
 
-    /// Canal direto para comunicação peer-to-peer
+    /// Direct channel for peer-to-peer communication.
     pub direct_channel: Option<Arc<dyn DirectChannel<Error = GuardianError>>>,
 
-    /// Marshaler para serialização de mensagens de rede
+    /// Marshaler for serializing network messages.
     pub message_marshaler: Option<Arc<dyn MessageMarshaler<Error = GuardianError>>>,
 
     // === PERFORMANCE & STORAGE ===
-    /// Sistema de cache para otimização de acesso a dados
+    /// Cache system for optimizing data access.
     pub cache: Option<Arc<dyn Datastore>>,
 
-    /// Callback para destruição do cache (pode falhar)
+    /// Callback for cache destruction (may fail).
     pub cache_destroy: Option<CleanupCallback>,
 
-    /// Número de workers para replicação concorrente
+    /// Number of workers for concurrent replication.
     pub replication_concurrency: Option<u32>,
 
-    /// Contador de referências para garbage collection
+    /// Reference counter for garbage collection.
     pub reference_count: Option<i32>,
 
-    /// Limite máximo de entradas no histórico
+    /// Maximum limit of entries in the history.
     pub max_history: Option<i32>,
 
     // === BEHAVIOR FLAGS ===
-    /// Habilita/desabilita replicação automática
+    /// Enables/disables automatic replication.
     pub replicate: Option<bool>,
 
     // === OBSERVABILITY ===
-    /// Sistema de logging estruturado
+    /// Structured logging system.
     pub span: Option<Span>,
 
-    /// Tracer para telemetria distribuída (OpenTelemetry)
+    /// Tracer for distributed telemetry (OpenTelemetry).
     pub tracer: Option<Arc<TracerWrapper>>,
 
     // === LIFECYCLE MANAGEMENT ===
-    /// Callback executado no fechamento da store
+    /// Callback executed when the store closes.
     pub close_func: Option<Box<dyn FnOnce() + Send>>,
 
     // === EXTENSIBILITY ===
-    /// Opções específicas do tipo de store (extensibilidade)
-    /// Permite que diferentes tipos de store tenham configurações customizadas
+    /// Store-type-specific options (extensibility).
+    /// Allows different store types to have custom configurations.
     pub store_specific_opts: Option<Box<dyn Any + Send + Sync>>,
+
+    /// `DocTicket` (serialized) to import an iroh-docs namespace shared by a peer.
+    /// When present, iroh-docs-based stores import the ticket's namespace (secure replication
+    /// via capability) instead of creating a new namespace.
+    pub doc_ticket: Option<String>,
+
+    /// Marks this store as a read-only replica: refuses local writes and never creates a
+    /// namespace (it must import an existing one). See [`CreateDBOptions::read_only`].
+    pub read_only: Option<bool>,
 }
 
 impl Default for NewStoreOptions {
@@ -959,59 +989,61 @@ impl Default for NewStoreOptions {
             tracer: None,
             close_func: None,
             store_specific_opts: None,
+            doc_ticket: None,
+            read_only: None,
         }
     }
 }
 
-/// Opções para configurar um `DirectChannel`.
+/// Options for configuring a `DirectChannel`.
 #[derive(Default, Clone)]
 pub struct DirectChannelOptions {
     pub span: Option<Span>,
 }
 
-/// Trait para a comunicação direta com outro par na rede.
+/// Trait for direct communication with another peer on the network.
 #[async_trait::async_trait]
 pub trait DirectChannel: Send + Sync + std::any::Any {
     type Error: Error + Send + Sync + 'static;
 
-    /// Espera até que a conexão com o outro par seja estabelecida.
+    /// Waits until the connection with the other peer is established.
     async fn connect(&mut self, peer: NodeId) -> Result<(), Self::Error>;
 
-    /// Envia dados para o outro par.
+    /// Sends data to the other peer.
     async fn send(&mut self, peer: NodeId, data: Vec<u8>) -> Result<(), Self::Error>;
 
-    /// Fecha a conexão.
+    /// Closes the connection.
     async fn close(&mut self) -> Result<(), Self::Error>;
 
-    /// Fecha a conexão usando referência compartilhada (&self).
-    /// Este método permite fechar o canal quando usado dentro de Arc<>.
+    /// Closes the connection using a shared reference (&self).
+    /// This method allows closing the channel when used inside an Arc<>.
     async fn close_shared(&self) -> Result<(), Self::Error>;
 
-    /// Método auxiliar para downcast
+    /// Helper method for downcasting.
     fn as_any(&self) -> &dyn std::any::Any;
 }
 
-/// Define o conteúdo de uma mensagem recebida via pubsub ou canal direto.
-/// Esta struct é necessária para a definição de `DirectChannelEmitter`.
+/// Defines the content of a message received via pubsub or a direct channel.
+/// This struct is required for the `DirectChannelEmitter` definition.
 #[derive(Debug, Clone)]
 pub struct EventPubSubPayload {
     pub payload: Vec<u8>,
     pub peer: NodeId,
 }
 
-/// Uma trait usada para emitir eventos recebidos de um `DirectChannel`.
+/// A trait used to emit events received from a `DirectChannel`.
 #[async_trait::async_trait]
 pub trait DirectChannelEmitter: Send + Sync {
     type Error: Error + Send + Sync + 'static;
 
-    /// Emite um payload recebido.
+    /// Emits a received payload.
     async fn emit(&self, payload: EventPubSubPayload) -> Result<(), Self::Error>;
 
-    /// Fecha o emissor.
+    /// Closes the emitter.
     async fn close(&self) -> Result<(), Self::Error>;
 }
 
-/// Uma fábrica para criar instâncias de `DirectChannel`.
+/// A factory for creating `DirectChannel` instances.
 pub type DirectChannelFactory = Arc<
     dyn Fn(
             Arc<dyn DirectChannelEmitter<Error = GuardianError>>,
@@ -1029,13 +1061,13 @@ pub type DirectChannelFactory = Arc<
         + Sync,
 >;
 
-/// Define o protótipo de uma função (ou closure) que constrói e retorna
-/// uma nova instância de um `StoreIndex`.
+/// Defines the prototype of a function (or closure) that builds and returns
+/// a new instance of a `StoreIndex`.
 pub type IndexConstructor =
     Box<dyn Fn(&[u8]) -> Box<dyn StoreIndex<Error = GuardianError>> + Send + Sync>;
 
-/// Um protótipo para a função de callback que é acionada quando novas entradas
-/// (`Entry`) são escritas na store. É um tipo de função assíncrona.
+/// A prototype for the callback function triggered when new entries
+/// (`Entry`) are written to the store. It is an asynchronous function type.
 pub type OnWritePrototype = Box<
     dyn Fn(
             Hash,
@@ -1047,13 +1079,13 @@ pub type OnWritePrototype = Box<
         + Sync,
 >;
 
-/// Representa uma nova mensagem recebida em um tópico pub/sub.
+/// Represents a new message received on a pub/sub topic.
 #[derive(Debug, Clone)]
 pub struct EventPubSubMessage {
     pub content: Vec<u8>,
 }
 
-/// Define o protótipo para um construtor de `AccessController`.
+/// Defines the prototype for an `AccessController` constructor.
 pub type AccessControllerConstructor = Arc<
     dyn Fn(
             Arc<dyn BaseGuardianDB<Error = GuardianError>>,
@@ -1065,47 +1097,47 @@ pub type AccessControllerConstructor = Arc<
         + Sync,
 >;
 
-/// Representa a inscrição em um tópico pub/sub específico.
+/// Represents a subscription to a specific pub/sub topic.
 #[async_trait::async_trait]
 pub trait PubSubTopic: Send + Sync {
     type Error: Error + Send + Sync + 'static;
 
-    /// Publica uma nova mensagem no tópico.
+    /// Publishes a new message on the topic.
     async fn publish(&self, message: Vec<u8>) -> Result<(), Self::Error>;
 
-    /// Lista os pares (peers) conectados a este tópico usando NodeId do Iroh.
-    async fn peers(&self) -> Result<Vec<iroh::NodeId>, Self::Error>;
+    /// Lists the peers connected to this topic using Iroh's NodeId.
+    async fn peers(&self) -> Result<Vec<iroh::EndpointId>, Self::Error>;
 
-    /// Observa os pares que entram e saem do tópico.
+    /// Watches for peers joining and leaving the topic.
     async fn watch_peers(
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = events::Event> + Send>>, Self::Error>;
 
-    /// Observa as novas mensagens publicadas no tópico.
+    /// Watches for new messages published on the topic.
     async fn watch_messages(
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = EventPubSubMessage> + Send>>, Self::Error>;
 
-    /// Retorna o nome do tópico.
+    /// Returns the topic name.
     fn topic(&self) -> &str;
 }
 
-/// Trait principal do sistema pub/sub.
+/// Main trait of the pub/sub system.
 #[async_trait::async_trait]
 pub trait PubSubInterface: Send + Sync + std::any::Any {
     type Error: Error + Send + Sync + 'static;
 
-    /// Inscreve-se em um tópico.
+    /// Subscribes to a topic.
     async fn topic_subscribe(
         &self,
         topic: &str,
     ) -> Result<Arc<dyn PubSubTopic<Error = GuardianError>>, Self::Error>;
 
-    /// Método auxiliar para downcast
+    /// Helper method for downcasting.
     fn as_any(&self) -> &dyn std::any::Any;
 }
 
-/// Opções para a criação de uma inscrição em um tópico Pub/Sub.
+/// Options for creating a subscription to a Pub/Sub topic.
 #[derive(Default, Clone)]
 pub struct PubSubSubscriptionOptions {
     pub span: Option<Span>,
@@ -1113,12 +1145,12 @@ pub struct PubSubSubscriptionOptions {
 }
 
 /// EventPubSub::Leave
-/// Representa um evento disparado quando um par (peer) sai
-/// de um tópico do canal Pub/Sub.
+/// Represents an event fired when a peer leaves
+/// a topic on the Pub/Sub channel.
 ///
 /// EventPubSub::Join
-/// Representa um evento disparado quando um par (peer) entra
-/// em um tópico do canal Pub/Sub.
+/// Represents an event fired when a peer joins
+/// a topic on the Pub/Sub channel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EventPubSub {
     Join { topic: String, peer: NodeId },

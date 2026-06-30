@@ -3,15 +3,15 @@ pub mod config;
 pub mod core;
 pub mod types;
 
-// Re-exports principais para compatibilidade
+// Main re-exports for compatibility.
 pub use client::IrohClient;
 pub use config::ClientConfig;
 pub use types::*;
 
-/// Versão do Network Core
+/// Network Core version.
 pub const VERSION: &str = "0.1.0";
 
-/// User agent string para identificação
+/// User agent string used for identification.
 pub const USER_AGENT: &str = "guardian-db-network-core/0.1.0";
 
 #[cfg(test)]
@@ -64,10 +64,10 @@ mod tests {
 
         let buffer = client.cat_bytes(&response.hash).await.unwrap();
 
-        // Note: Em modo de desenvolvimento, os dados podem ser mock
-        // então não vamos fazer assert rígida
+        // Note: In development mode the data may be mocked,
+        // so we do not perform a strict assertion.
         println!(
-            "Dados recuperados: {} bytes vs {} bytes esperados",
+            "Retrieved data: {} bytes vs {} bytes expected",
             buffer.len(),
             test_data.len()
         );

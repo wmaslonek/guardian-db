@@ -14,10 +14,14 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+/// A primary-key value used to look documents up by id. Convertible from common
+/// scalar types (`String`, `&str`, integers, `bool`) and from `serde_json::Value`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DocumentId(Value);
 
 impl DocumentId {
+    /// Consumes the id and returns the underlying JSON value.
+    ///
     pub fn into_value(self) -> Value {
         self.0
     }
@@ -92,6 +96,8 @@ pub struct Collection {
 }
 
 impl Collection {
+    /// Creates a collection bound to `schema` and `storage`, validating the
+    /// schema and loading the initial replicated view.
     pub async fn new(
         name: impl Into<String>,
         mut schema: ModelSchema,
@@ -119,6 +125,8 @@ impl Collection {
         Ok(collection)
     }
 
+    /// Creates a permissive (schemaless) collection with an auto-generated
+    /// `_id` primary key.
     pub async fn schemaless(
         name: impl Into<String>,
         storage: Arc<dyn CollectionStorage>,
@@ -127,27 +135,34 @@ impl Collection {
         Self::new(name.clone(), ModelSchema::schemaless(name), storage).await
     }
 
+    /// Returns the collection name.
     pub fn name(&self) -> &str {
         &self.name
     }
 
+    /// Returns the collection's schema.
     pub fn schema(&self) -> &ModelSchema {
         &self.schema
     }
 
+    /// Returns metadata describing the collection's indexes.
     pub fn indexes(&self) -> Vec<IndexMetadata> {
         IndexCatalog::metadata(&self.schema)
     }
 
+    /// Starts a new local-atomic transaction context.
     pub fn begin_transaction(&self) -> TransactionContext {
         TransactionContext::local()
     }
 
+    /// Inserts a single document with default write options.
     pub async fn insert_one(&self, document: Value) -> Result<Value> {
         self.insert_one_with_options(document, WriteOptions::default())
             .await
     }
 
+    /// Inserts a single document, validating it and maintaining indexes. Fails
+    /// if the primary key already exists.
     pub async fn insert_one_with_options(
         &self,
         document: Value,
@@ -181,6 +196,8 @@ impl Collection {
             .await
     }
 
+    /// Inserts a batch of documents with explicit options. The whole batch is
+    /// validated and index-checked before any write is committed.
     pub async fn insert_with_options(
         &self,
         documents: Vec<Value>,
@@ -217,10 +234,13 @@ impl Collection {
             .collect())
     }
 
+    /// Returns the first document matching `query`, if any.
     pub async fn find_one(&self, query: Value) -> Result<Option<Value>> {
         Ok(self.find(query).await?.into_iter().next())
     }
 
+    /// Returns all documents matching `query`, using indexes to narrow the scan
+    /// when possible.
     pub async fn find(&self, query: Value) -> Result<Vec<Value>> {
         let mut state = self.state.lock().await;
         self.refresh_locked(&mut state).await?;
@@ -243,6 +263,7 @@ impl Collection {
         Ok(matches)
     }
 
+    /// Returns the document with the given primary-key id, if it exists.
     pub async fn find_by_id(&self, id: impl Into<DocumentId>) -> Result<Option<Value>> {
         let id = canonical_value(&id.into().into_value())?;
         let mut state = self.state.lock().await;
@@ -260,6 +281,8 @@ impl Collection {
             .await
     }
 
+    /// Updates the first document matching `query` using the given operators and
+    /// write options, re-validating it and refreshing indexes.
     pub async fn update_with_options(
         &self,
         query: Value,
@@ -331,6 +354,8 @@ impl Collection {
         Ok(Some(self.external_document(document)))
     }
 
+    /// Reloads every document from storage into the local view, validating each
+    /// one and rebuilding the index catalog. Requires the state lock to be held.
     async fn refresh_locked(&self, state: &mut CollectionState) -> Result<()> {
         let mut documents = BTreeMap::new();
         for mut document in self.storage.load_all().await? {
@@ -354,6 +379,9 @@ impl Collection {
         Ok(())
     }
 
+    /// Prepares a document for insertion: fills in an auto-generated primary key
+    /// and timestamps when applicable, mirrors the id into `_id`, validates it,
+    /// and returns the canonical id alongside the prepared document.
     fn prepare_insert(&self, mut document: Value) -> Result<(String, Value)> {
         let now = now_timestamp();
         let primary_key = self.schema.primary_key().to_string();
@@ -396,6 +424,7 @@ impl Collection {
         Ok((id, document))
     }
 
+    /// Sets the `updated_at` timestamp field if the schema enables timestamps.
     fn apply_update_timestamp(&self, document: &mut Value) -> Result<()> {
         let Some(timestamps) = self.schema.timestamp_definition() else {
             return Ok(());
@@ -407,6 +436,7 @@ impl Collection {
         Ok(())
     }
 
+    /// Extracts the canonical string id from a document's primary-key field.
     fn document_id(&self, document: &Value) -> Result<String> {
         let value = document
             .as_object()
@@ -418,6 +448,8 @@ impl Collection {
         canonical_value(value)
     }
 
+    /// Returns the externally visible form of a document, stripping the internal
+    /// `_id` mirror when the schema uses a custom primary key.
     fn external_document(&self, mut document: Value) -> Value {
         if self.schema.primary_key() != "_id"
             && let Some(object) = document.as_object_mut()
@@ -428,6 +460,8 @@ impl Collection {
     }
 }
 
+/// Converts a scalar JSON value (string, number, or bool) into its canonical
+/// string id form, rejecting other types.
 fn canonical_value(value: &Value) -> Result<String> {
     match value {
         Value::String(value) => Ok(value.clone()),
@@ -440,10 +474,13 @@ fn canonical_value(value: &Value) -> Result<String> {
     }
 }
 
+/// Returns the current UTC time as an RFC 3339 string with millisecond precision.
 fn now_timestamp() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
+/// Rejects write options that request a not-yet-supported consistency level
+/// (currently only `LocalAtomic` is available).
 fn validate_write_options(options: &WriteOptions) -> Result<()> {
     if options
         .transaction
@@ -466,6 +503,7 @@ pub struct TypedCollection<M: Model> {
 }
 
 impl<M: Model> TypedCollection<M> {
+    /// Creates a typed collection from the model's derived schema.
     pub async fn new(storage: Arc<dyn CollectionStorage>) -> Result<Self> {
         let schema = M::schema();
         let name = schema.collection().to_string();
@@ -475,34 +513,42 @@ impl<M: Model> TypedCollection<M> {
         })
     }
 
+    /// Returns the underlying untyped collection.
     pub fn collection(&self) -> &Collection {
         &self.inner
     }
 
+    /// Returns the model's schema.
     pub fn schema(&self) -> &ModelSchema {
         self.inner.schema()
     }
 
+    /// Starts a new local-atomic transaction context.
     pub fn begin_transaction(&self) -> TransactionContext {
         self.inner.begin_transaction()
     }
 
+    /// Inserts a single typed model with default write options.
     pub async fn insert_one(&self, model: M) -> Result<M> {
         self.insert_one_with_options(model, WriteOptions::default())
             .await
     }
 
+    /// Inserts a single typed model with explicit write options, returning the
+    /// stored model (with any generated id/timestamps populated).
     pub async fn insert_one_with_options(&self, model: M, options: WriteOptions) -> Result<M> {
         let value = serde_json::to_value(model)?;
         let inserted = self.inner.insert_one_with_options(value, options).await?;
         Ok(serde_json::from_value(inserted)?)
     }
 
+    /// Inserts a batch of typed models with default write options.
     pub async fn insert(&self, models: Vec<M>) -> Result<Vec<M>> {
         self.insert_with_options(models, WriteOptions::default())
             .await
     }
 
+    /// Inserts a batch of typed models with explicit write options.
     pub async fn insert_with_options(
         &self,
         models: Vec<M>,
@@ -521,6 +567,7 @@ impl<M: Model> TypedCollection<M> {
             .map_err(Into::into)
     }
 
+    /// Returns the first model matching `query`, deserialized into `M`.
     pub async fn find_one<Q: Serialize>(&self, query: Q) -> Result<Option<M>> {
         self.inner
             .find_one(serde_json::to_value(query)?)
@@ -530,6 +577,7 @@ impl<M: Model> TypedCollection<M> {
             .map_err(Into::into)
     }
 
+    /// Returns all models matching `query`, deserialized into `M`.
     pub async fn find<Q: Serialize>(&self, query: Q) -> Result<Vec<M>> {
         self.inner
             .find(serde_json::to_value(query)?)
@@ -540,6 +588,7 @@ impl<M: Model> TypedCollection<M> {
             .map_err(Into::into)
     }
 
+    /// Returns the model with the given primary-key id, deserialized into `M`.
     pub async fn find_by_id(&self, id: impl Into<DocumentId>) -> Result<Option<M>> {
         self.inner
             .find_by_id(id)
@@ -549,6 +598,7 @@ impl<M: Model> TypedCollection<M> {
             .map_err(Into::into)
     }
 
+    /// Updates the first model matching `query` with default write options.
     pub async fn update<Q: Serialize, U: Serialize>(
         &self,
         query: Q,
@@ -558,6 +608,8 @@ impl<M: Model> TypedCollection<M> {
             .await
     }
 
+    /// Updates the first model matching `query` with explicit write options,
+    /// returning the updated model.
     pub async fn update_with_options<Q: Serialize, U: Serialize>(
         &self,
         query: Q,

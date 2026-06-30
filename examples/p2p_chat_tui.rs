@@ -249,7 +249,7 @@ use guardian_db::{
     reactive_synchronizer::SyncEvent,
     traits::{BaseGuardianDB, CreateDBOptions, EventLogStore, KeyValueStore},
 };
-use iroh::NodeId;
+use iroh::EndpointId as NodeId;
 use iroh_blobs::Hash as BlobHash;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
@@ -3434,15 +3434,11 @@ async fn handle_key(app: &mut App, key: KeyEvent) {
 fn handle_key_login(app: &mut App, key: KeyEvent) {
     let total = app.login_profiles.len() + 1; // +1 for "create new"
     match key.code {
-        KeyCode::Up => {
-            if app.login_cursor > 0 {
-                app.login_cursor -= 1;
-            }
+        KeyCode::Up if app.login_cursor > 0 => {
+            app.login_cursor -= 1;
         }
-        KeyCode::Down => {
-            if app.login_cursor < total - 1 {
-                app.login_cursor += 1;
-            }
+        KeyCode::Down if app.login_cursor < total - 1 => {
+            app.login_cursor += 1;
         }
         KeyCode::Enter => {
             if app.login_cursor < app.login_profiles.len() {
@@ -4035,15 +4031,11 @@ async fn handle_key_create_group(app: &mut App, key: KeyEvent) {
         let contact_count = app.state.as_ref().map(|s| s.contacts.len()).unwrap_or(0);
 
         match key.code {
-            KeyCode::Up => {
-                if app.create_group_cursor > 0 {
-                    app.create_group_cursor -= 1;
-                }
+            KeyCode::Up if app.create_group_cursor > 0 => {
+                app.create_group_cursor -= 1;
             }
-            KeyCode::Down => {
-                if app.create_group_cursor < contact_count.saturating_sub(1) {
-                    app.create_group_cursor += 1;
-                }
+            KeyCode::Down if app.create_group_cursor < contact_count.saturating_sub(1) => {
+                app.create_group_cursor += 1;
             }
             KeyCode::Char(' ') => {
                 let idx = app.create_group_cursor;

@@ -4,8 +4,5 @@ pub mod event_log_store;
 pub mod events;
 pub mod kv_store;
 pub mod operation;
-// Replicator module removed - Iroh handles replication natively
-// Only ReplicationInfo type remains for compatibility
-pub mod replicator {
-    pub mod replication_info;
-}
+// Replication is handled natively by Iroh; the legacy replicator module
+// (including the vestigial ReplicationInfo type) has been removed.

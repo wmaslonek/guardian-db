@@ -4,13 +4,13 @@ use crate::traits::StoreIndex;
 use parking_lot::RwLock;
 use std::sync::Arc;
 
-/// `EventIndex` armazena uma cópia do log completo para queries e stream de eventos.
+/// `EventIndex` stores a copy of the full log for queries and event streaming.
 ///
-/// Um EventLogStore é um log de eventos "append-only" onde todas as operações
-/// são do tipo "ADD" e o índice mantém acesso ao log completo para permitir
-/// queries temporais e streaming de eventos.
+/// An EventLogStore is an "append-only" event log where all operations
+/// are of type "ADD", and the index keeps access to the full log to allow
+/// temporal queries and event streaming.
 pub struct EventIndex {
-    /// Cache de entradas para acesso rápido por posição
+    /// Cache of entries for fast access by position.
     entries_cache: Arc<RwLock<Vec<Entry>>>,
 }
 
@@ -21,38 +21,38 @@ impl Default for EventIndex {
 }
 
 impl EventIndex {
-    /// Construtor padrão para um EventIndex.
+    /// Default constructor for an EventIndex.
     pub fn new() -> Self {
         EventIndex {
             entries_cache: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
-    /// Retorna o número de entradas no log
+    /// Returns the number of entries in the log.
     pub fn len(&self) -> usize {
         let cache = self.entries_cache.read();
         cache.len()
     }
 
-    /// Verifica se o log está vazio
+    /// Checks whether the log is empty.
     pub fn is_empty(&self) -> bool {
         let cache = self.entries_cache.read();
         cache.is_empty()
     }
 
-    /// Obtém todas as entradas do log
+    /// Gets all entries from the log.
     pub fn get_all_entries(&self) -> Vec<Entry> {
         let cache = self.entries_cache.read();
         cache.clone()
     }
 
-    /// Obtém uma entrada específica por índice
+    /// Gets a specific entry by index.
     pub fn get_entry_at(&self, index: usize) -> Option<Entry> {
         let cache = self.entries_cache.read();
         cache.get(index).cloned()
     }
 
-    /// Obtém as últimas N entradas
+    /// Gets the last N entries.
     pub fn get_last_entries(&self, count: usize) -> Vec<Entry> {
         let cache = self.entries_cache.read();
         let start = cache.len().saturating_sub(count);
@@ -60,12 +60,12 @@ impl EventIndex {
     }
 }
 
-/// Implementação do trait StoreIndex para EventIndex.
+/// StoreIndex trait implementation for EventIndex.
 impl StoreIndex for EventIndex {
     type Error = GuardianError;
 
-    /// Verifica se uma chave existe no índice.
-    /// Para EventLogStore, a chave é interpretada como um índice numérico.
+    /// Checks whether a key exists in the index.
+    /// For EventLogStore, the key is interpreted as a numeric index.
     fn contains_key(&self, key: &str) -> std::result::Result<bool, Self::Error> {
         if let Ok(index) = key.parse::<usize>() {
             let cache = self.entries_cache.read();
@@ -75,13 +75,13 @@ impl StoreIndex for EventIndex {
         }
     }
 
-    /// Retorna uma entrada específica como bytes.
-    /// Para EventLogStore, retorna o payload da entrada no índice especificado.
+    /// Returns a specific entry as bytes.
+    /// For EventLogStore, returns the payload of the entry at the specified index.
     fn get_bytes(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, Self::Error> {
         if let Ok(index) = key.parse::<usize>() {
             let cache = self.entries_cache.read();
             if let Some(entry) = cache.get(index) {
-                // Payload já é Vec<u8>, pode retornar diretamente
+                // The payload is already Vec<u8>, can be returned directly.
                 Ok(Some(entry.payload().to_vec()))
             } else {
                 Ok(None)
@@ -91,37 +91,37 @@ impl StoreIndex for EventIndex {
         }
     }
 
-    /// Retorna todas as "chaves" disponíveis (índices) como strings.
+    /// Returns all available "keys" (indices) as strings.
     fn keys(&self) -> std::result::Result<Vec<String>, GuardianError> {
         let cache = self.entries_cache.read();
 
-        // Return indices as string keys
+        // Return indices as string keys.
         let keys: Vec<String> = (0..cache.len()).map(|i| i.to_string()).collect();
 
         Ok(keys)
     }
 
-    /// Retorna o número de entradas no log.
+    /// Returns the number of entries in the log.
     fn len(&self) -> std::result::Result<usize, Self::Error> {
         let cache = self.entries_cache.read();
         Ok(cache.len())
     }
 
-    /// Verifica se o log está vazio.
+    /// Checks whether the log is empty.
     fn is_empty(&self) -> std::result::Result<bool, Self::Error> {
         let cache = self.entries_cache.read();
         Ok(cache.is_empty())
     }
 
-    /// Substitui o índice interno pelo novo log fornecido e atualiza o cache.
-    /// Como Log não implementa Clone, vamos reconstruir o cache
-    /// diretamente das entradas fornecidas, que é mais eficiente.
+    /// Replaces the internal index with the new log provided and updates the cache.
+    /// Since Log does not implement Clone, we rebuild the cache
+    /// directly from the provided entries, which is more efficient.
     fn update_index(
         &mut self,
         _log: &Log,
         entries: &[Entry],
     ) -> std::result::Result<(), Self::Error> {
-        // Atualiza o cache diretamente com as entradas fornecidas
+        // Update the cache directly with the provided entries.
         {
             let mut cache = self.entries_cache.write();
             cache.clear();
@@ -131,23 +131,23 @@ impl StoreIndex for EventIndex {
         Ok(())
     }
 
-    /// Limpa todas as entradas do log.
+    /// Clears all entries from the log.
     fn clear(&mut self) -> std::result::Result<(), Self::Error> {
         let mut cache = self.entries_cache.write();
         cache.clear();
         Ok(())
     }
 
-    // === IMPLEMENTAÇÃO DOS MÉTODOS OPCIONAIS DE OTIMIZAÇÃO ===
+    // === IMPLEMENTATION OF THE OPTIONAL OPTIMIZATION METHODS ===
 
-    /// Implementa acesso otimizado a range de entradas para EventLogStore.
+    /// Implements optimized range access to entries for EventLogStore.
     ///
-    /// EventIndex mantém Entry completas em cache, permitindo acesso
-    /// direto sem necessidade de deserialização.
+    /// EventIndex keeps full Entries in cache, allowing direct access
+    /// without the need for deserialization.
     fn get_entries_range(&self, start: usize, end: usize) -> Option<Vec<Entry>> {
         let cache = self.entries_cache.read();
 
-        // Validação de bounds
+        // Bounds validation.
         if start > end || start >= cache.len() {
             return None;
         }
@@ -156,9 +156,9 @@ impl StoreIndex for EventIndex {
         Some(cache[start..actual_end].to_vec())
     }
 
-    /// Acesso otimizado às últimas N entradas.
+    /// Optimized access to the last N entries.
     ///
-    /// Caso de uso muito comum para EventLogStore - buscar eventos recentes.
+    /// A very common use case for EventLogStore - fetching recent events.
     fn get_last_entries(&self, count: usize) -> Option<Vec<Entry>> {
         let cache = self.entries_cache.read();
 
@@ -170,24 +170,24 @@ impl StoreIndex for EventIndex {
         Some(cache[start..].to_vec())
     }
 
-    /// Busca otimizada por Hash.
+    /// Optimized lookup by Hash.
     ///
-    /// Atualmente usa busca linear O(n), mas estrutura preparada
-    /// para futuro índice secundário O(1) por Hash.
+    /// Currently uses an O(n) linear search, but the structure is prepared
+    /// for a future O(1) secondary index by Hash.
     fn get_entry_by_hash(&self, hash: &iroh_blobs::Hash) -> Option<Entry> {
         let cache = self.entries_cache.read();
 
-        // Busca linear por enquanto - futuro: HashMap<Hash, Entry>
+        // Linear search for now - future: HashMap<Hash, Entry>.
         cache.iter().find(|entry| entry.hash() == hash).cloned()
     }
 
-    /// EventIndex suporta queries otimizadas com Entry completas.
+    /// EventIndex supports optimized queries with full Entries.
     fn supports_entry_queries(&self) -> bool {
         true
     }
 }
 
-/// Esta é a função fábrica que cria uma nova instância do índice.
+/// This is the factory function that creates a new instance of the index.
 pub fn new_event_index(_params: &[u8]) -> Box<dyn StoreIndex<Error = GuardianError>> {
     Box::new(EventIndex::new())
 }
@@ -246,7 +246,7 @@ mod tests {
     fn test_entries_cache_functionality() {
         let index = EventIndex::new();
 
-        // Simula dados no cache diretamente (para teste de cache)
+        // Simulate data in the cache directly (for cache testing).
         {
             let mut cache = index.entries_cache.write();
             cache.push(create_test_entry("test1"));

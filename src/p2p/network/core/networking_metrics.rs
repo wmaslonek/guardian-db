@@ -1,10 +1,10 @@
-// Sistema avançado de métricas de networking
+// Advanced networking metrics system.
 //
-// Fornece visibilidade completa sobre performance de rede,
-// Gossipsub, Discovery e operações Iroh para otimizações futuras
+// Provides complete visibility into network performance, Gossipsub, Discovery
+// and Iroh operations for future optimizations.
 
 use crate::guardian::error::{GuardianError, Result};
-use iroh::NodeId;
+use iroh::EndpointId as NodeId;
 use iroh_gossip::proto::TopicId;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -18,116 +18,116 @@ use std::{
 use tokio::sync::RwLock;
 use tracing::{debug, info};
 
-/// Métricas avançadas de networking
+/// Advanced networking metrics.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkingMetrics {
-    /// Métricas de conectividade P2P
+    /// P2P connectivity metrics.
     pub connectivity: ConnectivityMetrics,
-    /// Métricas do Gossipsub
+    /// Gossipsub metrics.
     pub gossipsub: GossipsubMetrics,
-    /// Métricas de Discovery (DNS/Pkarr/mDNS)
+    /// Discovery metrics (DNS/Pkarr/mDNS).
     pub discovery: DiscoveryMetrics,
-    /// Métricas de performance Iroh
+    /// Iroh performance metrics.
     pub backend_metrics: IrohMetrics,
-    /// Timestamp da última atualização
+    /// Timestamp of the last update.
     pub last_updated: u64,
 }
 
-/// Métricas de conectividade P2P
+/// P2P connectivity metrics.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectivityMetrics {
-    /// Peers conectados atualmente
+    /// Currently connected peers.
     pub connected_peers: u32,
-    /// Total de conexões estabelecidas (histórico)
+    /// Total connections established (historical).
     pub total_connections: u64,
-    /// Total de desconexões
+    /// Total disconnections.
     pub total_disconnections: u64,
-    /// Conexões falharam
+    /// Failed connections.
     pub failed_connections: u64,
-    /// Latência média para peers conectados (ms)
+    /// Average latency to connected peers (ms).
     pub avg_peer_latency_ms: f64,
-    /// Bandwidth de upload (bytes/sec)
+    /// Upload bandwidth (bytes/sec).
     pub upload_bandwidth_bps: u64,
-    /// Bandwidth de download (bytes/sec)  
+    /// Download bandwidth (bytes/sec).
     pub download_bandwidth_bps: u64,
-    /// Distribuição geográfica de peers (país -> count)
+    /// Geographic distribution of peers (country -> count).
     pub peer_distribution: HashMap<String, u32>,
 }
 
-/// Métricas específicas do Gossipsub
+/// Gossipsub-specific metrics.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GossipsubMetrics {
-    /// Tópicos ativos
+    /// Active topics.
     pub active_topics: u32,
-    /// Total de mensagens enviadas
+    /// Total messages sent.
     pub messages_sent: u64,
-    /// Total de mensagens recebidas
+    /// Total messages received.
     pub messages_received: u64,
-    /// Mensagens duplicadas recebidas
+    /// Duplicate messages received.
     pub duplicate_messages: u64,
-    /// Mensagens inválidas
+    /// Invalid messages.
     pub invalid_messages: u64,
-    /// Latência média de propagação de mensagens (ms)
+    /// Average message propagation latency (ms).
     pub avg_propagation_latency_ms: f64,
-    /// Taxa de entrega de mensagens (%)
+    /// Message delivery rate (%).
     pub message_delivery_rate: f64,
-    /// Peers por tópico
+    /// Peers per topic.
     pub peers_per_topic: HashMap<String, u32>,
-    /// Throughput de mensagens (mensagens/sec)
+    /// Message throughput (messages/sec).
     pub message_throughput: f64,
 }
 
-/// Métricas de Discovery (DNS, Pkarr, mDNS)
+/// Discovery metrics (DNS, Pkarr, mDNS).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveryMetrics {
-    /// Peers descobertos
+    /// Discovered peers.
     pub discovered_peers: u32,
-    /// Tentativas de discovery executadas
+    /// Discovery attempts performed.
     pub discovery_attempts: u64,
-    /// Discoveries bem-sucedidas
+    /// Successful discoveries.
     pub successful_discoveries: u64,
-    /// Tempo médio de discovery (ms)
+    /// Average discovery time (ms).
     pub avg_discovery_time_ms: f64,
-    /// Peers expirados
+    /// Expired peers.
     pub expired_peers: u64,
-    /// Discovery via DNS
+    /// Discovery via DNS.
     pub dns_discoveries: u64,
-    /// Discovery via mDNS (local)
+    /// Discovery via mDNS (local).
     pub mdns_discoveries: u64,
 }
 
-/// Métricas de performance Iroh
+/// Iroh performance metrics.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IrohMetrics {
-    /// Operações add executadas
+    /// Add operations performed.
     pub add_operations: u64,
-    /// Operações cat executadas
+    /// Cat operations performed.
     pub cat_operations: u64,
-    /// Tempo médio de add (ms)
+    /// Average add time (ms).
     pub avg_add_time_ms: f64,
-    /// Tempo médio de cat (ms)
+    /// Average cat time (ms).
     pub avg_cat_time_ms: f64,
-    /// Throughput de dados (bytes/sec)
+    /// Data throughput (bytes/sec).
     pub data_throughput_bps: u64,
-    /// Tamanho médio de objetos
+    /// Average object size.
     pub avg_object_size_bytes: u64,
-    /// Cache hit rate (%)
+    /// Cache hit rate (%).
     pub cache_hit_rate: f64,
 }
 
-/// Coletor de métricas em tempo real
+/// Real-time metrics collector.
 pub struct NetworkingMetricsCollector {
-    /// Métricas atuais
+    /// Current metrics.
     metrics: Arc<RwLock<NetworkingMetrics>>,
-    /// Contadores atômicos para performance
+    /// Atomic counters for performance.
     counters: MetricsCounters,
-    /// Histórico de latências para cálculo de médias
+    /// History of latencies for computing averages.
     latency_samples: Arc<RwLock<LatencySamples>>,
-    /// Timestamp de início
+    /// Start timestamp.
     start_time: Instant,
 }
 
-/// Contadores atômicos para operações frequentes
+/// Atomic counters for frequent operations.
 struct MetricsCounters {
     messages_sent: AtomicU64,
     messages_received: AtomicU64,
@@ -139,7 +139,7 @@ struct MetricsCounters {
     successful_discoveries: AtomicU64,
 }
 
-/// Amostras de latência para cálculo de médias
+/// Latency samples for computing averages.
 #[derive(Debug, Default)]
 struct LatencySamples {
     peer_latencies: Vec<f64>,
@@ -156,7 +156,7 @@ impl Default for NetworkingMetricsCollector {
 }
 
 impl NetworkingMetricsCollector {
-    /// Cria um novo coletor de métricas
+    /// Creates a new metrics collector.
     pub fn new() -> Self {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -177,7 +177,7 @@ impl NetworkingMetricsCollector {
         }
     }
 
-    /// Registra conexão de peer
+    /// Records a peer connection.
     pub async fn record_peer_connected(&self, node_id: NodeId, latency_ms: Option<f64>) {
         self.counters
             .connections_total
@@ -186,33 +186,30 @@ impl NetworkingMetricsCollector {
         if let Some(latency) = latency_ms {
             let mut samples = self.latency_samples.write().await;
             samples.peer_latencies.push(latency);
-            // Manter apenas últimas 100 amostras
+            // Keep only the last 100 samples.
             if samples.peer_latencies.len() > 100 {
                 samples.peer_latencies.remove(0);
             }
         }
 
-        debug!("Peer conectado: {} (latência: {:?}ms)", node_id, latency_ms);
+        debug!("Peer connected: {} (latency: {:?}ms)", node_id, latency_ms);
     }
 
-    /// Registra desconexão de peer
+    /// Records a peer disconnection.
     pub async fn record_peer_disconnected(&self, node_id: NodeId) {
         self.counters
             .disconnections_total
             .fetch_add(1, Ordering::Relaxed);
-        debug!("Peer desconectado: {}", node_id);
+        debug!("Peer disconnected: {}", node_id);
     }
 
-    /// Registra mensagem Gossipsub enviada
+    /// Records a Gossipsub message sent.
     pub async fn record_message_sent(&self, topic: &TopicId, size_bytes: usize) {
         self.counters.messages_sent.fetch_add(1, Ordering::Relaxed);
-        debug!(
-            "Mensagem enviada no tópico {:?}: {} bytes",
-            topic, size_bytes
-        );
+        debug!("Message sent on topic {:?}: {} bytes", topic, size_bytes);
     }
 
-    /// Registra mensagem Gossipsub recebida
+    /// Records a Gossipsub message received.
     pub async fn record_message_received(
         &self,
         topic: &TopicId,
@@ -232,12 +229,12 @@ impl NetworkingMetricsCollector {
         }
 
         debug!(
-            "Mensagem recebida no tópico {:?}: {} bytes (latência: {:?}ms)",
+            "Message received on topic {:?}: {} bytes (latency: {:?}ms)",
             topic, size_bytes, propagation_latency_ms
         );
     }
 
-    /// Registra operação iroh add
+    /// Records an iroh add operation.
     pub async fn record_add_operation(&self, duration_ms: f64, size_bytes: u64) {
         self.counters.add_operations.fetch_add(1, Ordering::Relaxed);
 
@@ -247,10 +244,10 @@ impl NetworkingMetricsCollector {
             samples.add_operation_times.remove(0);
         }
 
-        debug!("Operação add: {}ms, {} bytes", duration_ms, size_bytes);
+        debug!("Add operation: {}ms, {} bytes", duration_ms, size_bytes);
     }
 
-    /// Registra operação iroh cat
+    /// Records an iroh cat operation.
     pub async fn record_cat_operation(&self, duration_ms: f64, size_bytes: u64) {
         self.counters.cat_operations.fetch_add(1, Ordering::Relaxed);
 
@@ -260,10 +257,10 @@ impl NetworkingMetricsCollector {
             samples.cat_operation_times.remove(0);
         }
 
-        debug!("Operação cat: {}ms, {} bytes", duration_ms, size_bytes);
+        debug!("Cat operation: {}ms, {} bytes", duration_ms, size_bytes);
     }
 
-    /// Registra tentativa de discovery
+    /// Records a discovery attempt.
     pub async fn record_discovery(&self, duration_ms: f64, successful: bool) {
         self.counters
             .discovery_attempts
@@ -281,10 +278,10 @@ impl NetworkingMetricsCollector {
             samples.discovery_times.remove(0);
         }
 
-        debug!("Discovery: {}ms, sucesso: {}", duration_ms, successful);
+        debug!("Discovery: {}ms, success: {}", duration_ms, successful);
     }
 
-    /// Atualiza métricas calculadas
+    /// Updates the computed metrics.
     pub async fn update_computed_metrics(&self) {
         let mut metrics = self.metrics.write().await;
         let samples = self.latency_samples.read().await;
@@ -293,33 +290,33 @@ impl NetworkingMetricsCollector {
             .unwrap()
             .as_secs();
 
-        // Atualizar métricas de conectividade
+        // Update connectivity metrics.
         metrics.connectivity.total_connections =
             self.counters.connections_total.load(Ordering::Relaxed);
         metrics.connectivity.total_disconnections =
             self.counters.disconnections_total.load(Ordering::Relaxed);
         metrics.connectivity.avg_peer_latency_ms = calculate_average(&samples.peer_latencies);
 
-        // Atualizar métricas Gossipsub
+        // Update Gossipsub metrics.
         metrics.gossipsub.messages_sent = self.counters.messages_sent.load(Ordering::Relaxed);
         metrics.gossipsub.messages_received =
             self.counters.messages_received.load(Ordering::Relaxed);
         metrics.gossipsub.avg_propagation_latency_ms =
             calculate_average(&samples.message_propagation);
 
-        // Calcular throughput de mensagens (últimos 60 segundos)
+        // Compute message throughput (over the runtime so far).
         let runtime_secs = self.start_time.elapsed().as_secs().max(1);
         metrics.gossipsub.message_throughput =
             metrics.gossipsub.messages_received as f64 / runtime_secs as f64;
 
-        // Atualizar métricas Discovery
+        // Update Discovery metrics.
         metrics.discovery.discovery_attempts =
             self.counters.discovery_attempts.load(Ordering::Relaxed);
         metrics.discovery.successful_discoveries =
             self.counters.successful_discoveries.load(Ordering::Relaxed);
         metrics.discovery.avg_discovery_time_ms = calculate_average(&samples.discovery_times);
 
-        // Atualizar métricas iroh
+        // Update iroh metrics.
         metrics.backend_metrics.add_operations =
             self.counters.add_operations.load(Ordering::Relaxed);
         metrics.backend_metrics.cat_operations =
@@ -330,7 +327,7 @@ impl NetworkingMetricsCollector {
         metrics.last_updated = now;
 
         info!(
-            "Métricas atualizadas - Msgs: {}/{}, Conexões: {}, Discovery: {}/{}",
+            "Metrics updated - Msgs: {}/{}, Connections: {}, Discovery: {}/{}",
             metrics.gossipsub.messages_sent,
             metrics.gossipsub.messages_received,
             metrics.connectivity.total_connections,
@@ -339,52 +336,52 @@ impl NetworkingMetricsCollector {
         );
     }
 
-    /// Obtém snapshot das métricas atuais
+    /// Returns a snapshot of the current metrics.
     pub async fn get_metrics(&self) -> NetworkingMetrics {
         let metrics = self.metrics.read().await;
         metrics.clone()
     }
 
-    /// Gera relatório detalhado das métricas
+    /// Generates a detailed metrics report.
     pub async fn generate_report(&self) -> String {
         let metrics = self.get_metrics().await;
 
         format!(
             r#"
-RELATÓRIO DE MÉTRICAS DE NETWORKING
+NETWORKING METRICS REPORT
 ==================================================
 
-CONECTIVIDADE P2P:
-   • Peers conectados: {}
-   • Total conexões: {}  
-   • Desconexões: {}
-   • Latência média: {:.2}ms
+P2P CONNECTIVITY:
+   • Connected peers: {}
+   • Total connections: {}
+   • Disconnections: {}
+   • Average latency: {:.2}ms
    • Upload: {} bytes/s
    • Download: {} bytes/s
 
 GOSSIPSUB:
-   • Tópicos ativos: {}
-   • Mensagens enviadas: {}
-   • Mensagens recebidas: {}
-   • Latência propagação: {:.2}ms
+   • Active topics: {}
+   • Messages sent: {}
+   • Messages received: {}
+   • Propagation latency: {:.2}ms
    • Throughput: {:.2} msgs/s
-   • Taxa entrega: {:.1}%
+   • Delivery rate: {:.1}%
 
 DISCOVERY (DNS/Pkarr/mDNS):
-   • Peers descobertos: {}
-   • Tentativas: {}
-   • Descobertas bem-sucedidas: {}
-   • Tempo médio: {:.2}ms
-   • Taxa sucesso: {:.1}%
+   • Discovered peers: {}
+   • Attempts: {}
+   • Successful discoveries: {}
+   • Average time: {:.2}ms
+   • Success rate: {:.1}%
 
 Iroh:
-   • Operações add: {}
-   • Operações cat: {}
-   • Tempo médio add: {:.2}ms
-   • Tempo médio cat: {:.2}ms
-   • Throughput dados: {} bytes/s
+   • Add operations: {}
+   • Cat operations: {}
+   • Average add time: {:.2}ms
+   • Average cat time: {:.2}ms
+   • Data throughput: {} bytes/s
 
-Última atualização: {}
+Last update: {}
 "#,
             metrics.connectivity.connected_peers,
             metrics.connectivity.total_connections,
@@ -418,11 +415,11 @@ Iroh:
         )
     }
 
-    /// Exporta métricas como JSON para ferramentas externas
+    /// Exports the metrics as JSON for external tools.
     pub async fn export_json(&self) -> Result<String> {
         let metrics = self.get_metrics().await;
         serde_json::to_string_pretty(&metrics)
-            .map_err(|e| GuardianError::Other(format!("Erro ao serializar métricas: {}", e)))
+            .map_err(|e| GuardianError::Other(format!("Error serializing metrics: {}", e)))
     }
 }
 
@@ -500,7 +497,7 @@ impl Default for IrohMetrics {
     }
 }
 
-/// Calcula média de uma lista de valores
+/// Computes the average of a list of values.
 fn calculate_average(values: &[f64]) -> f64 {
     if values.is_empty() {
         0.0

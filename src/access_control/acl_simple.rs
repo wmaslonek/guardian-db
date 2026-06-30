@@ -9,25 +9,26 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{Span, debug, info, instrument, warn};
 
-/// Estado interno do SimpleAccessController
+/// Internal state of the SimpleAccessController: a map from capability to the
+/// list of keys authorized for it.
 struct SimpleAccessControllerState {
     allowed_keys: HashMap<String, Vec<String>>,
 }
 
-/// Estrutura principal do controlador de acesso simples.
-/// Mantém uma lista de chaves autorizadas em memória.
+/// Main structure of the simple access controller.
+/// Keeps a list of authorized keys in memory.
 pub struct SimpleAccessController {
     state: Arc<RwLock<SimpleAccessControllerState>>,
     span: Span,
 }
 
 impl SimpleAccessController {
-    /// Cria um novo SimpleAccessController com configuração inicial opcional
+    /// Creates a new SimpleAccessController with optional initial configuration.
     #[instrument(skip(initial_keys))]
     pub fn new(initial_keys: Option<HashMap<String, Vec<String>>>) -> Self {
         let mut allowed_keys = initial_keys.unwrap_or_default();
 
-        // Garante que pelo menos as categorias básicas existam
+        // Ensure at least the basic categories exist.
         allowed_keys.entry("read".to_string()).or_default();
         allowed_keys.entry("write".to_string()).or_default();
         allowed_keys.entry("admin".to_string()).or_default();
@@ -44,18 +45,18 @@ impl SimpleAccessController {
         }
     }
 
-    /// Cria um novo SimpleAccessController simples
+    /// Creates a new SimpleAccessController with no initial keys.
     #[allow(dead_code)]
     pub fn new_simple() -> Self {
         Self::new(None)
     }
 
-    /// Retorna uma referência ao span de tracing para instrumentação
+    /// Returns a reference to the tracing span used for instrumentation.
     pub fn span(&self) -> &Span {
         &self.span
     }
 
-    /// Lista todas as chaves de uma capacidade
+    /// Lists all keys of a capability.
     pub async fn list_keys(&self, capability: &str) -> Vec<String> {
         let state = self.state.read().await;
         state
@@ -65,14 +66,15 @@ impl SimpleAccessController {
             .unwrap_or_default()
     }
 
-    /// Lista todas as capacidades disponíveis
+    /// Lists all available capabilities.
     #[allow(dead_code)]
     pub async fn list_capabilities(&self) -> Vec<String> {
         let state = self.state.read().await;
         state.allowed_keys.keys().cloned().collect()
     }
 
-    /// Verifica se uma chave tem uma capacidade específica
+    /// Checks whether a key has a specific capability (matching the exact key
+    /// or the universal `"*"` wildcard).
     #[allow(dead_code)]
     pub async fn has_capability(&self, capability: &str, key_id: &str) -> bool {
         let state = self.state.read().await;
@@ -84,7 +86,7 @@ impl SimpleAccessController {
         }
     }
 
-    /// Remove todas as chaves de uma capacidade
+    /// Removes all keys of a capability.
     pub async fn clear_capability(&self, capability: &str) -> Result<()> {
         if capability.is_empty() {
             return Err(GuardianError::Store(
@@ -113,7 +115,7 @@ impl SimpleAccessController {
         Ok(())
     }
 
-    /// Obtém estatísticas das permissões
+    /// Gets statistics about the permissions (number of keys per capability).
     pub async fn get_stats(&self) -> HashMap<String, usize> {
         let state = self.state.read().await;
         state
@@ -123,7 +125,7 @@ impl SimpleAccessController {
             .collect()
     }
 
-    /// Verifica se uma capacidade está vazia
+    /// Checks whether a capability is empty (or absent).
     pub async fn is_capability_empty(&self, capability: &str) -> bool {
         let state = self.state.read().await;
         state
@@ -133,19 +135,19 @@ impl SimpleAccessController {
             .unwrap_or(true)
     }
 
-    /// Conta o total de permissões em todas as capacidades
+    /// Counts the total number of permissions across all capabilities.
     pub async fn total_permissions(&self) -> usize {
         let state = self.state.read().await;
         state.allowed_keys.values().map(|keys| keys.len()).sum()
     }
 
-    /// Exporta todas as permissões para um HashMap
+    /// Exports all permissions to a HashMap.
     pub async fn export_permissions(&self) -> HashMap<String, Vec<String>> {
         let state = self.state.read().await;
         state.allowed_keys.clone()
     }
 
-    /// Importa permissões de um HashMap (substitui todas as existentes)
+    /// Imports permissions from a HashMap (replaces all existing ones).
     pub async fn import_permissions(
         &self,
         permissions: HashMap<String, Vec<String>>,
@@ -161,7 +163,8 @@ impl SimpleAccessController {
         Ok(())
     }
 
-    /// Adiciona múltiplas chaves a uma capacidade de uma vez
+    /// Adds multiple keys to a capability at once, skipping empty or duplicate
+    /// keys.
     pub async fn grant_multiple(&self, capability: &str, key_ids: Vec<&str>) -> Result<()> {
         let _entered = self.span.enter();
 
@@ -195,7 +198,8 @@ impl SimpleAccessController {
         Ok(())
     }
 
-    /// Remove múltiplas chaves de uma capacidade de uma vez
+    /// Removes multiple keys from a capability at once. If no keys remain, the
+    /// capability is removed entirely.
     pub async fn revoke_multiple(&self, capability: &str, key_ids: Vec<&str>) -> Result<()> {
         let _entered = self.span.enter();
 
@@ -223,7 +227,7 @@ impl SimpleAccessController {
                 capability_name, removed_count, remaining_keys
             );
 
-            // Remove a capacidade completamente se não há mais chaves
+            // Remove the capability entirely if no keys remain.
             if should_remove_capability {
                 state.allowed_keys.remove(capability);
                 debug!(target: "simple_access_controller", "Capability removed completely: capability={}",
@@ -235,7 +239,8 @@ impl SimpleAccessController {
         Ok(())
     }
 
-    /// Clona as permissões de uma capacidade para outra
+    /// Clones the permissions of one capability into another (overwriting the
+    /// target). Returns an error if the source capability does not exist.
     pub async fn clone_capability(
         &self,
         source_capability: &str,
@@ -270,15 +275,16 @@ impl SimpleAccessController {
         Ok(())
     }
 
-    /// Este controlador não tem um endereço, pois não é persistido.
+    /// This controller has no address, since it is not persisted.
     pub fn address(&self) -> Option<Box<dyn Address>> {
         None
     }
 
-    /// Método factory alternativo
+    /// Alternative factory method that builds the controller from creation
+    /// options.
     #[instrument(skip(params))]
     pub fn from_options(params: CreateAccessControllerOptions) -> Result<Self> {
-        // As permissões são extraídas diretamente dos parâmetros de criação.
+        // Permissions are extracted directly from the creation parameters.
         let allowed_keys = params.get_all_access();
         Ok(Self {
             state: Arc::new(RwLock::new(SimpleAccessControllerState { allowed_keys })),
@@ -289,21 +295,23 @@ impl SimpleAccessController {
 
 #[async_trait]
 impl AccessController for SimpleAccessController {
+    /// Returns the controller type identifier.
     fn get_type(&self) -> &str {
         "simple"
     }
 
+    /// Returns the keys authorized for the given role.
     async fn get_authorized_by_role(&self, role: &str) -> Result<Vec<String>> {
         let _entered = self.span.enter();
 
-        // Validação de parâmetros
+        // Parameter validation.
         if role.is_empty() {
             return Err(GuardianError::Store("Role cannot be empty".to_string()));
         }
 
         let state = self.state.read().await;
 
-        // Log da consulta
+        // Log the query.
         debug!(target: "simple_access_controller", "Getting authorized keys by role: role={}",
             role
         );
@@ -317,10 +325,11 @@ impl AccessController for SimpleAccessController {
         Ok(keys)
     }
 
+    /// Grants a key the given capability, adding it only if not already present.
     async fn grant(&self, capability: &str, key_id: &str) -> Result<()> {
         let _entered = self.span.enter();
 
-        // Validação de parâmetros
+        // Parameter validation.
         if capability.is_empty() {
             return Err(GuardianError::Store(
                 "Capability cannot be empty".to_string(),
@@ -332,18 +341,18 @@ impl AccessController for SimpleAccessController {
 
         let mut state = self.state.write().await;
 
-        // Log da operação
+        // Log the operation.
         info!(target: "simple_access_controller", "Granting permission: capability={}, key_id={}",
             capability, key_id
         );
 
-        // Adiciona a chave à lista de permissões para a capacidade especificada
+        // Add the key to the permission list for the specified capability.
         let entry = state
             .allowed_keys
             .entry(capability.to_string())
             .or_insert_with(Vec::new);
 
-        // Verifica se a chave já existe para evitar duplicatas
+        // Check whether the key already exists to avoid duplicates.
         if !entry.contains(&key_id.to_string()) {
             entry.push(key_id.to_string());
             let total_keys = entry.len();
@@ -362,10 +371,12 @@ impl AccessController for SimpleAccessController {
         Ok(())
     }
 
+    /// Revokes a key's capability. If the capability has no keys left
+    /// afterwards, it is removed entirely.
     async fn revoke(&self, capability: &str, key_id: &str) -> Result<()> {
         let _entered = self.span.enter();
 
-        // Validação de parâmetros
+        // Parameter validation.
         if capability.is_empty() {
             return Err(GuardianError::Store(
                 "Capability cannot be empty".to_string(),
@@ -377,12 +388,12 @@ impl AccessController for SimpleAccessController {
 
         let mut state = self.state.write().await;
 
-        // Log da operação
+        // Log the operation.
         info!(target: "simple_access_controller", "Revoking permission: capability={}, key_id={}",
             capability, key_id
         );
 
-        // Remove a chave da lista de permissões para a capacidade especificada
+        // Remove the key from the permission list for the specified capability.
         if let Some(keys) = state.allowed_keys.get_mut(capability) {
             let initial_len = keys.len();
             keys.retain(|k| k != key_id);
@@ -397,7 +408,7 @@ impl AccessController for SimpleAccessController {
                     capability_name, key_id_name, remaining_keys
                 );
 
-                // Remove a entrada completamente se não há mais chaves
+                // Remove the entry entirely if no keys remain.
                 if should_remove_capability {
                     state.allowed_keys.remove(capability);
                     debug!(target: "simple_access_controller", "Capability removed completely: capability={}",
@@ -418,19 +429,21 @@ impl AccessController for SimpleAccessController {
         Ok(())
     }
 
+    /// Loads the controller configuration from an address. This is a no-op for
+    /// the simple controller since its state is held in memory.
     async fn load(&self, address: &str) -> Result<()> {
-        // Validação de parâmetros
+        // Parameter validation.
         if address.is_empty() {
             return Err(GuardianError::Store("Address cannot be empty".to_string()));
         }
 
-        // Log da operação
+        // Log the operation.
         info!(target: "simple_access_controller", "Loading access controller configuration: address={}",
             address
         );
 
-        // Para SimpleAccessController, load é uma operação no-op já que é baseado em memória
-        // Em uma implementação mais avançada, isso poderia carregar de um arquivo ou rede
+        // For SimpleAccessController, load is a no-op since it is memory-based.
+        // A more advanced implementation could load from a file or the network.
         debug!(target: "simple_access_controller", "Load operation completed (no-op for simple controller): address={}",
             address
         );
@@ -438,17 +451,19 @@ impl AccessController for SimpleAccessController {
         Ok(())
     }
 
+    /// Saves the current permissions into manifest options describing this
+    /// controller.
     async fn save(&self) -> Result<Box<dyn ManifestParams>> {
         let state = self.state.read().await;
 
-        // Log da operação
+        // Log the operation.
         info!(target: "simple_access_controller", "Saving access controller configuration");
 
-        // Cria opções com as permissões atuais
+        // Build options with the current permissions.
         let mut options = CreateAccessControllerOptions::new_empty();
         options.set_type("simple".to_string());
 
-        // Copia todas as permissões atuais para o manifesto
+        // Copy all current permissions into the manifest.
         for (capability, keys) in &state.allowed_keys {
             options.set_access(capability.clone(), keys.clone());
         }
@@ -460,14 +475,16 @@ impl AccessController for SimpleAccessController {
         Ok(Box::new(options))
     }
 
+    /// Closes the controller. This is a no-op for the simple controller since
+    /// its state is held in memory.
     async fn close(&self) -> Result<()> {
         let state = self.state.read().await;
 
-        // Log da operação de fechamento
+        // Log the close operation.
         info!(target: "simple_access_controller", "Closing simple access controller");
 
-        // Para SimpleAccessController, close é uma operação no-op já que é baseado em memória
-        // Em uma implementação mais avançada, isso poderia fechar conexões ou salvar estado
+        // For SimpleAccessController, close is a no-op since it is memory-based.
+        // A more advanced implementation could close connections or save state.
         debug!(target: "simple_access_controller", "Close operation completed: capabilities_count={}",
             state.allowed_keys.len()
         );
@@ -475,6 +492,11 @@ impl AccessController for SimpleAccessController {
         Ok(())
     }
 
+    /// Decides whether a log entry may be appended.
+    ///
+    /// The entry's identity must be authorized for `write` (or `admin`, since
+    /// admins may write), either by an exact key match or the universal `"*"`
+    /// wildcard. In every accepted case the identity signature is also verified.
     async fn can_append(
         &self,
         entry: &dyn LogEntry,
@@ -484,7 +506,7 @@ impl AccessController for SimpleAccessController {
         let _entered = self.span.enter();
         let state = self.state.read().await;
 
-        // Obtém o ID da identidade da entrada
+        // Get the identity id of the entry.
         let entry_identity = entry.get_identity();
         let entry_id = entry_identity.id();
 
@@ -492,15 +514,15 @@ impl AccessController for SimpleAccessController {
             entry_id
         );
 
-        // Verifica primeiro as chaves com permissão de escrita
+        // Check the write-permission keys first.
         if let Some(write_keys) = state.allowed_keys.get("write") {
-            // Verifica se há um wildcard que permite qualquer identidade
+            // Check for a wildcard that allows any identity.
             if write_keys.contains(&"*".to_string()) {
                 debug!(target: "simple_access_controller", "Wildcard permission found, verifying identity: entry_id={}",
                     entry_id
                 );
 
-                // Ainda assim, verifica a identidade para garantir que é válida
+                // Even so, verify the identity to ensure it is valid.
                 if let Err(e) = identity_provider
                     .verify_identity(entry.get_identity())
                     .await
@@ -520,9 +542,9 @@ impl AccessController for SimpleAccessController {
                 return Ok(());
             }
 
-            // Verifica se o ID da entrada está na lista de chaves autorizadas para escrita
+            // Check whether the entry id is in the list of keys authorized for writing.
             if write_keys.contains(&entry_id.to_string()) {
-                // Verifica a assinatura da identidade
+                // Verify the identity signature.
                 if let Err(e) = identity_provider.verify_identity(entry_identity).await {
                     warn!(target: "simple_access_controller", "Invalid identity signature for authorized key: entry_id={}, error={}",
                         entry_id, e
@@ -540,11 +562,11 @@ impl AccessController for SimpleAccessController {
             }
         }
 
-        // Verifica também permissões de admin (admin pode escrever)
+        // Also check admin permissions (admins may write).
         if let Some(admin_keys) = state.allowed_keys.get("admin")
             && (admin_keys.contains(&"*".to_string()) || admin_keys.contains(&entry_id.to_string()))
         {
-            // Verifica a assinatura da identidade
+            // Verify the identity signature.
             if let Err(e) = identity_provider.verify_identity(entry_identity).await {
                 warn!(target: "simple_access_controller", "Invalid identity signature for admin key: entry_id={}, error={}",
                     entry_id, e

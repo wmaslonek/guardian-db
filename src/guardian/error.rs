@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-/// Tipos de erro específicos para guardian-db
+/// Error types specific to guardian-db.
 #[derive(Error, Debug, Clone)]
 pub enum GuardianError {
     #[error("Store error: {0}")]
@@ -106,7 +106,7 @@ pub enum GuardianError {
     Other(String),
 }
 
-// Implementações From para conversões de erro com Clone
+// From implementations for Clone-compatible error conversions.
 impl From<std::io::Error> for GuardianError {
     fn from(err: std::io::Error) -> Self {
         match err.kind() {
@@ -148,67 +148,67 @@ impl From<&str> for GuardianError {
 }
 
 impl GuardianError {
-    /// Cria erro de rede
+    /// Creates a network error.
     pub fn network<S: Into<String>>(msg: S) -> Self {
         Self::NetworkConnection(msg.into())
     }
 
-    /// Cria erro de timeout
+    /// Creates a timeout error.
     pub fn timeout<S: Into<String>>(msg: S) -> Self {
         Self::Timeout(msg.into())
     }
 
-    /// Cria erro de hash inválido
+    /// Creates an invalid-hash error.
     pub fn invalid_hash<S: Into<String>>(hash: S) -> Self {
         Self::InvalidHash(hash.into())
     }
 
-    /// Cria erro de PubSub
+    /// Creates a PubSub error.
     pub fn pubsub<S: Into<String>>(msg: S) -> Self {
         Self::Pubsub(msg.into())
     }
 
-    /// Cria erro de armazenamento
+    /// Creates a storage error.
     pub fn storage<S: Into<String>>(msg: S) -> Self {
         Self::Storage(msg.into())
     }
 
-    /// Cria erro de configuração
+    /// Creates a configuration error.
     pub fn config<S: Into<String>>(msg: S) -> Self {
         Self::Config(msg.into())
     }
 
-    /// Cria erro de peer não encontrado
+    /// Creates a peer-not-found error.
     pub fn peer_not_found<S: Into<String>>(peer: S) -> Self {
         Self::PeerNotFound(peer.into())
     }
 
-    /// Cria erro de tópico não encontrado
+    /// Creates a topic-not-found error.
     pub fn topic_not_found<S: Into<String>>(topic: S) -> Self {
         Self::TopicNotFound(topic.into())
     }
 
-    /// Cria erro de dados não encontrados
+    /// Creates a data-not-found error.
     pub fn data_not_found<S: Into<String>>(hash: S) -> Self {
         Self::DataNotFound(hash.into())
     }
 
-    /// Cria erro de operação não suportada
+    /// Creates an unsupported-operation error.
     pub fn unsupported<S: Into<String>>(operation: S) -> Self {
         Self::UnsupportedOperation(operation.into())
     }
 
-    /// Verifica se é um erro de rede
+    /// Returns whether this is a network error.
     pub fn is_network_error(&self) -> bool {
         matches!(self, Self::NetworkConnection(_) | Self::Network(_))
     }
 
-    /// Verifica se é um erro de timeout
+    /// Returns whether this is a timeout error.
     pub fn is_timeout_error(&self) -> bool {
         matches!(self, Self::Timeout(_))
     }
 
-    /// Verifica se é um erro de dados não encontrados
+    /// Returns whether this is a not-found error.
     pub fn is_not_found_error(&self) -> bool {
         matches!(
             self,
@@ -219,7 +219,7 @@ impl GuardianError {
         )
     }
 
-    /// Verifica se é um erro recuperável
+    /// Returns whether this is a recoverable error.
     pub fn is_recoverable(&self) -> bool {
         matches!(
             self,
@@ -231,10 +231,10 @@ impl GuardianError {
     }
 }
 
-/// Alias para Result com GuardianError
+/// Alias for a Result using GuardianError.
 pub type Result<T> = std::result::Result<T, GuardianError>;
 
-/// Macro para criar erros facilmente
+/// Macro for creating errors conveniently.
 #[macro_export]
 macro_rules! guardian_error {
     (network, $msg:expr) => {
@@ -290,7 +290,7 @@ mod tests {
 
         let timeout_io_err = std::io::Error::new(std::io::ErrorKind::TimedOut, "Timeout");
         let guardian_timeout_err: GuardianError = timeout_io_err.into();
-        // Nota: io::Error é convertido para GuardianError::Io, não Timeout
+        // Note: io::Error is converted to GuardianError::Io, not Timeout.
         if let GuardianError::Io(msg) = guardian_timeout_err {
             assert!(msg.contains("Timeout"));
         }
@@ -321,12 +321,12 @@ mod tests {
 
     #[test]
     fn test_error_recovery_checks() {
-        // Erros recuperáveis
+        // Recoverable errors.
         assert!(GuardianError::network("test").is_recoverable());
         assert!(GuardianError::timeout("test").is_recoverable());
         assert!(GuardianError::ResourceBusy("test".to_string()).is_recoverable());
 
-        // Erros não recuperáveis
+        // Non-recoverable errors.
         assert!(!GuardianError::data_not_found("test").is_recoverable());
         assert!(!GuardianError::InvalidHash("test".to_string()).is_recoverable());
         assert!(!GuardianError::UnsupportedOperation("test".to_string()).is_recoverable());

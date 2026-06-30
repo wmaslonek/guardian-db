@@ -14,27 +14,27 @@ use tracing::{Span, instrument};
 
 pub mod index;
 
-/// Implementação do trait `EventLogStore` para `GuardianDBEventLogStore`.
+/// `EventLogStore` trait implementation for `GuardianDBEventLogStore`.
 #[async_trait::async_trait]
 impl EventLogStore for GuardianDBEventLogStore {
-    /// Adiciona um novo dado ao log.
+    /// Adds a new piece of data to the log.
     async fn add(&self, data: Vec<u8>) -> std::result::Result<Operation, Self::Error> {
-        // Chama o método interno da struct GuardianDBEventLogStore
+        // Call the inherent method of the GuardianDBEventLogStore struct.
         GuardianDBEventLogStore::add(self, data).await
     }
 
-    /// Obtém uma entrada específica do log pelo seu Hash.
+    /// Gets a specific log entry by its Hash.
     async fn get(&self, hash: &Hash) -> std::result::Result<Operation, Self::Error> {
-        // Chama o método interno da struct GuardianDBEventLogStore
+        // Call the inherent method of the GuardianDBEventLogStore struct.
         GuardianDBEventLogStore::get(self, hash).await
     }
 
-    /// Retorna uma lista de operações que ocorreram na store, com opções de filtro.
+    /// Returns a list of operations that occurred in the store, with filter options.
     async fn list(
         &self,
         options: Option<StreamOptions>,
     ) -> std::result::Result<Vec<Operation>, Self::Error> {
-        // Chama o método interno da struct GuardianDBEventLogStore
+        // Call the inherent method of the GuardianDBEventLogStore struct.
         GuardianDBEventLogStore::list(self, options).await
     }
 }
@@ -45,7 +45,7 @@ pub struct GuardianDBEventLogStore {
     span: Span,
 }
 
-// Implementação da trait Store (que é herdada por EventLogStore)
+// Store trait implementation (which is inherited by EventLogStore).
 #[async_trait::async_trait]
 impl Store for GuardianDBEventLogStore {
     type Error = GuardianError;
@@ -71,17 +71,13 @@ impl Store for GuardianDBEventLogStore {
         "eventlog"
     }
 
-    fn replication_status(&self) -> crate::stores::replicator::replication_info::ReplicationInfo {
-        self.basestore.replication_status()
-    }
-
     fn cache(&self) -> Arc<dyn Datastore> {
         self.basestore.cache()
     }
 
     async fn drop(&self) -> std::result::Result<(), Self::Error> {
-        // ***BaseStore não tem método async drop público, então implementamos uma limpeza básica
-        // A limpeza é feita automaticamente quando o BaseStore é dropped
+        // ***BaseStore has no public async drop method, so we implement a basic cleanup.
+        // Cleanup is done automatically when the BaseStore is dropped.
         Ok(())
     }
 
@@ -150,34 +146,34 @@ impl Store for GuardianDBEventLogStore {
 }
 
 impl GuardianDBEventLogStore {
-    /// Getter para acessar o BaseStore interno
+    /// Getter to access the internal BaseStore.
     pub fn basestore(&self) -> &BaseStore {
         &self.basestore
     }
 
-    /// Retorna uma referência ao span de tracing para instrumentação
+    /// Returns a reference to the tracing span used for instrumentation.
     pub fn span(&self) -> &Span {
         &self.span
     }
 
-    /// Instancia uma nova EventLogStore, adaptada para usar cliente nativo Iroh.
+    /// Instantiates a new EventLogStore, adapted to use the native Iroh client.
     ///
-    /// # Argumentos
+    /// # Arguments
     ///
-    /// * `iroh_client` - Cliente iroh compartilhado via Arc para operações de rede
-    /// * `identity` - Identidade do nó para assinatura de entradas
-    /// * `addr` - Endereço da store para identificação única
-    /// * `options` - Opções de configuração da store (índice, cache, etc.)
+    /// * `iroh_client` - Iroh client shared via Arc for network operations
+    /// * `identity` - Node identity for signing entries
+    /// * `addr` - Store address for unique identification
+    /// * `options` - Store configuration options (index, cache, etc.)
     ///
-    /// # Retorna
+    /// # Returns
     ///
-    /// Uma nova instância de `GuardianDBEventLogStore` configurada e pronta para uso
+    /// A new `GuardianDBEventLogStore` instance configured and ready to use
     ///
-    /// # Erros
+    /// # Errors
     ///
-    /// Retorna `GuardianError::Store` se:
-    /// - A inicialização do BaseStore falhar
-    /// - As opções de configuração forem inválidas
+    /// Returns `GuardianError::Store` if:
+    /// - BaseStore initialization fails
+    /// - The configuration options are invalid
     #[instrument(level = "debug", skip(iroh_client, identity, addr, options))]
     pub async fn new(
         iroh_client: Arc<IrohClient>,
@@ -185,7 +181,7 @@ impl GuardianDBEventLogStore {
         addr: Arc<dyn Address + Send + Sync>,
         mut options: traits::NewStoreOptions,
     ) -> Result<Self> {
-        // Validação básica dos parâmetros - verifica se os componentes essenciais existem
+        // Basic parameter validation - check that the essential components exist.
         if addr.to_string().is_empty() {
             return Err(GuardianError::Store(
                 "Invalid address provided, cannot create EventLogStore".to_string(),
@@ -193,19 +189,19 @@ impl GuardianDBEventLogStore {
         }
 
         tracing::info!(
-            "EventLogStore::new - Configurando índice para {}",
+            "EventLogStore::new - Configuring index for {}",
             addr.to_string()
         );
 
-        // CRÍTICO: Configura o índice ANTES de criar BaseStore
+        // CRITICAL: Configure the index BEFORE creating the BaseStore.
         options.index = Some(Box::new(new_event_index));
 
         tracing::info!(
-            "EventLogStore::new - Índice configurado: {}",
+            "EventLogStore::new - Index configured: {}",
             options.index.is_some()
         );
 
-        // Inicializa o BaseStore com as opções fornecidas
+        // Initialize the BaseStore with the provided options.
         let basestore = BaseStore::new(iroh_client, identity, addr.clone(), Some(options))
             .await
             .map_err(|e| {
@@ -216,24 +212,24 @@ impl GuardianDBEventLogStore {
             })?;
 
         tracing::info!(
-            "EventLogStore::new - BaseStore criado com índice ativo: {}",
+            "EventLogStore::new - BaseStore created with active index: {}",
             basestore.has_active_index()
         );
 
-        // Cria span para esta instância da EventLogStore
+        // Create a span for this EventLogStore instance.
         let span = tracing::info_span!("event_log_store", address = %addr.to_string());
 
         Ok(GuardianDBEventLogStore { basestore, span })
     }
 
-    /// Coleta todas as operações de uma stream em um vetor.
+    /// Collects all operations from a stream into a vector.
     #[instrument(level = "debug", skip(self, options))]
     pub async fn list(&self, options: Option<StreamOptions>) -> Result<Vec<Operation>> {
         let _entered = self.span.enter();
-        let (tx, mut rx) = mpsc::channel(100); // Buffer maior para evitar deadlock
+        let (tx, mut rx) = mpsc::channel(100); // Larger buffer to avoid deadlock.
 
-        // Spawn stream em task separada para evitar deadlock
-        // (stream envia dados enquanto list recebe)
+        // Spawn the stream in a separate task to avoid deadlock
+        // (the stream sends data while list receives).
         let self_clone = self.clone();
         tokio::spawn(async move {
             let _ = self_clone.stream(tx, options).await;
@@ -247,24 +243,24 @@ impl GuardianDBEventLogStore {
         Ok(operations)
     }
 
-    /// Cria e adiciona uma nova operação "ADD" ao log.
+    /// Creates and adds a new "ADD" operation to the log.
     ///
-    /// # Argumentos
+    /// # Arguments
     ///
-    /// * `value` - Dados em bytes para adicionar ao log
+    /// * `value` - Byte data to add to the log
     ///
-    /// # Retorna
+    /// # Returns
     ///
-    /// A operação criada com seu Hash único
+    /// The created operation with its unique Hash
     ///
-    /// # Erros
+    /// # Errors
     ///
-    /// - Se os dados estiverem vazios (opcional, dependendo da política)
-    /// - Se a adição ao BaseStore falhar
-    /// - Se a conversão Entry -> Operation falhar
+    /// - If the data is empty (optional, depending on the policy)
+    /// - If adding to the BaseStore fails
+    /// - If the Entry -> Operation conversion fails
     #[instrument(level = "debug", skip(self, value))]
     pub async fn add(&self, value: Vec<u8>) -> Result<Operation> {
-        // Validação opcional: verificar se há dados
+        // Optional validation: check that there is data.
         if value.is_empty() {
             return Err(GuardianError::Store(
                 "Cannot add empty data to EventLogStore".to_string(),
@@ -273,13 +269,13 @@ impl GuardianDBEventLogStore {
 
         let op = Operation::new(None, "ADD".to_string(), Some(value));
 
-        // `add_operation` retorna um `Entry`.
+        // `add_operation` returns an `Entry`.
         let entry = self
             .add_operation(op, None)
             .await
             .map_err(|e| GuardianError::Store(format!("Failed to add operation to log: {}", e)))?;
 
-        // `parse_operation` converte o `Entry` de volta para uma `Operation`.
+        // `parse_operation` converts the `Entry` back into an `Operation`.
         let op_result = operation::parse_operation(entry).map_err(|e| {
             GuardianError::Store(format!("Failed to parse newly created entry: {}", e))
         })?;
@@ -287,20 +283,20 @@ impl GuardianDBEventLogStore {
         Ok(op_result)
     }
 
-    /// Recupera uma única operação do log pelo seu Hash.
+    /// Retrieves a single operation from the log by its Hash.
     ///
-    /// # Argumentos
+    /// # Arguments
     ///
-    /// * `hash` - Hash da entrada desejada
+    /// * `hash` - Hash of the desired entry
     ///
-    /// # Retorna
+    /// # Returns
     ///
-    /// A operação correspondente ao Hash fornecido
+    /// The operation corresponding to the provided Hash
     ///
-    /// # Erros
+    /// # Errors
     ///
-    /// - Se o Hash não for encontrado no log
-    /// - Se a stream não retornar resultados
+    /// - If the Hash is not found in the log
+    /// - If the stream returns no results
     #[instrument(level = "debug", skip(self))]
     pub async fn get(&self, hash: &Hash) -> Result<Operation> {
         let _entered = self.span.enter();
@@ -312,10 +308,10 @@ impl GuardianDBEventLogStore {
             ..Default::default()
         };
 
-        // Para simplificar, vamos executar diretamente
+        // For simplicity, let's run it directly.
         self.stream(tx, Some(stream_options)).await?;
 
-        // Aguarda o primeiro valor
+        // Wait for the first value.
         if let Some(value) = rx.recv().await {
             Ok(value)
         } else {
@@ -326,56 +322,56 @@ impl GuardianDBEventLogStore {
         }
     }
 
-    /// Busca entradas, as converte em operações e as envia através de um canal.
+    /// Fetches entries, converts them into operations, and sends them through a channel.
     #[instrument(level = "debug", skip(self, result_chan, options))]
     pub async fn stream(
         &self,
         result_chan: mpsc::Sender<Operation>,
         options: Option<StreamOptions>,
     ) -> Result<()> {
-        // A função `query` retorna as entradas (entries) do log.
+        // The `query` function returns the log entries.
         let messages = self
             .query(options)
             .map_err(|e| GuardianError::Store(format!("unable to fetch query results: {}", e)))?;
 
         for message in messages {
-            // Converte cada entrada em uma Operação.
+            // Convert each entry into an Operation.
             let op = operation::parse_operation(message)
                 .map_err(|e| GuardianError::Store(format!("unable to parse operation: {}", e)))?;
 
-            // Envia a operação pelo canal. Se o receptor for fechado, o envio falhará
-            // e o loop será interrompido, o que é o comportamento esperado.
+            // Send the operation through the channel. If the receiver is closed, the send fails
+            // and the loop breaks, which is the expected behavior.
             if result_chan.send(op).await.is_err() {
-                // O receptor foi fechado, então podemos parar de enviar.
+                // The receiver was closed, so we can stop sending.
                 break;
             }
         }
 
-        // Em Rust, o canal é fechado automaticamente quando `result_chan` (o Sender)
-        // sai de escopo, então uma chamada explícita como `close(resultChan)` não é necessária.
+        // In Rust, the channel is closed automatically when `result_chan` (the Sender)
+        // goes out of scope, so an explicit call like `close(resultChan)` is not needed.
         Ok(())
     }
 
-    /// Executa a lógica de busca no índice do log com base nas opções de filtro.
+    /// Runs the log-index lookup logic based on the filter options.
     ///
     /// # Performance
     ///
-    /// - Usa o índice quando disponível para queries otimizadas
-    /// - Fallback para acesso direto ao oplog quando necessário
-    /// - Suporta filtros por Hash
+    /// - Uses the index when available for optimized queries
+    /// - Falls back to direct oplog access when needed
+    /// - Supports filtering by Hash
     #[instrument(level = "debug", skip(self, options))]
     fn query(&self, options: Option<StreamOptions>) -> Result<Vec<Entry>> {
         let options = options.unwrap_or_default();
 
-        // Tenta usar o índice primeiro para melhor performance
+        // Try to use the index first for better performance.
         let events = match self.basestore.with_index(|index| {
-            // Implementa busca otimizada no índice baseada nas StreamOptions
+            // Implements optimized index lookup based on the StreamOptions.
             self.optimized_index_query(index, &options)
         }) {
             Some(Some(indexed_results)) => indexed_results,
             _ => {
-                // Fallback: acessa o oplog diretamente quando índice não está disponível
-                // ou não suporta a query específica
+                // Fallback: access the oplog directly when the index is not available
+                // or does not support the specific query.
                 self.basestore.with_oplog(|log| {
                     log.values()
                         .iter()
@@ -385,14 +381,14 @@ impl GuardianDBEventLogStore {
             }
         };
 
-        // Calcula a quantidade de itens a serem retornados.
+        // Compute the number of items to return.
         let amount = match options.amount {
             Some(a) if a > -1 => a as usize,
-            _ => events.len(), // Se amount for -1 ou None, pega todos.
+            _ => events.len(), // If amount is -1 or None, take all.
         };
 
         if options.gt.is_some() || options.gte.is_some() {
-            // Caso "maior que" (Greater Than)
+            // "Greater Than" case.
             let hash = options.gt.or(options.gte).unwrap();
             let inclusive = options.gte.is_some();
             return Ok(self.read(&events, Some(hash), amount, inclusive));
@@ -400,39 +396,39 @@ impl GuardianDBEventLogStore {
 
         let hash = options.lt.or(options.lte);
 
-        // Caso "menor que" (Lower Than) ou N últimos.
-        // Inverte os eventos para buscar dos mais recentes para os mais antigos.
+        // "Lower Than" case or the last N.
+        // Reverse the events to go from the most recent to the oldest.
         let mut events = events;
         events.reverse();
 
-        // A busca é inclusiva se LTE for definido ou se nenhum limite (LT/LTE) for definido.
+        // The search is inclusive if LTE is set or if no bound (LT/LTE) is set.
         let inclusive = options.lte.is_some() || hash.is_none();
         let mut result = self.read(&events, hash, amount, inclusive);
 
-        // Desfaz a inversão do resultado para manter a ordem cronológica original.
+        // Undo the result's reversal to keep the original chronological order.
         result.reverse();
 
         Ok(result)
     }
 
-    /// Função auxiliar para ler uma fatia de entradas a partir de um hash.
+    /// Helper function to read a slice of entries starting from a hash.
     ///
-    /// # Argumentos
+    /// # Arguments
     ///
-    /// * `ops` - Slice de entradas para filtrar
-    /// * `hash` - Hash opcional para usar como ponto de início
-    /// * `amount` - Quantidade máxima de entradas a retornar
-    /// * `inclusive` - Se deve incluir a entrada com o hash fornecido
+    /// * `ops` - Slice of entries to filter
+    /// * `hash` - Optional hash to use as the starting point
+    /// * `amount` - Maximum number of entries to return
+    /// * `inclusive` - Whether to include the entry with the provided hash
     ///
-    /// # Retorna
+    /// # Returns
     ///
-    /// Vetor de entradas filtradas baseado nos critérios
+    /// Vector of entries filtered based on the criteria
     ///
     /// # Performance
     ///
-    /// - O(n) para encontrar o índice inicial por hash
-    /// - O(amount) para coletar os resultados
-    /// - Otimizada para uso com iteradores Rust
+    /// - O(n) to find the starting index by hash
+    /// - O(amount) to collect the results
+    /// - Optimized for use with Rust iterators
     fn read(
         &self,
         ops: &[Entry],
@@ -444,74 +440,74 @@ impl GuardianDBEventLogStore {
             return Vec::new();
         }
 
-        // Encontra o índice inicial.
+        // Find the starting index.
         let mut start_index = 0;
         if let Some(h) = hash {
             if let Some(idx) = ops.iter().position(|e| e.hash() == &h) {
                 start_index = idx;
             } else {
-                // Se o hash não for encontrado, não há o que retornar.
+                // If the hash is not found, there is nothing to return.
                 return Vec::new();
             }
         }
 
-        // Se não for inclusivo, começa a partir do próximo elemento.
+        // If not inclusive, start from the next element.
         if !inclusive {
             start_index += 1;
         }
 
-        // Limita a quantidade de elementos e coleta o resultado.
+        // Limit the number of elements and collect the result.
         ops.iter().skip(start_index).take(amount).cloned().collect()
     }
 
-    /// Busca otimizada no índice baseada nas StreamOptions.
+    /// Optimized index lookup based on the StreamOptions.
     ///
-    /// Utiliza os novos métodos opcionais do trait StoreIndex
+    /// Uses the new optional methods of the StoreIndex trait.
     ///
-    /// # Argumentos
+    /// # Arguments
     ///
-    /// * `index` - Referência ao índice da store
-    /// * `options` - Opções de filtro da stream
+    /// * `index` - Reference to the store's index
+    /// * `options` - Stream filter options
     ///
-    /// # Retorna
+    /// # Returns
     ///
-    /// `Some(Vec<Entry>)` se conseguir processar a query otimizada
-    /// `None` se deve usar fallback (oplog direto)
+    /// `Some(Vec<Entry>)` if it can process the optimized query
+    /// `None` if it should use the fallback (direct oplog)
     ///
-    /// # Casos Otimizados (Implementados)
+    /// # Optimized Cases (Implemented)
     ///
-    /// 1. **Amount-only queries**: Últimas N entradas usando `get_last_entries()`
-    /// 2. **Range queries**: Faixas específicas usando `get_entries_range()`
-    /// 3. **Hash queries**: Busca por Hash usando `get_entry_by_hash()`
+    /// 1. **Amount-only queries**: Last N entries using `get_last_entries()`
+    /// 2. **Range queries**: Specific ranges using `get_entries_range()`
+    /// 3. **Hash queries**: Lookup by Hash using `get_entry_by_hash()`
     ///
-    /// # Casos de Fallback
+    /// # Fallback Cases
     ///
-    /// 1. **Índice não suporta Entry**: `supports_entry_queries()` retorna false
-    /// 2. **Queries complexas**: Combinações não otimizadas
-    /// 3. **Índice vazio**: Nenhuma entrada disponível
+    /// 1. **Index does not support Entry**: `supports_entry_queries()` returns false
+    /// 2. **Complex queries**: Non-optimized combinations
+    /// 3. **Empty index**: No entries available
     ///
     /// # Performance
     ///
-    /// - **get_last_entries()**: O(k) onde k = número de entradas solicitadas
-    /// - **get_entry_by_hash()**: O(n) atual, O(1) futuro com índice por Hash
-    /// - **get_entries_range()**: O(k) onde k = tamanho do range
+    /// - **get_last_entries()**: O(k) where k = number of requested entries
+    /// - **get_entry_by_hash()**: O(n) currently, O(1) in the future with a Hash index
+    /// - **get_entries_range()**: O(k) where k = range size
     fn optimized_index_query(
         &self,
         index: &dyn crate::traits::StoreIndex<Error = GuardianError>,
         options: &StreamOptions,
     ) -> Option<Vec<Entry>> {
-        // Verifica se o índice suporta queries otimizadas com Entry completas
+        // Check whether the index supports optimized queries with full Entries.
         if !index.supports_entry_queries() {
-            return None; // Fallback para oplog
+            return None; // Fallback to the oplog.
         }
 
-        // Validação rápida: verifica se o índice tem dados
+        // Quick validation: check whether the index has data.
         let total_entries = match index.len() {
             Ok(len) if len > 0 => len,
-            _ => return None, // Índice vazio - usa fallback
+            _ => return None, // Empty index - use the fallback.
         };
 
-        // Query simples por quantidade (caso mais comum)
+        // Simple amount-based query (the most common case).
         let is_simple_amount_query = options.gt.is_none()
             && options.gte.is_none()
             && options.lt.is_none()
@@ -520,38 +516,38 @@ impl GuardianDBEventLogStore {
         if is_simple_amount_query {
             let amount = match options.amount {
                 Some(a) if a > 0 => (a as usize).min(total_entries),
-                Some(-1) | None => total_entries, // -1 ou None significa "todas"
-                _ => return None,                 // Valor inválido
+                Some(-1) | None => total_entries, // -1 or None means "all".
+                _ => return None,                 // Invalid value.
             };
 
-            // Usa o método otimizado do índice
+            // Use the index's optimized method.
             return index.get_last_entries(amount);
         }
 
-        // Query por Hash específico (get operation)
+        // Query by a specific Hash (get operation).
         if let Some(hash) = options.gte
             && options.amount == Some(1)
             && options.gt.is_none()
             && options.lt.is_none()
             && options.lte.is_none()
         {
-            // Query pontual por Hash - usa busca otimizada
+            // Point query by Hash - use the optimized lookup.
             if let Some(entry) = index.get_entry_by_hash(&hash) {
                 return Some(vec![entry]);
             } else {
-                return Some(Vec::new()); // Hash não encontrado
+                return Some(Vec::new()); // Hash not found.
             }
         }
 
-        // Otimizações futuras: Ranges específicos (futuro)
-        // Por enquanto, queries com múltiplos Hashes usam fallback
-        // que já implementa a lógica correta
+        // Future optimizations: specific ranges (future).
+        // For now, queries with multiple Hashes use the fallback,
+        // which already implements the correct logic.
         //
-        // Futuras otimizações:
-        // - Range por posição quando Hashes são consecutivos
-        // - Cache de queries frequentes
-        // - Índice temporal para filtros por timestamp
+        // Future optimizations:
+        // - Range by position when Hashes are consecutive
+        // - Cache of frequent queries
+        // - Temporal index for timestamp filters
 
-        None // Usa fallback para queries complexas
+        None // Use the fallback for complex queries.
     }
 }

@@ -1,199 +1,166 @@
 <div align="center">
   <img src="docs/logotipo-guardiandb-new-outubro.png" alt="GuardianDB Logo" width="350"/>
 
-[![Discord](https://img.shields.io/discord/1410233136846995519?label=chat&logo=discord&logoColor=white&style=flat-square&color=7289DA)](https://discord.gg/https://discord.gg/Ezzk8PnGR5)
-![License](https://img.shields.io/badge/license-MIT-blue.svg)
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-![Rust](https://img.shields.io/badge/rust-1.90.0+-orange.svg)
-![Version](https://img.shields.io/badge/version-0.16.0-brightgreen.svg)
-![Build Status](https://img.shields.io/badge/build-passing-green.svg)
-![Tests](https://img.shields.io/badge/tests-847%20passed-green.svg)
-![Examples](https://img.shields.io/badge/examples-16%20demos-blue.svg)
+[![Discord](https://img.shields.io/discord/1410233136846995519?label=chat&logo=discord&logoColor=white&style=flat-square&color=7289DA)](https://discord.gg/Ezzk8PnGR5)
+![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)
+![Rust](https://img.shields.io/badge/rust-1.95.0+-orange.svg)
+![Version](https://img.shields.io/badge/version-0.17.1-brightgreen.svg)
 [![codecov](https://codecov.io/github/wmaslonek/guardian-db/branch/main/graph/badge.svg?token=AKOZE17VN8)](https://codecov.io/github/wmaslonek/guardian-db)
 
 ---
 
-**GuardianDB: High-performance, local-first decentralized database built on Rust and Iroh**
+**High-performance, local-first decentralized database built on Rust and Iroh**
 
 </div>
 
-GuardianDB is a decentralized database designed for applications that require transparent peer-to-peer synchronization, offline-first operation, and extreme performance. It leverages the power of the Iroh stack to offer a robust alternative to centralized cloud databases.
+GuardianDB is a decentralized, local-first database for apps that need peer-to-peer
+synchronization, offline-first operation, and high performance. Every node keeps a full
+local replica: reads and writes are local (no server round-trip), and changes converge
+across peers automatically over [Iroh](https://www.iroh.computer/).
 
-## Evolution: Beyond OrbitDB
+It began as a Rust port of OrbitDB but is no longer "OrbitDB in Rust". The legacy
+IPFS/CID/libp2p stack has been removed in favor of Iroh's QUIC transport, BLAKE3 hashing,
+and Willow range-based set reconciliation.
 
-<div align="left">
-<img align="right" src="docs/guardian-github-2.png" height="96px"/>
+## Why Iroh
 
-GuardianDB's development began as a Rust implementation of OrbitDB. However, as we sought better performance on mobile and edge devices, the limitations of the legacy stack (IPFS, CIDs, generic libp2p DHTs) became evident.
+- **Direct, encrypted connections** — Iroh's Magicsock handles NAT traversal, hole
+  punching, and roaming (Wi-Fi ⇄ 5G without dropping). No global DHT.
+- **QUIC transport** — one encrypted UDP socket multiplexes blobs (data), docs (state),
+  and gossip (signals) per peer.
+- **Identity is the address** — each peer is an Ed25519 public key (`NodeId`, 32 bytes).
+- **Range-Based Set Reconciliation (Willow)** — peers transfer only the diff between them, not
+  full record lists, syncing millions of records in milliseconds.
+- **Gossip for real-time signals** — iroh-gossip's epidemic broadcast trees fan out
+  ephemeral messages with low latency and redundancy.
 
-*We moved away from IPFS completely.*
+### Coming from IPFS/OrbitDB
 
-GuardianDB is no longer "OrbitDB in Rust". It is a distinct and modernized database. We removed the legacy OrbitDB architecture, IPFS, CIDs, and generic libp2p networking in favor of Iroh, a next-generation P2P protocol.
+| Concept | Legacy (IPFS / OrbitDB) | GuardianDB (Iroh) |
+|---------|-------------------------|-------------------|
+| Identity | PeerID (Multihash) | EndpointID (Ed25519, 32 bytes) |
+| Content ID | CID (SHA-256 + codecs) | Hash (BLAKE3) |
+| Network | libp2p swarm (TCP/WS) | Iroh Endpoint (QUIC) |
+| Discovery | Kademlia DHT (global) | Pkarr/DNS + mDNS, direct |
+| Data format | IPLD DAG (JSON) | Binary (Postcard) |
+| Sync | Bitswap (block-by-block) | Willow (range-based) |
 
-</div>
+## How the stores map to Iroh
 
-### What makes GuardianDB different now?
-
-**No Global DHT:** We use direct and encrypted connections via Iroh's Magicsock.<br>
-**No Garbage Collection pauses:** We replaced heavy JSON serialization with zero-copy binary formats.<br>
-**Speed:** Exclusive use of BLAKE3 hashing and QUIC transport protocol.
-
-## ⚡Powered by Iroh
-
-GuardianDB is built on top of Iroh, leveraging state-of-the-art protocols to handle the heavy lifting of networking and data reconciliation. Understanding GuardianDB means understanding these core concepts:
-
-**Magicsock & NAT Traversal:** Built on technology adapted from Tailscale, instead of traditional addressing, we use Iroh's Magicsock. It automatically handles NAT traversal, hole punching, and roaming. A device can switch from Wi-Fi to 5G without breaking the connection, creating a direct and encrypted QUIC tunnel between peers.
-
-**Iroh Endpoint (Node):** The Endpoint binds to a single UDP socket and manages all peer connections. It utilizes QUIC's native stream multiplexing and ALPN (Application-Layer Protocol Negotiation) to route traffic. This architecture allows *Blobs* (data transfer), *Docs* (state sync), and *Gossip* (real-time signals) to share the same encrypted connection simultaneously.
-
-**EndpointID ((NodeID)Ed25519):** Security is not an afterthought. Each peer is identified by a cryptographic public key. No PeerIDs or multiaddrs, identity is the address.
-
-**Willow Protocol:** GuardianDB uses Iroh's Willow protocol for data synchronization. Willow enables efficient and bandwidth-economical synchronization by treating data as a three-dimensional space: Entry, Author and Namespace.
-
-**Range-Based Reconciliation:** Instead of exchanging complete file lists to discover what's missing, Willow uses 3D range-based reconciliation. It identifies and transfers only the missing data differences between two peers in milliseconds, even with millions of records.
-
-**Epidemic Broadcast Trees:** For real-time updates (like *"User is typing..."*), we use iroh-gossip. The hybrid Epidemic Broadcast Trees algorithm combines the robustness of random (epidemic) gossip with the efficiency of multicast trees, ensuring messages reach all peers with minimal latency and low bandwidth redundancy.
-
-## Architecture Comparison
-
-### Terminology Shift
-
-If you're coming from IPFS/OrbitDB, here are the GuardianDB/Iroh concept differences:
-
-| Concept | Legacy (IPFS / OrbitDB) | GuardianDB (Iroh) | Benefit |
-|--------|-------------------------|-------------------|-----------|
-| Identity | PeerID (Multihash) | NodeID (Ed25519 Key) | Faster verification, smaller keys (32 bytes) |
-| Content ID | CID (SHA-256 + Codecs) | Hash (BLAKE3) | Extreme hashing performance, simplified references. |
-| Network | Libp2p Swarm (TCP/WS) | Iroh Endpoint (QUIC) | Native encryption, lower latency, better mobile roaming. |
-| Discovery | DHT Kademlia (Global) | Relay / Direct | Private and segmented discovery. No leakage to public DHTs. |
-| Data Format | IPLD DAG (JSON) | Binary (Postcard / Bao) | Zero-copy serialization, storage reduction over 50%. |
-
-### Stack Comparison: Libp2p/IPFS vs Iroh
-
-| Feature | Libp2p + IPFS (OrbitDB) | Iroh (GuardianDB) |
-|-------|---------------|-------------------|
-| Philosophy | Modular "Lego" blocks. Extremely flexible, but complex to tune. | Vertical integration. Opinionated, optimized for performance and ease of use. |
-| Transport | Negotiates transport (TCP, WS, QUIC, etc). | QUIC only. Optimized for unstable networks. |
-| Storage | Blockstore | Blobs |
-| Synchronization | Bitswap (block-by-block exchange). | Willow (range-based reconciliation). |
-
-## Internal Architecture and Roadmap
-
-GuardianDB orchestrates three main Iroh primitives to deliver a complete database experience:
-
-**1. Iroh-Blobs:** The lowest layer. Stores raw data (images, logs, binary payloads) addressed by BLAKE3 hashes.<br>
-**2. Iroh-Docs:** The mutable layer. Manages key-value storage and synchronization using Last-Write-Wins (LWW) conflict resolution.<br>
-**3. Iroh-Gossip:** The ephemeral layer. Handles transient messages and signals between peers.
-
-### ✅ Migration Complete: Pure Iroh
-The migration to a fully Iroh-native architecture is complete:
-
-**KV Store and Document Store:** Now run exclusively on Iroh-Docs. All CRDT logic lives at the protocol layer, enabling instant synchronization using Willow's range-based reconciliation.<br>
-**Event Log Store (Chat/Feed):** Retains the original ipfs-log logic (DAG structure) for strict ordering, but the engine has been completely refactored:
-
-**No IPFS:** Fully disconnected from the IPFS Blockstore.<br>
-**No JSON:** Replaced with binary serialization (Postcard).<br>
-**No CIDs:** All linking logic uses 32-byte BLAKE3 hashes.
-
-This hybrid approach gives us the best of both worlds: Iroh's speed for key-value and document data, and the auditability of a causal log for transaction history.
+- **KeyValueStore / DocumentStore** run on **Iroh-Docs** (Last-Write-Wins CRDT), syncing via
+  Willow range-based reconciliation.
+- **EventLogStore** keeps a causal DAG (ipfs-log lineage) for strict ordering and
+  auditability — but with no IPFS, no JSON, and 32-byte BLAKE3 links instead of CIDs.
 
 <details>
-<summary>
-Current Architecture
-</summary>
+<summary>Source layout</summary>
 <br />
 
 ```
-GuardianDB v0.16.0
-├── Core Database
-│   ├── GuardianDB (guardian/mod.rs)         # Main database API facade
-│   ├── BaseGuardianDB (guardian/core.rs)    # Core implementation
-│   ├── Error Handling (guardian/error.rs)   # Error types
-│   └── Serializer (guardian/serializer.rs)  # Data serialization
-│
-├── Store Implementations (stores/)
-│   ├── EventLogStore                   # Immutable append-only logs
-│   ├── KeyValueStore                   # Distributed key-value pairs  
-│   ├── DocumentStore                   # JSON documents with queries
-│   ├── BaseStore                       # Common store functionality
-│   └── Operations                      # Store operations & parsing
-│
-├── Networking Layer (p2p/)
-│   ├── IrohClient (network/client.rs)  # Native Iroh Client
-│   ├── Network Core (network/core/)    # IrohBackend
-│   │   ├── BatchProcessor              # Batch operation handling
-│   │   ├── Blobs                       # Blob storage management
-│   │   ├── ConnectionPool              # Connection pooling
-│   │   ├── Docs                        # Document replication (Willow Protocol)
-│   │   ├── Gossip                      # Gossipsub protocol
-│   │   ├── KeySynchronizer             # Key distribution
-│   │   ├── NetworkingMetrics           # Network telemetry
-│   │   └── OptimizedCache              # Performance caching
-│   ├── Messaging (messaging/)
-│   │   ├── DirectChannel               # Peer-to-peer messaging
-│   │   └── OneOnOneChannel             # Direct peer communication
-│   ├── EventBus                        # Type-safe event system
-│   └── Config (network/config.rs)      # Network configuration
-│
-├── Access Control Layer (access_control/)
-│   ├── GuardianDBAccessController (acl_guardian.rs)   # Signature-based ACL
-│   ├── IrohAccessController (acl_iroh.rs)             # Iroh-based ACL
-│   ├── SimpleAccessController (acl_simple.rs)         # Open access (dev)
-│   ├── Manifest (manifest.rs)                         # ACL configuration
-│   └── Traits (traits.rs)                             # ACL traits
-│
-├── CRDT Log System (log/)
-│   ├── Entry (entry.rs)                            # CRDT log entries
-│   ├── Identity (identity.rs)                      # Peer identity
-│   ├── IdentityProvider (identity_provider.rs)     # Identity management
-│   ├── LamportClock (lamport_clock.rs)             # Distributed time ordering
-│   ├── AccessControl (access_control.rs)           # Log-level ACL
-│   └── Traits (traits.rs)                          # Log traits
-│
-├── Data & Storage Layer
-│   ├── Cache (cache/)
-│   │   └── LevelDown (level_down.rs)             # Sled-based storage
-│   ├── DataStore (data_store.rs)                 # Pluggable storage interface
-│   ├── Keystore (keystore.rs)                    # Ed25519 cryptographic keys
-│   ├── MessageMarshaler (message_marshaler.rs)   # Message Serialization
-│   ├── DBManifest (db_manifest.rs)               # Database configuration
-│   └── Address (address.rs)                      # Address resolution
-│
-├── Reactive Systems
-│   ├── ReactiveSynchronizer (reactive_synchronizer.rs)   # State sync
-│   └── Events (events.rs)                                # Event emission system
-│
-├── Optional ODM Layer (feature = "odm")
-│   ├── Model Derive (guardian-db-derive)                 # #[derive(Model)] macros
-│   ├── Collection API (odm/collection.rs)                # Typed/dynamic CRUD facade
-│   ├── Query & Update Engine (odm/query.rs)              # MongoDB-style filters/operators
-│   └── Schema & Index Metadata (odm/schema.rs)           # PK, unique, secondary indexes
-│
-└── Core Traits & Types
-    └── Traits (traits.rs)    # Common traits & types
+guardian-db/
+├── guardian/            # GuardianDB facade (mod.rs) + core impl (core.rs)
+├── stores/              # EventLogStore, KeyValueStore, DocumentStore, BaseStore
+├── p2p/
+│   ├── network/client.rs    # IrohClient
+│   ├── network/core/        # IrohBackend: blobs, docs, gossip, connection_pool, metrics, cache
+│   ├── network/config.rs    # ClientConfig / NetworkConfig / StorageConfig / GossipConfig
+│   └── messaging/           # DirectChannel, OneOnOneChannel
+├── access_control/      # Guardian (signature), Iroh, and Simple (open) controllers
+├── log/                 # CRDT log: Entry, Identity, LamportClock, ACL
+├── cache/, data_store.rs, keystore.rs, db_manifest.rs, address.rs
+└── odm/                 # Optional ODM layer (feature = "odm")
 ```
 </details>
 
-### Current Implementation Status
+## Quick Start
 
-**Networking & Discovery:**
-<ul> ✔️ Native Iroh Embedded Node (Endpoint) with QUIC transport </ul>
-<ul> ✔️ Iroh Blobs for content-addressed storage </ul>
-<ul> ✔️ Iroh Gossip with Epidemic Broadcast Trees </ul>
-<ul> ✔️ Iroh Docs for Willow Protocol document replication </ul>
-<ul> ✔️ Optimized Connection Pool with circuit breaking and load balancing </ul>
-<ul> ✔️ Real-time Networking Metrics Collector with performance tracking </ul>
-<ul> ✔️ EpidemicPubSub for native distributed messaging </ul>
-<ul> ✔️ Key Synchronizer for distributed key consistency </ul>
+```toml
+[dependencies]
+guardian-db = "0.17"
+tokio = { version = "1", features = ["full"] }
+```
 
-**Data Stores & Operations:**
-<ul> ✔️ EventLogStore (immutable append-only logs) </ul>
-<ul> ✔️ KeyValueStore (distributed key-value pairs) </ul>
-<ul> ✔️ DocumentStore (JSON documents with queries) </ul>
-<ul> ✔️ Optional ODM collections with schema validation, indexes, and Mongoose-style CRUD (`odm` feature) </ul>
-<ul> ✔️ BaseStore (common functionality and CRDT operations) </ul>
-<ul> ✔️ Multi-level caching with Sled backend </ul>
-<ul> ✔️ Cryptographic access control with Ed25519 signatures </ul>
+```rust
+use guardian_db::guardian::GuardianDB;
+use guardian_db::guardian::core::NewGuardianDBOptions;
+use guardian_db::p2p::network::client::IrohClient;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Start a local Iroh node and open a database persisted under ./guardian_data.
+    let client = IrohClient::development().await?;
+    let db = GuardianDB::new(client, Some(NewGuardianDBOptions {
+        directory: Some("./guardian_data".into()),
+        ..Default::default()
+    })).await?;
+
+    // Open (or create) a key-value store. Writes replicate to peers automatically.
+    let kv = db.key_value("settings", None).await?;
+    kv.put("theme", b"dark".to_vec()).await?;
+
+    if let Some(v) = kv.get("theme").await? {
+        println!("theme = {}", String::from_utf8_lossy(&v));
+    }
+    Ok(())
+}
+```
+
+`GuardianDB::new` takes an `IrohClient` plus optional `NewGuardianDBOptions`. Use
+`IrohClient::development()` for local work, or `IrohClient::new(config)` with a tuned
+`ClientConfig` (see [Configuration](#configuration)) for production.
+
+## Scaling
+
+A common question: *how does a local-first P2P database scale?* GuardianDB has no central
+server, so you don't scale a bottleneck — you add peers and tune how they connect and sync.
+
+**Reads & writes are local.** Each node answers queries from its own replica with no network
+round-trip, so read throughput scales linearly with the number of nodes. Writes are applied
+locally and propagated asynchronously.
+
+**Sync cost is proportional to the diff, not the dataset.** Willow range-based
+reconciliation exchanges only what two peers are missing, so steady-state sync stays cheap
+even as total data grows. BLAKE3 + QUIC keep hashing and transport fast.
+
+**Discovery & connectivity** (in `ClientConfig`):
+- `enable_discovery_mdns` — find peers on the same LAN automatically.
+- `enable_discovery_n0` — global discovery via Pkarr/DNS (n0.computer), for peers across
+  the internet.
+- `known_peers` / `config.add_known_peer(node_id)` — bootstrap against specific nodes.
+- `db.connect_to_peer(node_id).await?` — force a direct connection and sync with one peer.
+
+Share a node's identity so others can reach it:
+
+```rust
+let client = IrohClient::development().await?;
+let node_id = client.id().await?.id;   // an Ed25519 NodeId — share this with peers
+let db = GuardianDB::new(client, None).await?;
+```
+
+**Tuning knobs that matter as you grow** (all in `ClientConfig`):
+
+| Concern | Field | Default → Production |
+|---------|-------|----------------------|
+| Concurrent peers | `network.max_peers_per_session` | 100 → 1000 |
+| Connection timeout / keepalive | `network.connection_timeout`, `network.keepalive_interval` | 30s / 60s → 60s / 120s |
+| Blob cache | `storage.max_cache_size` | 100 MB → 1 GB |
+| Largest object | `storage.max_blob_size` | 10 MB → 100 MB |
+| Gossip throughput | `gossip.message_buffer_size`, `gossip.max_topics` | 1000 / 100 → 10000 / 1000 |
+
+The connection pool does circuit breaking and load balancing across these connections
+automatically.
+
+**Topology guidance:**
+- *Small groups (a handful of peers):* let mDNS / n0 discovery form a full mesh — no extra
+  setup.
+- *Larger or internet-spanning deployments:* run one or more **always-on "super peers"** with
+  `enable_discovery_n0 = true` and a fixed `port` as stable rendezvous/sync points, and list
+  them in every client's `known_peers`.
+- *Many independent workloads:* partition by database name and gossip topic so unrelated
+  peers don't sync data they don't need.
+
+Start from a preset and adjust: `ClientConfig::production()` already raises peer limits,
+cache sizes, and gossip buffers for you.
 
 ## Optional ODM and Collection API
 
@@ -203,7 +170,7 @@ Enable the Rust ODM explicitly:
 
 ```toml
 [dependencies]
-guardian-db = { version = "0.16", features = ["odm"] }
+guardian-db = { version = "0.17", features = ["odm"] }
 ```
 
 ### Rust model definitions
@@ -407,7 +374,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // CRUD operations - all operations are automatically replicated
     kv.put("app_name", "GuardianDB".as_bytes().to_vec()).await?;
-    kv.put("version", "0.16.0".as_bytes().to_vec()).await?;
+    kv.put("version", "0.17.0".as_bytes().to_vec()).await?;
     kv.put("language", "Rust".as_bytes().to_vec()).await?;
 
     // Get values - queries the local CRDT index
@@ -477,7 +444,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "_id": "guardian-db",
         "name": "GuardianDB", 
         "type": "database",
-        "version": "0.16.0",
+        "version": "0.17.0",
         "language": "Rust",
         "features": ["decentralized", "peer-to-peer", "CRDT", "Iroh"]
     });
@@ -593,96 +560,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Configuration
 
-<details>
-<summary>
-Basic Configuration
-</summary>
-<br />
+The simplest path is a preset on `IrohClient`. Each preset tunes networking, storage, and
+gossip together:
+
+| Preset | Discovery | Storage | Use for |
+|--------|-----------|---------|---------|
+| `IrohClient::development()` | mDNS only | persistent, GC off | local dev |
+| `IrohClient::production()` | mDNS + n0 (global) | 1 GB cache, GC on | deployments |
+| `IrohClient::new(ClientConfig::testing())` | none | in-memory | tests |
+| `IrohClient::new(ClientConfig::offline())` | none | persistent | no networking |
+
+For full control, build a `ClientConfig` and pass it to `IrohClient::new`:
 
 ```rust
-use guardian_db::guardian::core::{GuardianDB, NewGuardianDBOptions};
-use guardian_db::p2p::network::config::ClientConfig;
-use tracing::{info, Level};
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize logging/tracing
-    tracing_subscriber::fmt()
-        .with_max_level(Level::INFO)
-        .init();
-
-    // Configure Iroh client with native backend
-    let config = ClientConfig::default();
-    info!("Iroh Client config prepared");
-    
-    // Configure GuardianDB
-    let options = NewGuardianDBOptions {
-        directory: Some("./guardian_data".into()),
-        ..Default::default()
-    };
-    
-    let db = GuardianDB::new(Some(config), Some(options)).await?;
-    info!("GuardianDB initialized successfully");
-
-    // Database is ready for use
-    let stores_info = format!(
-        "Available store types: EventLog, KeyValue, Document"
-    );
-    info!("{}", stores_info);
-    
-    Ok(())
-}
-```
-</details>
-
-<details>
-<summary>
-Advanced Configuration
-</summary>
-<br />
-
-```rust
-use guardian_db::guardian::core::{GuardianDB, NewGuardianDBOptions};
+use guardian_db::guardian::GuardianDB;
+use guardian_db::guardian::core::NewGuardianDBOptions;
+use guardian_db::p2p::network::client::IrohClient;
 use guardian_db::p2p::network::config::{ClientConfig, NetworkConfig, StorageConfig, GossipConfig};
-use tracing::{info, Level};
 use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize comprehensive logging
-    tracing_subscriber::fmt()
-        .with_max_level(Level::DEBUG)
-        .init();
-
-    // Production Iroh configuration with native backend
     let config = ClientConfig {
-        enable_pubsub: true,                        // iroh-gossip support
-        data_store_path: Some("./production_iroh".into()),
-        port: 4001,                                 // Fixed port for production
-        enable_discovery_n0: true,                  // Discovery via n0.computer (Pkarr/DNS)
-        enable_discovery_mdns: true,                // Local mDNS discovery
-        known_peers: vec![],                        // Add known NodeIds here
-        
-        // Network configuration
+        enable_pubsub: true,                        // iroh-gossip
+        data_store_path: Some("./iroh_data".into()),
+        port: 4001,                                 // 0 = random port
+        enable_discovery_n0: true,                  // global discovery (Pkarr/DNS)
+        enable_discovery_mdns: true,                // local discovery
+        known_peers: vec![],                        // bootstrap NodeIds
         network: NetworkConfig {
             connection_timeout: Duration::from_secs(60),
             max_peers_per_session: 1000,
-            io_buffer_size: 128 * 1024,             // 128KB
+            io_buffer_size: 128 * 1024,
             keepalive_interval: Duration::from_secs(120),
         },
-        
-        // Storage configuration (iroh-blobs)
         storage: StorageConfig {
             enable_memory_cache: true,
-            max_cache_size: 1024 * 1024 * 1024,     // 1GB cache
-            max_blob_size: 100 * 1024 * 1024,       // 100MB per blob
+            max_cache_size: 1024 * 1024 * 1024,     // 1 GB
+            max_blob_size: 100 * 1024 * 1024,       // 100 MB per blob
             enable_gc: true,
-            gc_interval: Duration::from_secs(1800), // 30 minutes
+            gc_interval: Duration::from_secs(1800),
         },
-        
-        // Gossip configuration (iroh-gossip)
         gossip: GossipConfig {
-            max_message_size: 10 * 1024 * 1024,     // 10MB
+            max_message_size: 10 * 1024 * 1024,
             message_buffer_size: 10000,
             operation_timeout: Duration::from_secs(60),
             heartbeat_interval: Duration::from_millis(500),
@@ -690,99 +610,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     };
 
-    info!("Production Iroh Client configured");
-
-    // Advanced GuardianDB configuration
-    let db_options = NewGuardianDBOptions {
-        directory: Some("./production_guardian".into()),
+    let client = IrohClient::new(config).await?;
+    let db = GuardianDB::new(client, Some(NewGuardianDBOptions {
+        directory: Some("./guardian_data".into()),
         ..Default::default()
-    };
+    })).await?;
 
-    let db = GuardianDB::new(Some(config), Some(db_options)).await?;
-    info!("GuardianDB configured for production use");
-
-    // Database is ready for use with advanced configuration
-    info!("Advanced configuration applied successfully");
-
+    let _ = db; // open stores via db.log() / db.key_value() / db.docs()
     Ok(())
 }
 ```
-</details>
 
 ## Development
 
-### Prerequisites
-
-- Rust 1.90+ (edition 2024)
-- Git
-
-### Build
+**Prerequisites:** Rust 1.95+ (edition 2024) and Git.
 
 ```bash
 git clone https://github.com/wmaslonek/guardian-db.git
 cd guardian-db
-cargo build
+cargo build            # build the library
+cargo test             # run the test suite
+cargo run --example p2p_chat_tui   # try a P2P demo (see examples/)
 ```
 
-<details>
-<summary>
-Tests
-</summary>
-<br />
-
 ```bash
-# Run all tests (776 passing tests)
-cargo test
+# Quality
+cargo clippy --all-targets --all-features -- -D warnings
+cargo fmt --all
+cargo doc --no-deps --open
 
-# Run only unit tests (in src/)
-cargo test --lib
-
-# Run only integration tests (in tests/)
-cargo test --test '*'
-
-# Run specific test files
-cargo test --test integration_lifecycle        # Lifecycle tests
-cargo test --test integration_replication      # P2P replication tests
-cargo test --test integration_access_control   # Access control tests
-cargo test --test integration_persistence      # Persistence tests
-cargo test --test test_determinism             # Determinism tests
-
-# Run specific unit test modules
-cargo test guardian_core_test               # Core GuardianDB tests
-cargo test event_log_store_test             # Event log store tests
-cargo test kv_store_test                    # Key-value store tests
-cargo test document_store_test              # Document store tests
-cargo test iroh_backend_test                # Iroh backend tests
-cargo test connection_pool_test             # Connection pool tests
-cargo test networking_metrics_test          # Networking metrics tests
-cargo test access_control                   # Access control tests
-
-# Run with detailed output
-RUST_LOG=debug cargo test -- --nocapture
-
-# Run with single thread (for P2P tests)
-cargo test --test integration_replication -- --test-threads=1
-
-# Run tests in release mode (faster)
-cargo test --release
-```
-</details>
-
-<details>
-<summary>
-Build Features
-</summary>
-<br />
-
-```bash
-# Build with all features (default)
-cargo build
-
-# Build optimized release version
-cargo build --release
-
-# Build and test the optional ODM layer
-cargo check --tests --features odm
+# Optional ODM layer (feature-gated)
 cargo test --features odm odm
 
 # Benchmark features like queries, read operations, concurrency
@@ -815,58 +672,39 @@ cargo doc --open               # Generate and open docs
 cargo watch -x check           # Auto-rebuild on changes  
 cargo audit                    # Security audit
 ```
-</details>
 
 ## Community & Support
 
 <div align="left">
 <img align="right" src="docs/guardian-github-1.png" height="96px"/>
 
-GuardianDB is an open-source project welcoming contributions and discussions from developers interested in decentralized systems, Iroh, and Rust programming.
+GuardianDB is open source and welcomes contributions from anyone interested in
+decentralized systems, Iroh, and Rust. Join the
+[Discord](https://discord.gg/Ezzk8PnGR5) to ask questions and share what you build, and
+follow updates on [Twitter](https://x.com/willsearch_) and
+[LinkedIn](https://www.linkedin.com/company/willsearch/).
 
-If you are excited about the project, don't hesitate to join our
-[Discord](https://discord.gg/Ezzk8PnGR5)! We try to be as welcoming as possible to everybody from
-any background. You can ask your questions and share what you built with the community! 
-Follow updates on [Twitter](https://x.com/willsearch_) and [LinkedIn](https://www.linkedin.com/company/willsearch/)!
-
-**Get Involved:**
-- **Issues**: Report bugs and request features on [GitHub Issues](https://github.com/wmaslonek/guardian-db/issues)
-- **Discussions**: Technical discussions and Q&A on [GitHub Discussions](https://github.com/wmaslonek/guardian-db/discussions)  
-- **Documentation**: Contribute to docs and examples
-- **Code**: Submit PRs for bug fixes and new features
-
-We welcome developers from all backgrounds and experience levels!
+- **Issues** — bugs and feature requests: [GitHub Issues](https://github.com/wmaslonek/guardian-db/issues)
+- **Discussions** — Q&A and design: [GitHub Discussions](https://github.com/wmaslonek/guardian-db/discussions)
+- **Code** — see [CONTRIBUTING.md](CONTRIBUTING.md)
 
 </div>
 
 ## Status
 
-GuardianDB is currently in active development, and there will be breaking changes. While any resulting
-issues are likely to be easy to fix, there are no guarantees at this stage.
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution instructions.
+GuardianDB is in active development and there will be breaking changes. Resulting issues
+are usually easy to fix, but there are no stability guarantees at this stage.
 
 ## License
 
-GuardianDB is dual-licensed under the terms of both the MIT license and the Apache License 2.0.
-
-See [LICENSE-MIT](./LICENSE-MIT) and [LICENSE-APACHE](./LICENSE-APACHE) for details. Opening a pull
-request is assumed to signal agreement with these licensing terms.
+Dual-licensed under the [MIT](./LICENSE-MIT) and [Apache 2.0](./LICENSE-APACHE) licenses.
+Opening a pull request is assumed to signal agreement with these terms.
 
 ## Acknowledgments
 
-- **[ipfs-log-rs](https://github.com/eqlabs/ipfs-log-rs)** - CRDT Log implementation foundation
-- **[Iroh](https://github.com/n0-computer/iroh)** - QUIC-based P2P data synchronization
-
-This project incorporates and builds upon code from [ipfs-log-rs](https://github.com/eqlabs/ipfs-log-rs),
-licensed under the MIT License © EQLabs. Significant enhancements and optimizations have been added
-for production use in decentralized applications.
-
-## Useful Links
-
-- **[Iroh Documentation](https://www.iroh.computer/)** - QUIC-based P2P data synchronization
+- **[Iroh](https://github.com/n0-computer/iroh)** — QUIC-based P2P data synchronization.
+- **[ipfs-log-rs](https://github.com/eqlabs/ipfs-log-rs)** — CRDT log foundation, MIT
+  © EQLabs. GuardianDB builds on it with significant enhancements for decentralized apps.
 
 ---
 

@@ -1,14 +1,14 @@
 //! # Reactive Synchronizer
 //!
-//! Sistema de observabilidade reativa para sincronização de dados entre stores.
-//! Permite que componentes externos (UI, logs, monitoramento) observem o estado
-//! de operações de sincronização em tempo real.
+//! Reactive observability system for data synchronization between stores.
+//! Allows external components (UI, logs, monitoring) to observe the state
+//! of synchronization operations in real time.
 //!
-//! ## Componentes
+//! ## Components
 //!
-//! - **SyncObserver**: Observador que recebe eventos de sincronização
-//! - **SyncProgress**: Estado atual de progresso de sincronização
-//! - **SyncEvent**: Eventos emitidos durante sincronização
+//! - **SyncObserver**: Observer that receives synchronization events
+//! - **SyncProgress**: Current synchronization progress state
+//! - **SyncEvent**: Events emitted during synchronization
 
 use crate::address::Address;
 use crate::guardian::error::{GuardianError, Result};
@@ -20,16 +20,16 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 use tracing::warn;
 
-/// Estado de progresso de sincronização
+/// Synchronization progress state.
 #[derive(Debug, Clone)]
 pub struct SyncProgress {
-    /// Endereço da store sendo sincronizada
+    /// Address of the store being synchronized.
     pub address: Arc<dyn Address + Send + Sync>,
-    /// Número de entradas processadas
+    /// Number of processed entries.
     pub processed: usize,
-    /// Total de entradas a processar
+    /// Total number of entries to process.
     pub total: usize,
-    /// Estado atual
+    /// Current state.
     pub state: SyncState,
 }
 
@@ -43,7 +43,7 @@ impl SyncProgress {
         }
     }
 
-    /// Calcula a porcentagem de progresso (0-100)
+    /// Computes the progress percentage (0-100).
     pub fn percentage(&self) -> f64 {
         if self.total == 0 {
             return 0.0;
@@ -51,30 +51,30 @@ impl SyncProgress {
         (self.processed as f64 / self.total as f64) * 100.0
     }
 
-    /// Verifica se a sincronização está completa
+    /// Checks whether synchronization is complete.
     pub fn is_complete(&self) -> bool {
         matches!(self.state, SyncState::Completed)
             || (self.total > 0 && self.processed >= self.total)
     }
 
-    /// Verifica se está em progresso
+    /// Checks whether it is in progress.
     pub fn is_active(&self) -> bool {
         matches!(self.state, SyncState::Loading | SyncState::Replicating)
     }
 }
 
-/// Estados possíveis de sincronização
+/// Possible synchronization states.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncState {
-    /// Aguardando início
+    /// Waiting to start.
     Idle,
-    /// Carregando dados
+    /// Loading data.
     Loading,
-    /// Replicando para outros peers
+    /// Replicating to other peers.
     Replicating,
-    /// Sincronização completa
+    /// Synchronization complete.
     Completed,
-    /// Erro durante sincronização
+    /// Error during synchronization.
     Failed,
 }
 
@@ -90,15 +90,15 @@ impl std::fmt::Display for SyncState {
     }
 }
 
-/// Eventos de sincronização
+/// Synchronization events.
 #[derive(Debug, Clone)]
 pub enum SyncEvent {
-    /// Sincronização iniciada
+    /// Synchronization started.
     Started {
         address: Arc<dyn Address + Send + Sync>,
         total: usize,
     },
-    /// Progresso atualizado
+    /// Progress updated.
     Progress {
         address: Arc<dyn Address + Send + Sync>,
         hash: Hash,
@@ -106,17 +106,17 @@ pub enum SyncEvent {
         processed: usize,
         total: usize,
     },
-    /// Store pronta
+    /// Store ready.
     Ready {
         address: Arc<dyn Address + Send + Sync>,
         heads: Vec<Entry>,
     },
-    /// Replicação completa
+    /// Replication complete.
     Replicated {
         address: Arc<dyn Address + Send + Sync>,
         hash: Hash,
     },
-    /// Erro durante sincronização
+    /// Error during synchronization.
     Error {
         address: Arc<dyn Address + Send + Sync>,
         error: String,
@@ -124,7 +124,7 @@ pub enum SyncEvent {
 }
 
 impl SyncEvent {
-    /// Retorna o endereço associado ao evento
+    /// Returns the address associated with the event.
     pub fn address(&self) -> &Arc<dyn Address + Send + Sync> {
         match self {
             SyncEvent::Started { address, .. } => address,
@@ -135,7 +135,7 @@ impl SyncEvent {
         }
     }
 
-    /// Retorna o estado correspondente ao evento
+    /// Returns the state corresponding to the event.
     pub fn state(&self) -> SyncState {
         match self {
             SyncEvent::Started { .. } => SyncState::Loading,
@@ -147,33 +147,33 @@ impl SyncEvent {
     }
 }
 
-/// Observador de sincronização
+/// Synchronization observer.
 ///
-/// Permite que componentes externos observem o progresso de sincronização
-/// através de um receiver de eventos.
+/// Allows external components to observe synchronization progress
+/// through an event receiver.
 ///
-/// # Exemplo
+/// # Example
 ///
 /// ```rust,no_run
 /// use guardian_db::reactive_synchronizer::{SyncObserver, SyncEvent};
 ///
 /// async fn monitor_sync(observer: SyncObserver) {
 ///     let mut receiver = observer.subscribe().await.unwrap();
-///     
+///
 ///     while let Ok(event) = receiver.recv().await {
 ///         match event {
 ///             SyncEvent::Started { total, .. } => {
-///                 println!("Sincronização iniciada: {} entradas", total);
+///                 println!("Synchronization started: {} entries", total);
 ///             }
 ///             SyncEvent::Progress { processed, total, .. } => {
 ///                 let pct = (processed as f64 / total as f64) * 100.0;
-///                 println!("Progresso: {:.1}% ({}/{})", pct, processed, total);
+///                 println!("Progress: {:.1}% ({}/{})", pct, processed, total);
 ///             }
 ///             SyncEvent::Ready { .. } => {
-///                 println!("Sincronização completa!");
+///                 println!("Synchronization complete!");
 ///             }
 ///             SyncEvent::Error { error, .. } => {
-///                 eprintln!("Erro: {}", error);
+///                 eprintln!("Error: {}", error);
 ///             }
 ///             _ => {}
 ///         }
@@ -186,7 +186,7 @@ pub struct SyncObserver {
 }
 
 impl SyncObserver {
-    /// Cria um novo observador de sincronização
+    /// Creates a new synchronization observer.
     pub fn new(event_bus: Arc<EventBus>, address: Arc<dyn Address + Send + Sync>) -> Self {
         Self {
             event_bus,
@@ -194,17 +194,17 @@ impl SyncObserver {
         }
     }
 
-    /// Subscreve para receber eventos de sincronização
+    /// Subscribes to receive synchronization events.
     pub async fn subscribe(&self) -> Result<broadcast::Receiver<SyncEvent>> {
         self.event_bus.subscribe::<SyncEvent>().await
     }
 
-    /// Retorna o progresso atual
+    /// Returns the current progress.
     pub async fn current_progress(&self) -> SyncProgress {
         self.progress.read().await.clone()
     }
 
-    /// Aguarda até que a sincronização esteja completa
+    /// Waits until synchronization is complete.
     pub async fn wait_for_completion(&self) -> Result<()> {
         let mut receiver = self.subscribe().await?;
 
@@ -222,7 +222,7 @@ impl SyncObserver {
         Ok(())
     }
 
-    /// Atualiza o progresso interno (chamado pelos emissores de eventos)
+    /// Updates the internal progress (called by the event emitters).
     pub(crate) async fn update_progress<F>(&self, updater: F)
     where
         F: FnOnce(&mut SyncProgress),
@@ -231,7 +231,7 @@ impl SyncObserver {
         updater(&mut progress);
     }
 
-    /// Emite evento de início de sincronização
+    /// Emits a synchronization-start event.
     pub async fn emit_started(&self, total: usize) {
         self.update_progress(|p| {
             p.total = total;
@@ -250,7 +250,7 @@ impl SyncObserver {
         }
     }
 
-    /// Emite evento de progresso
+    /// Emits a progress event.
     pub async fn emit_progress(&self, hash: Hash, entry: Entry, processed: usize, total: usize) {
         self.update_progress(|p| {
             p.processed = processed;
@@ -275,7 +275,7 @@ impl SyncObserver {
         }
     }
 
-    /// Emite evento de replicação completa
+    /// Emits a replication-complete event.
     pub async fn emit_replicated(&self, hash: Hash) {
         self.update_progress(|p| {
             p.state = SyncState::Replicating;
@@ -292,7 +292,7 @@ impl SyncObserver {
         }
     }
 
-    /// Emite evento de store pronta
+    /// Emits a store-ready event.
     pub async fn emit_ready(&self, heads: Vec<Entry>) {
         self.update_progress(|p| {
             p.state = SyncState::Completed;
@@ -309,7 +309,7 @@ impl SyncObserver {
         }
     }
 
-    /// Emite evento de erro
+    /// Emits an error event.
     pub async fn emit_error(&self, error: String) {
         self.update_progress(|p| {
             p.state = SyncState::Failed;
@@ -327,7 +327,7 @@ impl SyncObserver {
     }
 }
 
-/// Conversor de eventos do sistema antigo para o novo
+/// Converter from the old event system to the new one.
 impl From<EventLoad> for SyncEvent {
     fn from(event: EventLoad) -> Self {
         SyncEvent::Started {
@@ -360,8 +360,8 @@ impl From<EventReady> for SyncEvent {
 
 impl From<EventReplicated> for SyncEvent {
     fn from(event: EventReplicated) -> Self {
-        // EventReplicated não tem hash único, mas sim múltiplas entradas
-        // Usamos o hash da primeira entrada como representativo
+        // EventReplicated has no single hash, but rather multiple entries.
+        // We use the hash of the first entry as representative.
         let hash = event
             .entries
             .first()

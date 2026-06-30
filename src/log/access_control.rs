@@ -1,21 +1,18 @@
 use crate::log::identity::Identity;
 use crate::log::identity_provider::IdentityProvider;
 
-/// Representa uma entrada de log.
-/// Equivalente ao `LogEntry` em Go.
+/// Represents a log entry.
 pub trait LogEntry: Send + Sync {
     fn get_payload(&self) -> &[u8];
     fn get_identity(&self) -> &Identity;
 }
 
-/// Representa um contexto adicional para a verificação do append.
-/// Equivalente ao `CanAppendAdditionalContext` em Go.
+/// Represents additional context for the append check.
 pub trait CanAppendAdditionalContext: Send + Sync {
     fn get_log_entries(&self) -> Vec<Box<dyn LogEntry>>;
 }
 
-/// Equivalente ao `Interface` em Go.
-/// Define a regra de negócio para verificar se um `LogEntry` pode ser anexado.
+/// Defines the business rule for checking whether a `LogEntry` can be appended.
 pub trait CanAppend {
     fn can_append(
         &self,

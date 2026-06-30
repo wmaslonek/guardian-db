@@ -5,18 +5,19 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+/// A serializable manifest describing an access controller, persisted to Iroh.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Manifest {
-    /// O tipo do controlador de acesso (ex: "iroh", "GuardianDB").
+    /// The access controller type (e.g. "iroh", "GuardianDB").
     #[serde(rename = "type")]
     pub get_type: String,
 
-    /// Os parâmetros de configuração para este controlador de acesso.
+    /// The configuration parameters for this access controller.
     #[serde(rename = "params")]
     pub params: CreateAccessControllerOptions,
 }
 
-/// Contém as opções de configuração para um controlador de acesso.
+/// Holds the configuration options for an access controller.
 #[derive(Debug, Clone)]
 pub struct CreateAccessControllerOptions {
     pub skip_manifest: bool,
@@ -26,7 +27,7 @@ pub struct CreateAccessControllerOptions {
     access: Arc<Mutex<HashMap<String, Vec<String>>>>,
 }
 
-// Implementação manual de Serialize para sincronizar dados antes da serialização
+// Manual Serialize implementation to sync the data before serialization.
 impl Serialize for CreateAccessControllerOptions {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
@@ -35,10 +36,10 @@ impl Serialize for CreateAccessControllerOptions {
         use serde::ser::SerializeStruct;
         let mut state = serializer.serialize_struct("CreateAccessControllerOptions", 5)?;
         state.serialize_field("skip_manifest", &self.skip_manifest)?;
-        state.serialize_field("address", &hex::encode(self.address.as_bytes()))?; // Hash como hex
+        state.serialize_field("address", &hex::encode(self.address.as_bytes()))?; // Hash as hex.
         state.serialize_field("type", &self.get_type)?;
         state.serialize_field("name", &self.name)?;
-        // Serializa os dados de acesso diretamente do Mutex
+        // Serialize the access data directly from the Mutex.
         if let Ok(access_guard) = self.access.lock()
             && !access_guard.is_empty()
         {
@@ -48,7 +49,7 @@ impl Serialize for CreateAccessControllerOptions {
     }
 }
 
-// Implementação manual de Deserialize para sincronizar dados após a deserialização
+// Manual Deserialize implementation to sync the data after deserialization.
 impl<'de> Deserialize<'de> for CreateAccessControllerOptions {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
@@ -131,20 +132,30 @@ impl Default for CreateAccessControllerOptions {
     }
 }
 
-/// Define a interface para os parâmetros de um manifesto.
+/// Defines the interface for a manifest's parameters.
 pub trait ManifestParams: Send + Sync {
+    /// Whether manifest creation/resolution should be skipped.
     fn skip_manifest(&self) -> bool;
+    /// The address (hash) the manifest points to.
     fn address(&self) -> Hash;
+    /// Sets the address (hash).
     fn set_address(&mut self, addr: Hash);
+    /// The controller type.
     fn get_type(&self) -> &str;
+    /// Sets the controller type.
     fn set_type(&mut self, t: String);
+    /// The manifest name.
     fn get_name(&self) -> &str;
+    /// Sets the manifest name.
     fn set_name(&mut self, name: String);
+    /// Sets the list of allowed keys for a role.
     fn set_access(&mut self, role: String, allowed: Vec<String>);
+    /// Returns the allowed keys for a role, if any.
     fn get_access(&self, role: &str) -> Option<Vec<String>>;
+    /// Returns the full role-to-keys access map.
     fn get_all_access(&self) -> HashMap<String, Vec<String>>;
 
-    /// Permite downcast seguro para implementações concretas
+    /// Allows safe downcasting to concrete implementations.
     fn as_any(&self) -> &dyn std::any::Any;
 }
 
@@ -192,6 +203,7 @@ impl ManifestParams for CreateAccessControllerOptions {
 }
 
 impl CreateAccessControllerOptions {
+    /// Builds options with the given address, skip-manifest flag and type.
     pub fn new(address: Hash, skip_manifest: bool, manifest_type: String) -> Self {
         Self {
             address,
@@ -201,10 +213,12 @@ impl CreateAccessControllerOptions {
         }
     }
 
+    /// Builds empty options with default values.
     pub fn new_empty() -> Self {
         Default::default()
     }
 
+    /// Builds options with `skip_manifest` set and a preconfigured access map.
     pub fn new_simple(manifest_type: String, access: HashMap<String, Vec<String>>) -> Self {
         Self {
             skip_manifest: true,
@@ -214,12 +228,36 @@ impl CreateAccessControllerOptions {
         }
     }
 
+    /// Clones an existing options value.
     pub fn from_params(params: &CreateAccessControllerOptions) -> Self {
         params.clone()
     }
+
+    /// Builds access-controller options for a **read-only replication** topology.
+    ///
+    /// Only the nodes whose ids are in `writers` may write (`write` role); every node may read
+    /// and replicate (`read: ["*"]`). The ids must be the hex-encoded iroh `EndpointId` of the
+    /// writer nodes (`hex::encode(node_id.as_bytes())`), matching what the ticket exchange
+    /// compares against the TLS-authenticated requester.
+    ///
+    /// This is the recommended secure configuration for the "one/two writers, many readers"
+    /// pattern: writer nodes hand out read-only `DocTicket`s to readers (no namespace secret),
+    /// so a compromised reader cannot originate writes. Pair it with
+    /// [`crate::traits::CreateDBOptions::read_only`] on the reader nodes so they also refuse
+    /// local writes and never create their own namespace.
+    pub fn read_only_replication(writers: Vec<String>) -> Self {
+        let mut access = HashMap::new();
+        access.insert("write".to_string(), writers);
+        access.insert("read".to_string(), vec!["*".to_string()]);
+        Self::new_simple("simple".to_string(), access)
+    }
 }
 
-/// Cria um novo manifesto e retorna seu Hash.
+/// Creates a new manifest and returns its Hash.
+///
+/// When `skip_manifest` is set, the existing address is returned without
+/// persisting anything; otherwise the manifest is serialized to CBOR and stored
+/// in Iroh.
 pub async fn create(
     client: Arc<IrohClient>,
     controller_type: String,
@@ -229,7 +267,7 @@ pub async fn create(
         return Ok(params.address());
     }
 
-    // Valida que o controller_type não está vazio
+    // Validate that controller_type is not empty.
     if controller_type.is_empty() {
         return Err(GuardianError::Store(
             "Controller type cannot be empty".to_string(),
@@ -247,29 +285,29 @@ pub async fn create(
         },
     };
 
-    // Serializa o manifesto em CBOR
+    // Serialize the manifest to CBOR.
     let cbor_data = serde_cbor::to_vec(&manifest)
         .map_err(|e| GuardianError::Store(format!("Failed to serialize manifest: {}", e)))?;
 
-    // Valida que os dados serializados não estão vazios
+    // Validate that the serialized data is not empty.
     if cbor_data.is_empty() {
         return Err(GuardianError::Store(
             "Serialized manifest is empty".to_string(),
         ));
     }
 
-    // Armazena no iroh usando o cliente nativo
+    // Store it in Iroh using the native client.
     let response = client
         .add_bytes(cbor_data)
         .await
         .map_err(|e| GuardianError::Store(format!("Failed to store manifest in iroh: {}", e)))?;
 
-    // Valida que o iroh retornou um hash válido
+    // Validate that Iroh returned a valid hash.
     if response.hash.is_empty() {
         return Err(GuardianError::Store("iroh returned empty hash".to_string()));
     }
 
-    // Converte o hash hex string para Hash
+    // Convert the hex hash string into a Hash.
     let hash_bytes = hex::decode(&response.hash)
         .map_err(|e| GuardianError::Store(format!("Invalid hex hash returned from iroh: {}", e)))?;
 
@@ -287,7 +325,11 @@ pub async fn create(
     Ok(hash)
 }
 
-/// Recupera um manifesto a partir do seu endereço.
+/// Resolves a manifest from its address.
+///
+/// When `skip_manifest` is set, an in-memory manifest is returned directly from
+/// the params (the controller type is required in that case); otherwise the
+/// manifest is fetched from Iroh and deserialized from CBOR.
 pub async fn resolve(
     client: Arc<IrohClient>,
     manifest_address: &str,
@@ -296,7 +338,7 @@ pub async fn resolve(
     if params.skip_manifest() {
         if params.get_type().is_empty() {
             return Err(GuardianError::Store(
-                "Sem manifesto, o tipo do controlador de acesso é obrigatório".to_string(),
+                "Without a manifest, the access controller type is required".to_string(),
             ));
         }
 
@@ -306,38 +348,38 @@ pub async fn resolve(
         });
     }
 
-    // Valida que o endereço não está vazio
+    // Validate that the address is not empty.
     if manifest_address.is_empty() {
         return Err(GuardianError::Store(
             "Manifest address cannot be empty".to_string(),
         ));
     }
 
-    // Remove o prefixo /iroh/ se existir
+    // Strip the /iroh/ prefix if present.
     let hash_str = if let Some(stripped) = manifest_address.strip_prefix("/iroh/") {
         stripped
     } else {
         manifest_address
     };
 
-    // Busca os dados do manifesto no iroh usando hash hex
+    // Fetch the manifest data from Iroh using the hex hash.
     let data_bytes = client
         .cat_bytes(hash_str)
         .await
         .map_err(|e| GuardianError::Store(format!("Failed to load manifest from Iroh: {}", e)))?;
 
-    // Valida que os dados não estão vazios
+    // Validate that the data is not empty.
     if data_bytes.is_empty() {
         return Err(GuardianError::Store(
             "Retrieved manifest data is empty".to_string(),
         ));
     }
 
-    // Deserializa o manifesto a partir dos dados CBOR
+    // Deserialize the manifest from the CBOR data.
     let manifest: Manifest = serde_cbor::from_slice(&data_bytes)
         .map_err(|e| GuardianError::Store(format!("Failed to deserialize manifest: {}", e)))?;
 
-    // Validação adicional do manifesto
+    // Additional manifest validation.
     if manifest.get_type.is_empty() {
         return Err(GuardianError::Store(
             "Manifest type cannot be empty".to_string(),
@@ -347,12 +389,12 @@ pub async fn resolve(
     Ok(manifest)
 }
 
-/// Função utilitária para criar e validar um manifesto
+/// Utility function to create and validate a manifest.
 pub fn create_manifest_with_validation(
     controller_type: String,
     params: CreateAccessControllerOptions,
 ) -> Result<Manifest> {
-    // Validações básicas
+    // Basic validations.
     if controller_type.is_empty() {
         return Err(GuardianError::Store(
             "Controller type cannot be empty".to_string(),
@@ -365,7 +407,7 @@ pub fn create_manifest_with_validation(
         ));
     }
 
-    // Valida que o tipo é um dos tipos conhecidos
+    // Validate that the type is one of the known types.
     let valid_types = ["iroh", "GuardianDB", "simple"];
     if !valid_types.contains(&controller_type.as_str()) {
         return Err(GuardianError::Store(format!(

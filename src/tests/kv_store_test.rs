@@ -544,4 +544,204 @@ mod tests {
             assert_eq!(retrieved_str, value);
         }
     }
+
+    // ===== Phase 2: read-only replica enforcement =====
+
+    /// A read-only node must never create a namespace: with no ticket and no cached namespace,
+    /// opening read-only must fail (fail-closed) instead of minting its own write secret.
+    #[tokio::test]
+    async fn test_read_only_store_cannot_create_namespace() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let client_config = ClientConfig {
+            data_store_path: Some(temp_dir.path().to_path_buf()),
+            ..ClientConfig::development()
+        };
+        let client = Arc::new(IrohClient::new(client_config).await.expect("client"));
+        let identity = test_identity();
+        let address = test_address().await;
+
+        let options = NewStoreOptions {
+            event_bus: Some(EventBus::new()),
+            directory: temp_dir.path().join("cache").to_string_lossy().to_string(),
+            read_only: Some(true),
+            ..Default::default()
+        };
+
+        let result = GuardianDBKeyValue::new(client, identity, address, Some(options)).await;
+        assert!(
+            result.is_err(),
+            "Read-only store with no namespace to import must fail, not create one"
+        );
+    }
+
+    /// A replica reopened as read-only over an existing (write-capable) namespace must reject
+    /// local writes, so a compromised reader cannot originate put/delete operations.
+    #[tokio::test]
+    async fn test_reopened_read_only_replica_rejects_writes() {
+        use crate::traits::Store;
+
+        let temp_dir = TempDir::new().expect("temp dir");
+        let cache_dir = temp_dir.path().join("cache").to_string_lossy().to_string();
+        let client_config = ClientConfig {
+            data_store_path: Some(temp_dir.path().to_path_buf()),
+            ..ClientConfig::development()
+        };
+        let client = Arc::new(IrohClient::new(client_config).await.expect("client"));
+        let identity = test_identity();
+        let address = test_address().await;
+
+        // 1) Create a writable store and write a key, then close it.
+        {
+            let opts = NewStoreOptions {
+                event_bus: Some(EventBus::new()),
+                directory: cache_dir.clone(),
+                ..Default::default()
+            };
+            let store = GuardianDBKeyValue::new(
+                client.clone(),
+                identity.clone(),
+                address.clone(),
+                Some(opts),
+            )
+            .await
+            .expect("create writable store");
+            assert!(
+                store.is_writable(),
+                "freshly created store must be writable"
+            );
+            store
+                .put_impl("k", b"v".to_vec())
+                .await
+                .expect("write should succeed on writable store");
+            store.close().await.expect("close writable store");
+        }
+
+        // 2) Reopen the SAME namespace as read-only.
+        let opts_ro = NewStoreOptions {
+            event_bus: Some(EventBus::new()),
+            directory: cache_dir.clone(),
+            read_only: Some(true),
+            ..Default::default()
+        };
+        let ro = GuardianDBKeyValue::new(client, identity, address, Some(opts_ro))
+            .await
+            .expect("reopen read-only");
+
+        assert!(
+            !ro.is_writable(),
+            "reopened read-only replica must not be writable"
+        );
+        assert!(
+            ro.put_impl("k2", b"v2".to_vec()).await.is_err(),
+            "put must be rejected on a read-only replica"
+        );
+        assert!(
+            ro.delete_impl("k").await.is_err(),
+            "delete must be rejected on a read-only replica"
+        );
+    }
+
+    /// Phase 4: the rotation state-copy helper migrates all key/value pairs into a fresh
+    /// (new-namespace) store, which is how a compromised writer is truly revoked.
+    #[tokio::test]
+    async fn test_rotation_copies_all_key_value_state() {
+        use crate::traits::KeyValueStore;
+
+        // Source store (the "old namespace") with some state.
+        let (src, _src_dir) = create_test_store()
+            .await
+            .expect("Failed to create source store");
+        src.put_impl("a", b"1".to_vec()).await.expect("put a");
+        src.put_impl("b", b"2".to_vec()).await.expect("put b");
+        src.put_impl("c", b"3".to_vec()).await.expect("put c");
+
+        // Destination store (a fresh "new namespace").
+        let (dst, _dst_dir) = create_test_store()
+            .await
+            .expect("Failed to create destination store");
+        assert!(dst.is_empty(), "fresh destination should start empty");
+
+        let copied = crate::rotation::copy_key_value_state(
+            &src as &dyn KeyValueStore<Error = crate::guardian::error::GuardianError>,
+            &dst as &dyn KeyValueStore<Error = crate::guardian::error::GuardianError>,
+        )
+        .await
+        .expect("rotation copy should succeed");
+
+        assert_eq!(copied, 3, "all three keys should be copied");
+
+        let dst_state = dst.all();
+        assert_eq!(dst_state.len(), 3);
+        assert_eq!(
+            dst_state.get("a").map(|v| v.as_slice()),
+            Some(b"1".as_ref())
+        );
+        assert_eq!(
+            dst_state.get("b").map(|v| v.as_slice()),
+            Some(b"2".as_ref())
+        );
+        assert_eq!(
+            dst_state.get("c").map(|v| v.as_slice()),
+            Some(b"3".as_ref())
+        );
+    }
+
+    /// Rotation into a read-only destination must fail (you cannot migrate state into a
+    /// replica that holds no write secret).
+    #[tokio::test]
+    async fn test_rotation_into_read_only_destination_fails() {
+        use crate::traits::KeyValueStore;
+
+        let temp_dir = TempDir::new().expect("temp dir");
+        let cache_dir = temp_dir.path().join("cache").to_string_lossy().to_string();
+        let client_config = ClientConfig {
+            data_store_path: Some(temp_dir.path().to_path_buf()),
+            ..ClientConfig::development()
+        };
+        let client = Arc::new(IrohClient::new(client_config).await.expect("client"));
+        let identity = test_identity();
+        let address = test_address().await;
+
+        // Establish a writable namespace, write a key, then close it.
+        {
+            let opts = NewStoreOptions {
+                event_bus: Some(EventBus::new()),
+                directory: cache_dir.clone(),
+                ..Default::default()
+            };
+            let w = GuardianDBKeyValue::new(
+                client.clone(),
+                identity.clone(),
+                address.clone(),
+                Some(opts),
+            )
+            .await
+            .expect("create writable");
+            w.put_impl("seed", b"x".to_vec()).await.expect("seed write");
+            crate::traits::Store::close(&w).await.expect("close");
+        }
+        // Reopen the same namespace as read-only.
+        let ro_opts = NewStoreOptions {
+            event_bus: Some(EventBus::new()),
+            directory: cache_dir.clone(),
+            read_only: Some(true),
+            ..Default::default()
+        };
+        let dst_ro = GuardianDBKeyValue::new(client, identity, address, Some(ro_opts))
+            .await
+            .expect("reopen read-only");
+
+        let (src, _src_dir) = create_test_store().await.expect("source");
+        src.put_impl("a", b"1".to_vec()).await.expect("put a");
+
+        let result = crate::rotation::copy_key_value_state(
+            &src as &dyn KeyValueStore<Error = crate::guardian::error::GuardianError>,
+            &dst_ro as &dyn KeyValueStore<Error = crate::guardian::error::GuardianError>,
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "rotation into a read-only destination must fail"
+        );
+    }
 }

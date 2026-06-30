@@ -14,6 +14,8 @@ pub const IN_MEMORY_DIRECTORY: &str = ":memory:";
 
 const LEVEL_DOWN_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("level_down");
 
+/// A single redb-backed cache instance, keyed by its datastore path and
+/// tracked by the owning `LevelDownCache` manager.
 pub struct WrappedCache {
     id: String,
     db: Database,
@@ -24,6 +26,7 @@ pub struct WrappedCache {
 }
 
 impl WrappedCache {
+    /// Returns the value stored under `key`, or an error if it is missing.
     #[instrument(level = "debug", skip(self, _ctx))]
     pub fn get(
         &self,
@@ -38,6 +41,7 @@ impl WrappedCache {
         }
     }
 
+    /// Returns whether a value exists under `key`.
     pub fn has(
         &self,
         _ctx: &mut dyn core::any::Any,
@@ -48,6 +52,7 @@ impl WrappedCache {
         Ok(table.get(key.as_bytes().as_slice())?.is_some())
     }
 
+    /// Returns the byte length of the value stored under `key`.
     pub fn get_size(
         &self,
         _ctx: &mut dyn core::any::Any,
@@ -61,6 +66,8 @@ impl WrappedCache {
         Ok(v.value().len())
     }
 
+    /// Runs a query against the cache, supporting optional prefix filtering,
+    /// offset, limit and ordering.
     pub fn query(
         &self,
         _ctx: &mut dyn core::any::Any,
@@ -131,6 +138,7 @@ impl WrappedCache {
         Ok(items)
     }
 
+    /// Stores `value` under `key`, committing the write transaction.
     #[instrument(level = "debug", skip(self, _ctx, value))]
     pub fn put(
         &self,
@@ -147,6 +155,7 @@ impl WrappedCache {
         Ok(())
     }
 
+    /// Removes the value stored under `key`, committing the write transaction.
     pub fn delete(
         &self,
         _ctx: &mut dyn core::any::Any,
@@ -161,6 +170,7 @@ impl WrappedCache {
         Ok(())
     }
 
+    /// No-op flush: data is already persisted via redb write transactions.
     pub fn sync(
         &self,
         _ctx: &mut dyn core::any::Any,
@@ -170,6 +180,7 @@ impl WrappedCache {
         Ok(())
     }
 
+    /// Closes the cache and unregisters it from the manager map (idempotent).
     #[instrument(level = "debug", skip(self))]
     pub fn close(&self) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut closed = self.closed.lock().unwrap();
@@ -192,12 +203,13 @@ impl WrappedCache {
 unsafe impl Send for WrappedCache {}
 unsafe impl Sync for WrappedCache {}
 
-// Wrapper para adaptar WrappedCache ao trait Datastore
+/// Wrapper that adapts a `WrappedCache` to the `Datastore` trait.
 pub struct DatastoreWrapper {
     cache: Arc<WrappedCache>,
 }
 
 impl DatastoreWrapper {
+    /// Wraps a shared `WrappedCache` in the adapter.
     pub fn new(cache: Arc<WrappedCache>) -> Self {
         Self { cache }
     }
@@ -252,7 +264,7 @@ impl Datastore for DatastoreWrapper {
 
     #[instrument(level = "debug", skip(self, prefix))]
     async fn list_keys(&self, prefix: &[u8]) -> Result<Vec<Key>> {
-        // Converte o prefixo em bytes para uma Query com prefixo
+        // Convert the byte prefix into a prefix Query.
         let prefix_str = String::from_utf8_lossy(prefix);
         let prefix_key = Key::new(prefix_str.to_string());
 
@@ -269,7 +281,7 @@ impl Datastore for DatastoreWrapper {
             .query(&mut any_ctx, &query)
             .map_err(|e| GuardianError::Other(format!("Cache list_keys error: {}", e)))?;
 
-        // Extrai apenas as chaves dos resultados
+        // Extract only the keys from the results.
         Ok(results.into_iter().map(|item| item.key).collect())
     }
 
@@ -278,12 +290,15 @@ impl Datastore for DatastoreWrapper {
     }
 }
 
+/// Cache manager that owns a set of `WrappedCache` instances keyed by their
+/// datastore path, and implements the `Cache` trait.
 pub struct LevelDownCache {
     span: Span,
     caches: Arc<Mutex<HashMap<String, Arc<WrappedCache>>>>,
 }
 
 impl LevelDownCache {
+    /// Creates a new, empty cache manager.
     #[instrument(level = "debug")]
     pub fn new(_opts: Option<&Options>) -> Self {
         Self {
@@ -292,11 +307,13 @@ impl LevelDownCache {
         }
     }
 
-    /// Retorna uma referência ao span de tracing para instrumentação
+    /// Returns a reference to the tracing span used for instrumentation.
     pub fn span(&self) -> &Span {
         &self.span
     }
 
+    /// Loads (or creates) the `WrappedCache` for a directory and address,
+    /// reusing an existing instance on a cache hit.
     #[instrument(level = "debug", skip(self, db_address))]
     pub fn load_internal(
         &self,
@@ -346,6 +363,7 @@ impl LevelDownCache {
         Ok(wrapped)
     }
 
+    /// Closes every cache instance owned by this manager.
     #[instrument(level = "debug", skip(self))]
     pub fn close_internal(
         &self,
@@ -361,6 +379,8 @@ impl LevelDownCache {
         Ok(())
     }
 
+    /// Closes and removes the cache for a directory/address, deleting its file
+    /// from disk when it is not an in-memory cache.
     #[instrument(level = "debug", skip(self, db_address))]
     pub fn destroy_internal(
         &self,
@@ -370,7 +390,7 @@ impl LevelDownCache {
         let _entered = self.span.enter();
         let key_path = datastore_key(directory, db_address);
 
-        // fecha e remove do mapa
+        // Close it and remove it from the map.
         if let Some(c) = self.caches.lock().unwrap().remove(&key_path) {
             let _ = c.close();
         }
@@ -383,7 +403,7 @@ impl LevelDownCache {
     }
 }
 
-// Implementação do trait Cache para LevelDownCache
+// Cache trait implementation for LevelDownCache.
 impl Cache for LevelDownCache {
     #[instrument(level = "info", skip(self, db_address))]
     fn load(
@@ -422,6 +442,8 @@ impl Cache for LevelDownCache {
     }
 }
 
+/// Builds the on-disk/in-memory key path for a datastore from its directory and
+/// database address (root hash joined with the address path).
 fn datastore_key(directory: &str, db_address: &dyn Address) -> String {
     let db_path = PathBuf::from(db_address.get_root().to_string()).join(db_address.get_path());
     PathBuf::from(directory)
@@ -445,8 +467,8 @@ mod tests {
 
     impl MockAddress {
         fn new(root_str: &str, path: &str) -> Self {
-            // Create a Hash from the root string for more meaningful testing
-            // Para teste, vamos usar um Hash baseado no root_str
+            // Create a Hash from the root string for more meaningful testing.
+            // For the test, use a Hash derived from root_str.
             use blake3;
             let hash_bytes: [u8; 32] = blake3::hash(root_str.as_bytes()).into();
             let hash = iroh_blobs::Hash::from(hash_bytes);
@@ -537,7 +559,7 @@ mod tests {
         let mock_address = MockAddress::new("root", "path/to/db");
         let key = datastore_key("/cache", &mock_address);
 
-        // Debug: vamos ver o que está sendo gerado
+        // Debug: inspect what is being generated.
         println!("Generated key: {}", key);
         println!("Root Hash: {}", mock_address.get_root());
         println!("Path: {}", mock_address.get_path());

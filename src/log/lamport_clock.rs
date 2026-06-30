@@ -65,22 +65,10 @@ impl Eq for LamportClock {}
 
 impl Ord for LamportClock {
     fn cmp(&self, other: &Self) -> Ordering {
-        let delta = self.time as i64 - other.time as i64;
-        if delta == 0 && self.id != other.id {
-            if self.id < other.id {
-                Ordering::Less
-            } else {
-                Ordering::Greater
-            }
-        } else if delta < 0 {
-            Ordering::Less
-        } else if delta > 0 {
-            Ordering::Greater
-        }
-        //is this necessary/hoped for?
-        else {
-            Ordering::Equal
-        }
+        // Order by Lamport time first, then break ties by id.
+        self.time
+            .cmp(&other.time)
+            .then_with(|| self.id.cmp(&other.id))
     }
 }
 

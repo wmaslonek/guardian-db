@@ -3,7 +3,7 @@ use guardian_db::guardian::GuardianDB;
 use guardian_db::guardian::core::NewGuardianDBOptions;
 use guardian_db::p2p::network::client::IrohClient;
 use guardian_db::p2p::network::config::ClientConfig;
-use iroh::NodeAddr;
+use iroh::{EndpointAddr as NodeAddr, TransportAddr};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -77,7 +77,10 @@ impl TestNode {
             .iter()
             .filter_map(|addr| addr.parse().ok())
             .collect();
-        Ok(NodeAddr::from_parts(node_id, None, addrs))
+        Ok(NodeAddr::from_parts(
+            node_id,
+            addrs.into_iter().map(TransportAddr::Ip),
+        ))
     }
 }
 

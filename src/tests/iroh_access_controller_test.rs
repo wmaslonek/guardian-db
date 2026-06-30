@@ -235,7 +235,7 @@ async fn test_can_append_unauthorized_user() {
     assert!(result.is_err());
     let error_msg = format!("{}", result.unwrap_err());
     assert!(
-        error_msg.contains("não tem permissão de escrita")
+        error_msg.contains("does not have write permission")
             || error_msg.contains("not authorized for write")
     );
 }

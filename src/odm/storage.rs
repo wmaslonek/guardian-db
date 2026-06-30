@@ -11,16 +11,21 @@ use std::sync::Arc;
 /// decentralized DocumentStore or a deterministic in-memory store for tests.
 #[async_trait]
 pub trait CollectionStorage: Send + Sync {
+    /// Loads every persisted document into memory.
     async fn load_all(&self) -> Result<Vec<Value>>;
+    /// Persists a single document under the given id.
     async fn write_one(&self, id: &str, document: &Value) -> Result<()>;
+    /// Persists multiple documents in one batch.
     async fn write_many(&self, documents: &[(String, Value)]) -> Result<()>;
 }
 
+/// `CollectionStorage` backed by GuardianDB's decentralized `DocumentStore`.
 pub struct DocumentStoreStorage {
     store: Arc<dyn DocumentStore<Error = GuardianError>>,
 }
 
 impl DocumentStoreStorage {
+    /// Wraps a GuardianDB `DocumentStore` as ODM collection storage.
     pub fn new(store: Arc<dyn DocumentStore<Error = GuardianError>>) -> Self {
         Self { store }
     }
@@ -65,6 +70,8 @@ impl CollectionStorage for DocumentStoreStorage {
     }
 }
 
+/// Clones a document and ensures it carries an `_id` field set to `id`, so the
+/// storage layer always has a stable key. Errors if the document is not a JSON object.
 fn storage_document(id: &str, document: &Value) -> Result<Value> {
     let mut document = document.clone();
     let object = document
@@ -87,10 +94,12 @@ pub struct MemoryStorage {
 }
 
 impl MemoryStorage {
+    /// Creates an empty in-memory storage.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Returns a clone of the current document map for inspection in tests.
     pub fn snapshot(&self) -> BTreeMap<String, Value> {
         self.documents.read().clone()
     }

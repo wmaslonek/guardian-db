@@ -7,78 +7,76 @@ use std::sync::Arc;
 
 const KEYSTORE_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("keystore");
 
-/// Implementação de Keystore que usa redb como backend de persistência
-/// e é compatível com a interface do 'log' interno.
+/// Keystore implementation that uses redb as the persistence backend
+/// and is compatible with the internal 'log' interface.
 #[derive(Debug)]
 pub struct RedbKeystore {
     db: Database,
 }
 
-// Send + Sync is safe because redb::Database is thread-safe
+// Send + Sync is safe because redb::Database is thread-safe.
 unsafe impl Send for RedbKeystore {}
 unsafe impl Sync for RedbKeystore {}
 
 impl RedbKeystore {
-    /// Cria um novo RedbKeystore
-    /// Se path for None, cria um banco em memória temporário
+    /// Creates a new RedbKeystore.
+    /// If path is None, creates a temporary in-memory database.
     pub fn new(path: Option<std::path::PathBuf>) -> Result<Self> {
         let db = match path {
             Some(p) => {
                 if let Some(parent) = p.parent() {
                     std::fs::create_dir_all(parent).map_err(|e| {
-                        GuardianError::Other(format!("Erro ao criar diretório: {}", e))
+                        GuardianError::Other(format!("Error creating directory: {}", e))
                     })?;
                 }
                 Database::create(&p)
-                    .map_err(|e| GuardianError::Other(format!("Erro ao abrir redb: {}", e)))?
+                    .map_err(|e| GuardianError::Other(format!("Error opening redb: {}", e)))?
             }
             None => Database::builder()
                 .create_with_backend(redb::backends::InMemoryBackend::new())
                 .map_err(|e| {
-                    GuardianError::Other(format!("Erro ao criar redb temporário: {}", e))
+                    GuardianError::Other(format!("Error creating temporary redb: {}", e))
                 })?,
         };
 
-        // Ensure table exists
+        // Ensure the table exists.
         {
             let write_txn = db
                 .begin_write()
-                .map_err(|e| GuardianError::Other(format!("Erro ao iniciar transação: {}", e)))?;
+                .map_err(|e| GuardianError::Other(format!("Error starting transaction: {}", e)))?;
             {
                 let _ = write_txn
                     .open_table(KEYSTORE_TABLE)
-                    .map_err(|e| GuardianError::Other(format!("Erro ao criar tabela: {}", e)))?;
+                    .map_err(|e| GuardianError::Other(format!("Error creating table: {}", e)))?;
             }
             write_txn
                 .commit()
-                .map_err(|e| GuardianError::Other(format!("Erro ao commitar tabela: {}", e)))?;
+                .map_err(|e| GuardianError::Other(format!("Error committing table: {}", e)))?;
         }
 
         Ok(Self { db })
     }
 
-    /// Cria um keystore temporário em memória para testes
+    /// Creates a temporary in-memory keystore for testing.
     pub fn temporary() -> Result<Self> {
         Self::new(None)
     }
 
-    /// Armazena uma SecretKey do Iroh como bytes
+    /// Stores an Iroh SecretKey as bytes.
     pub async fn put_keypair(&self, key: &str, secret_key: &SecretKey) -> Result<()> {
         let encoded = secret_key.to_bytes();
         self.put(key, &encoded).await
     }
 
-    /// Recupera uma SecretKey do Iroh de bytes
+    /// Retrieves an Iroh SecretKey from bytes.
     pub async fn get_keypair(&self, key: &str) -> Result<Option<SecretKey>> {
         match self.get(key).await? {
             Some(bytes) => {
                 if bytes.len() != 32 {
-                    return Err(GuardianError::Other(
-                        "Tamanho inválido de chave secreta".to_string(),
-                    ));
+                    return Err(GuardianError::Other("Invalid secret key size".to_string()));
                 }
                 let secret_key = SecretKey::try_from(&bytes[..32]).map_err(|e| {
-                    GuardianError::Other(format!("Erro ao decodificar secret key: {}", e))
+                    GuardianError::Other(format!("Error decoding secret key: {}", e))
                 })?;
                 Ok(Some(secret_key))
             }
@@ -86,31 +84,31 @@ impl RedbKeystore {
         }
     }
 
-    /// Lista todas as chaves armazenadas
+    /// Lists all stored keys.
     pub async fn list_keys(&self) -> Result<Vec<String>> {
         let read_txn = self
             .db
             .begin_read()
-            .map_err(|e| GuardianError::Other(format!("Erro ao iniciar leitura: {}", e)))?;
+            .map_err(|e| GuardianError::Other(format!("Error starting read: {}", e)))?;
         let table = read_txn
             .open_table(KEYSTORE_TABLE)
-            .map_err(|e| GuardianError::Other(format!("Erro ao abrir tabela: {}", e)))?;
+            .map_err(|e| GuardianError::Other(format!("Error opening table: {}", e)))?;
 
         let mut keys = Vec::new();
         let iter = table
             .iter()
-            .map_err(|e| GuardianError::Other(format!("Erro ao iterar: {}", e)))?;
+            .map_err(|e| GuardianError::Other(format!("Error iterating: {}", e)))?;
 
         for entry_result in iter {
             let entry = entry_result
-                .map_err(|e| GuardianError::Other(format!("Erro ao listar chaves: {}", e)))?;
+                .map_err(|e| GuardianError::Other(format!("Error listing keys: {}", e)))?;
             keys.push(entry.0.value().to_string());
         }
 
         Ok(keys)
     }
 
-    /// Fecha o banco de dados
+    /// Closes the database.
     pub async fn close(&self) -> Result<()> {
         // Data is already persisted via write transactions in redb.
         Ok(())
@@ -139,18 +137,18 @@ impl KeystoreInterface for RedbKeystore {
         let write_txn = self
             .db
             .begin_write()
-            .map_err(|e| GuardianError::Other(format!("Erro ao inserir no keystore: {}", e)))?;
+            .map_err(|e| GuardianError::Other(format!("Error inserting into keystore: {}", e)))?;
         {
             let mut table = write_txn
                 .open_table(KEYSTORE_TABLE)
-                .map_err(|e| GuardianError::Other(format!("Erro ao abrir tabela: {}", e)))?;
-            table
-                .insert(key, value)
-                .map_err(|e| GuardianError::Other(format!("Erro ao inserir no keystore: {}", e)))?;
+                .map_err(|e| GuardianError::Other(format!("Error opening table: {}", e)))?;
+            table.insert(key, value).map_err(|e| {
+                GuardianError::Other(format!("Error inserting into keystore: {}", e))
+            })?;
         }
         write_txn
             .commit()
-            .map_err(|e| GuardianError::Other(format!("Erro ao commitar inserção: {}", e)))?;
+            .map_err(|e| GuardianError::Other(format!("Error committing insertion: {}", e)))?;
         Ok(())
     }
 
@@ -158,32 +156,33 @@ impl KeystoreInterface for RedbKeystore {
         let read_txn = self
             .db
             .begin_read()
-            .map_err(|e| GuardianError::Other(format!("Erro ao recuperar do keystore: {}", e)))?;
+            .map_err(|e| GuardianError::Other(format!("Error retrieving from keystore: {}", e)))?;
         let table = read_txn
             .open_table(KEYSTORE_TABLE)
-            .map_err(|e| GuardianError::Other(format!("Erro ao abrir tabela: {}", e)))?;
+            .map_err(|e| GuardianError::Other(format!("Error opening table: {}", e)))?;
         match table.get(key) {
             Ok(Some(value)) => Ok(Some(value.value().to_vec())),
             Ok(None) => Ok(None),
             Err(e) => Err(GuardianError::Other(format!(
-                "Erro ao recuperar do keystore: {}",
+                "Error retrieving from keystore: {}",
                 e
             ))),
         }
     }
 
     async fn has(&self, key: &str) -> Result<bool> {
-        let read_txn = self.db.begin_read().map_err(|e| {
-            GuardianError::Other(format!("Erro ao verificar chave no keystore: {}", e))
-        })?;
+        let read_txn = self
+            .db
+            .begin_read()
+            .map_err(|e| GuardianError::Other(format!("Error checking key in keystore: {}", e)))?;
         let table = read_txn
             .open_table(KEYSTORE_TABLE)
-            .map_err(|e| GuardianError::Other(format!("Erro ao abrir tabela: {}", e)))?;
+            .map_err(|e| GuardianError::Other(format!("Error opening table: {}", e)))?;
         match table.get(key) {
             Ok(Some(_)) => Ok(true),
             Ok(None) => Ok(false),
             Err(e) => Err(GuardianError::Other(format!(
-                "Erro ao verificar chave no keystore: {}",
+                "Error checking key in keystore: {}",
                 e
             ))),
         }
@@ -193,23 +192,23 @@ impl KeystoreInterface for RedbKeystore {
         let write_txn = self
             .db
             .begin_write()
-            .map_err(|e| GuardianError::Other(format!("Erro ao remover do keystore: {}", e)))?;
+            .map_err(|e| GuardianError::Other(format!("Error removing from keystore: {}", e)))?;
         {
             let mut table = write_txn
                 .open_table(KEYSTORE_TABLE)
-                .map_err(|e| GuardianError::Other(format!("Erro ao abrir tabela: {}", e)))?;
-            table
-                .remove(key)
-                .map_err(|e| GuardianError::Other(format!("Erro ao remover do keystore: {}", e)))?;
+                .map_err(|e| GuardianError::Other(format!("Error opening table: {}", e)))?;
+            table.remove(key).map_err(|e| {
+                GuardianError::Other(format!("Error removing from keystore: {}", e))
+            })?;
         }
         write_txn
             .commit()
-            .map_err(|e| GuardianError::Other(format!("Erro ao commitar remoção: {}", e)))?;
+            .map_err(|e| GuardianError::Other(format!("Error committing removal: {}", e)))?;
         Ok(())
     }
 }
 
-/// Factory function para criar keystores baseados em configuração
+/// Factory function to create keystores based on configuration.
 pub fn create_keystore(
     directory: Option<std::path::PathBuf>,
 ) -> Result<Arc<dyn KeystoreInterface + Send + Sync>> {
@@ -217,7 +216,7 @@ pub fn create_keystore(
     Ok(Arc::new(keystore))
 }
 
-/// Cria um keystore temporário em memória
+/// Creates a temporary in-memory keystore.
 pub fn create_temp_keystore() -> Result<Arc<dyn KeystoreInterface + Send + Sync>> {
     let keystore = RedbKeystore::temporary()?;
     Ok(Arc::new(keystore))
@@ -250,13 +249,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_keypair_storage() {
-        use rand_core::OsRng;
-
         let keystore = RedbKeystore::temporary().unwrap();
         let key_name = "test_keypair";
 
         // Generate a secret key
-        let original_secret = SecretKey::generate(OsRng);
+        let original_secret = SecretKey::generate();
 
         // Store it
         keystore

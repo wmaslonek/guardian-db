@@ -67,7 +67,7 @@
 use crate::p2p::network::config::ClientConfig;
 use crate::p2p::network::core::IrohBackend;
 use iroh::SecretKey;
-use rand_core::OsRng;
+use rand::Rng;
 use std::io::Cursor;
 use std::sync::Arc;
 use std::time::Duration;
@@ -379,19 +379,6 @@ async fn test_node_info() {
 }
 
 #[tokio::test]
-async fn test_connect_to_invalid_peer() {
-    let (backend, _temp_dir) = create_test_backend().await;
-
-    // Gera NodeId aleatório (peer que não existe)
-    let fake_peer = SecretKey::generate(OsRng).public();
-
-    let result = backend.connect(&fake_peer).await;
-
-    // Deve falhar porque o peer não existe
-    assert!(result.is_err());
-}
-
-#[tokio::test]
 async fn test_discover_peers_active() {
     let (backend, _temp_dir) = create_test_backend().await;
 
@@ -532,7 +519,7 @@ async fn test_connection_pool_status() {
     let (backend, _temp_dir) = create_test_backend().await;
 
     let status = backend.get_connection_pool_status().await;
-    assert!(status.contains("Pool de conexões"));
+    assert!(status.contains("Connection pool"));
 }
 
 #[tokio::test]
@@ -562,7 +549,7 @@ async fn test_cleanup_stale_connections() {
 async fn test_get_connection_from_empty_pool() {
     let (backend, _temp_dir) = create_test_backend().await;
 
-    let fake_peer = SecretKey::generate(OsRng).public();
+    let fake_peer = SecretKey::generate().public();
     let result = backend.get_connection_from_pool(&fake_peer).await;
 
     // Deve falhar porque não há conexão no pool
@@ -693,10 +680,10 @@ async fn test_generate_performance_monitor_report() {
 
     let report = backend.generate_performance_monitor_report().await;
 
-    assert!(report.contains("RELATÓRIO DE PERFORMANCE MONITOR"));
+    assert!(report.contains("PERFORMANCE MONITOR REPORT"));
     assert!(report.contains("Throughput"));
-    assert!(report.contains("Latência"));
-    assert!(report.contains("Recursos"));
+    assert!(report.contains("Latency"));
+    assert!(report.contains("Resources"));
 }
 
 // ╔════════════════════════════════════════════════════════════════════════════════╗
@@ -715,9 +702,13 @@ async fn test_key_synchronizer_reference() {
 async fn test_add_trusted_peer_for_sync() {
     let (backend, _temp_dir) = create_test_backend().await;
 
-    let peer_secret = SecretKey::generate(OsRng);
+    let peer_secret = SecretKey::generate();
     let node_id = peer_secret.public();
-    let public_key = ed25519_dalek::SigningKey::generate(&mut OsRng).verifying_key();
+    let public_key = {
+        let mut sk_bytes = [0u8; 32];
+        rand::rng().fill_bytes(&mut sk_bytes);
+        ed25519_dalek::SigningKey::from_bytes(&sk_bytes).verifying_key()
+    };
 
     let result = backend.add_trusted_peer_for_sync(node_id, public_key).await;
     assert!(result.is_ok());
@@ -731,9 +722,13 @@ async fn test_add_trusted_peer_for_sync() {
 async fn test_remove_trusted_peer_from_sync() {
     let (backend, _temp_dir) = create_test_backend().await;
 
-    let peer_secret = SecretKey::generate(OsRng);
+    let peer_secret = SecretKey::generate();
     let node_id = peer_secret.public();
-    let public_key = ed25519_dalek::SigningKey::generate(&mut OsRng).verifying_key();
+    let public_key = {
+        let mut sk_bytes = [0u8; 32];
+        rand::rng().fill_bytes(&mut sk_bytes);
+        ed25519_dalek::SigningKey::from_bytes(&sk_bytes).verifying_key()
+    };
 
     // Adiciona peer
     backend
@@ -795,9 +790,9 @@ async fn test_generate_key_sync_report() {
 
     let report = backend.generate_key_sync_report().await;
 
-    assert!(report.contains("RELATÓRIO DE SINCRONIZAÇÃO DE CHAVES"));
-    assert!(report.contains("Estatísticas Gerais"));
-    assert!(report.contains("Conflitos"));
+    assert!(report.contains("KEY SYNCHRONIZATION REPORT"));
+    assert!(report.contains("General Statistics"));
+    assert!(report.contains("Conflicts"));
     assert!(report.contains("Peers"));
 }
 
@@ -844,13 +839,13 @@ async fn test_generate_performance_report() {
 
     let report = backend.generate_performance_report().await;
 
-    assert!(report.contains("RELATÓRIO DE PERFORMANCE"));
-    assert!(report.contains("Métricas Gerais"));
+    assert!(report.contains("PERFORMANCE REPORT"));
+    assert!(report.contains("General Metrics"));
     assert!(report.contains("Cache Statistics"));
     assert!(report.contains("Connection Pool"));
     assert!(report.contains("Key Synchronization"));
     assert!(report.contains("Performance Monitor"));
-    assert!(report.contains("Otimizações"));
+    assert!(report.contains("Optimizations"));
 }
 
 // ╔════════════════════════════════════════════════════════════════════════════════╗

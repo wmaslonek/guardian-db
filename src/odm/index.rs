@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Describes one indexed field of a collection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexMetadata {
     pub field: String,
@@ -12,6 +13,8 @@ pub struct IndexMetadata {
     pub unique: bool,
 }
 
+/// In-memory index catalog for a collection: unique indexes (token -> id) and
+/// secondary indexes (token -> set of ids).
 #[derive(Debug, Clone, Default)]
 pub(crate) struct IndexCatalog {
     unique: BTreeMap<String, BTreeMap<String, String>>,
@@ -19,6 +22,8 @@ pub(crate) struct IndexCatalog {
 }
 
 impl IndexCatalog {
+    /// Rebuilds the catalog from scratch for the given documents, enforcing
+    /// uniqueness constraints (returns `DuplicateKey` on violation).
     pub(crate) fn rebuild(
         schema: &ModelSchema,
         documents: &BTreeMap<String, Value>,
@@ -66,6 +71,9 @@ impl IndexCatalog {
         Ok(catalog)
     }
 
+    /// Returns the set of candidate document ids that a query's equality
+    /// conditions on indexed fields could match, or `None` when no secondary
+    /// index applies (meaning the caller must do a full scan).
     pub(crate) fn candidates(&self, query: &Value) -> Result<Option<BTreeSet<String>>> {
         let Some(query) = query.as_object() else {
             return Ok(None);
@@ -107,6 +115,7 @@ impl IndexCatalog {
         Ok(candidates)
     }
 
+    /// Builds the `IndexMetadata` list describing a schema's indexed fields.
     pub(crate) fn metadata(schema: &ModelSchema) -> Vec<IndexMetadata> {
         schema
             .indexed_fields()
@@ -120,10 +129,14 @@ impl IndexCatalog {
     }
 }
 
+/// Produces a stable string token for a value (its JSON serialization), used as
+/// an index key.
 fn index_token(value: &Value) -> Result<String> {
     serde_json::to_string(value).map_err(Into::into)
 }
 
+/// Produces the index tokens for a value: the value itself, plus each element
+/// when the value is an array (so array members are individually indexed).
 fn index_tokens(value: &Value) -> Result<BTreeSet<String>> {
     let mut tokens = BTreeSet::from([index_token(value)?]);
     if let Value::Array(items) = value {

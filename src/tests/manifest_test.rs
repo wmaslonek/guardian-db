@@ -93,6 +93,17 @@ fn test_create_options_new_simple() {
 }
 
 #[test]
+fn test_read_only_replication_helper() {
+    let writer = "aa".repeat(32); // hex of a 32-byte EndpointId
+    let options = CreateAccessControllerOptions::read_only_replication(vec![writer.clone()]);
+
+    // Only the listed writer is in the write role; everyone may read.
+    assert_eq!(options.get_access("write").unwrap(), vec![writer]);
+    assert_eq!(options.get_access("read").unwrap(), vec!["*".to_string()]);
+    assert_eq!(options.get_type(), "simple");
+}
+
+#[test]
 fn test_create_options_from_params() {
     let original = create_test_options();
     let cloned = CreateAccessControllerOptions::from_params(&original);
@@ -439,7 +450,7 @@ async fn test_resolve_skip_manifest_without_type() {
     assert!(result.is_err());
     let err = result.unwrap_err();
     match err {
-        GuardianError::Store(msg) => assert!(msg.contains("obrigatório")),
+        GuardianError::Store(msg) => assert!(msg.contains("required")),
         _ => panic!("Expected Store error"),
     }
 }

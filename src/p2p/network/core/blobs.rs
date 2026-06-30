@@ -1,39 +1,39 @@
-/// Cliente wrapper para iroh-blobs
+/// Wrapper client for iroh-blobs.
 ///
-/// Fornece uma interface simplificada para operações de blob storage
-/// content-addressed usando BLAKE3 hashes.
+/// Provides a simplified interface for content-addressed blob storage
+/// operations using BLAKE3 hashes.
 ///
-/// Este cliente utiliza o store compartilhado do IrohBackend, garantindo
-/// consistência e evitando duplicação de armazenamento.
+/// This client uses the IrohBackend's shared store, ensuring consistency
+/// and avoiding storage duplication.
 use crate::guardian::error::{GuardianError, Result};
 use bytes::Bytes;
 use futures::StreamExt;
-use iroh::NodeId;
+use iroh::EndpointId as NodeId;
 use iroh::endpoint::Endpoint;
 use iroh_blobs::{Hash as BlobHash, HashAndFormat, store::fs::FsStore};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, info, instrument, warn};
 
-/// Cliente para operações com iroh-blobs
+/// Client for operations with iroh-blobs.
 ///
-/// Suporta operações locais e download P2P de blobs de peers remotos
-/// quando o Endpoint está configurado.
+/// Supports local operations and P2P download of blobs from remote peers
+/// when the Endpoint is configured.
 #[derive(Clone)]
 pub struct BlobStore {
-    /// Store do iroh-blobs compartilhado (filesystem-based)
+    /// Shared iroh-blobs store (filesystem-based).
     store: Arc<RwLock<FsStore>>,
-    /// Endpoint do Iroh para download P2P de blobs (opcional)
+    /// Iroh Endpoint for P2P blob download (optional).
     endpoint: Option<Endpoint>,
 }
 
 impl BlobStore {
-    /// Cria uma nova instância do cliente iroh-blobs usando store compartilhado
+    /// Creates a new iroh-blobs client instance using a shared store.
     ///
-    /// # Argumentos
-    /// * `store` - Store compartilhado do IrohBackend
+    /// # Arguments
+    /// * `store` - The IrohBackend's shared store
     ///
-    /// # Exemplo
+    /// # Example
     /// ```no_run
     /// use std::sync::Arc;
     /// use tokio::sync::RwLock;
@@ -47,52 +47,52 @@ impl BlobStore {
     /// ```
     #[instrument(level = "debug", skip(store))]
     pub fn new(store: Arc<RwLock<FsStore>>) -> Self {
-        debug!("Criando BlobStore com store compartilhado (sem P2P download)");
+        debug!("Creating BlobStore with shared store (no P2P download)");
         Self {
             store,
             endpoint: None,
         }
     }
 
-    /// Cria uma nova instância com suporte a download P2P via Endpoint
+    /// Creates a new instance with P2P download support via an Endpoint.
     ///
-    /// O Endpoint permite baixar blobs de peers remotos usando o protocolo
-    /// iroh-blobs nativo (QUIC + BLAKE3 verified streaming).
+    /// The Endpoint allows downloading blobs from remote peers using the native
+    /// iroh-blobs protocol (QUIC + BLAKE3 verified streaming).
     #[instrument(level = "debug", skip(store, endpoint))]
     pub fn new_with_endpoint(store: Arc<RwLock<FsStore>>, endpoint: Endpoint) -> Self {
-        debug!("Criando BlobStore com store compartilhado + P2P download");
+        debug!("Creating BlobStore with shared store + P2P download");
         Self {
             store,
             endpoint: Some(endpoint),
         }
     }
 
-    /// Adiciona um documento (bytes) ao blob store
+    /// Adds a document (bytes) to the blob store.
     ///
-    /// Retorna o Hash BLAKE3 do conteúdo armazenado.
+    /// Returns the BLAKE3 Hash of the stored content.
     #[instrument(level = "debug", skip(self, data))]
     pub async fn add_document(&self, data: Bytes) -> Result<BlobHash> {
         let store = self.store.read().await;
 
-        // Adiciona bytes ao store usando nova API
+        // Add bytes to the store using the new API.
         let outcome = store.blobs().add_bytes(data.clone()).await.map_err(|e| {
-            GuardianError::Other(format!("Erro ao adicionar bytes ao blob store: {}", e))
+            GuardianError::Other(format!("Error adding bytes to the blob store: {}", e))
         })?;
 
         let hash = outcome.hash;
 
-        // Cria tag permanente para proteger contra GC
-        // Formato: doc_<hash_hex>
+        // Create a permanent tag to protect against GC.
+        // Format: doc_<hash_hex>
         let tag_name = format!("doc_{}", hex::encode(hash.as_bytes()));
 
         store
             .tags()
             .set(tag_name.as_bytes(), HashAndFormat::raw(hash))
             .await
-            .map_err(|e| GuardianError::Other(format!("Erro ao criar tag permanente: {}", e)))?;
+            .map_err(|e| GuardianError::Other(format!("Error creating permanent tag: {}", e)))?;
 
         debug!(
-            "Documento adicionado ao blob store: {} ({} bytes)",
+            "Document added to the blob store: {} ({} bytes)",
             hex::encode(hash.as_bytes()),
             data.len()
         );
@@ -100,20 +100,20 @@ impl BlobStore {
         Ok(hash)
     }
 
-    /// Recupera um documento do blob store pelo hash
+    /// Retrieves a document from the blob store by its hash.
     #[instrument(level = "debug", skip(self))]
     pub async fn get_document(&self, hash: &BlobHash) -> Result<Bytes> {
         let store = self.store.read().await;
 
-        // Usa nova API: blobs().get_bytes() - requer Hash owned
+        // Use the new API: blobs().get_bytes() - requires an owned Hash.
         let data = store
             .blobs()
             .get_bytes(*hash)
             .await
-            .map_err(|e| GuardianError::Other(format!("Erro ao buscar blob: {}", e)))?;
+            .map_err(|e| GuardianError::Other(format!("Error fetching blob: {}", e)))?;
 
         debug!(
-            "Documento recuperado do blob store: {} ({} bytes)",
+            "Document retrieved from the blob store: {} ({} bytes)",
             hex::encode(hash.as_bytes()),
             data.len()
         );
@@ -121,18 +121,18 @@ impl BlobStore {
         Ok(data)
     }
 
-    /// Recupera um documento do blob store, tentando download P2P se não encontrado localmente
+    /// Retrieves a document from the blob store, attempting a P2P download if not found locally.
     ///
-    /// Se o blob não existe no store local e um peer provider é fornecido,
-    /// tenta baixar do peer remoto usando o protocolo iroh-blobs.
+    /// If the blob does not exist in the local store and a peer provider is given,
+    /// it tries to download from the remote peer using the iroh-blobs protocol.
     #[instrument(level = "debug", skip(self))]
     pub async fn get_or_download(&self, hash: &BlobHash, providers: &[NodeId]) -> Result<Bytes> {
-        // Tenta buscar localmente primeiro
+        // Try to fetch locally first.
         let store = self.store.read().await;
         match store.blobs().get_bytes(*hash).await {
             Ok(data) => {
                 debug!(
-                    "Documento encontrado localmente: {} ({} bytes)",
+                    "Document found locally: {} ({} bytes)",
                     hex::encode(hash.as_bytes()),
                     data.len()
                 );
@@ -140,23 +140,23 @@ impl BlobStore {
             }
             Err(_) => {
                 debug!(
-                    "Documento não encontrado localmente: {}, tentando P2P download",
+                    "Document not found locally: {}, attempting P2P download",
                     hex::encode(hash.as_bytes())
                 );
             }
         }
         drop(store);
 
-        // Tenta download P2P
+        // Try a P2P download.
         self.download_from_peers(hash, providers).await?;
 
-        // Agora busca do store local (deve estar lá após download)
+        // Now fetch from the local store (it should be there after the download).
         let store = self.store.read().await;
         let data = store.blobs().get_bytes(*hash).await.map_err(|e| {
-            GuardianError::Other(format!("Blob não encontrado após download P2P: {}", e))
+            GuardianError::Other(format!("Blob not found after P2P download: {}", e))
         })?;
 
-        // Cria tag permanente para proteger contra GC
+        // Create a permanent tag to protect against GC.
         let tag_name = format!("doc_{}", hex::encode(hash.as_bytes()));
         store
             .tags()
@@ -165,7 +165,7 @@ impl BlobStore {
             .ok();
 
         debug!(
-            "Documento baixado via P2P: {} ({} bytes)",
+            "Document downloaded via P2P: {} ({} bytes)",
             hex::encode(hash.as_bytes()),
             data.len()
         );
@@ -173,16 +173,16 @@ impl BlobStore {
         Ok(data)
     }
 
-    /// Baixa um blob de peers remotos usando o Downloader do iroh-blobs
+    /// Downloads a blob from remote peers using the iroh-blobs Downloader.
     #[instrument(level = "debug", skip(self))]
     pub async fn download_from_peers(&self, hash: &BlobHash, providers: &[NodeId]) -> Result<()> {
         let endpoint = self.endpoint.as_ref().ok_or_else(|| {
-            GuardianError::Other("Endpoint não disponível para download P2P de blobs".to_string())
+            GuardianError::Other("Endpoint not available for P2P blob download".to_string())
         })?;
 
         if providers.is_empty() {
             return Err(GuardianError::Other(
-                "Nenhum provider fornecido para download P2P".to_string(),
+                "No provider given for P2P download".to_string(),
             ));
         }
 
@@ -191,7 +191,7 @@ impl BlobStore {
 
         let providers_vec: Vec<NodeId> = providers.to_vec();
         info!(
-            "Iniciando download P2P do blob {} de {} provider(s)",
+            "Starting P2P download of blob {} from {} provider(s)",
             hex::encode(hash.as_bytes()),
             providers_vec.len()
         );
@@ -200,49 +200,52 @@ impl BlobStore {
         let mut stream = progress
             .stream()
             .await
-            .map_err(|e| GuardianError::Other(format!("Erro ao iniciar download P2P: {}", e)))?;
+            .map_err(|e| GuardianError::Other(format!("Error starting P2P download: {}", e)))?;
 
         while let Some(item) = stream.next().await {
             match &item {
                 iroh_blobs::api::downloader::DownloadProgressItem::Error(e) => {
-                    return Err(GuardianError::Other(format!("Erro no download P2P: {}", e)));
+                    return Err(GuardianError::Other(format!(
+                        "Error in P2P download: {}",
+                        e
+                    )));
                 }
                 iroh_blobs::api::downloader::DownloadProgressItem::DownloadError => {
-                    return Err(GuardianError::Other("Download P2P falhou".to_string()));
+                    return Err(GuardianError::Other("P2P download failed".to_string()));
                 }
                 iroh_blobs::api::downloader::DownloadProgressItem::PartComplete { .. } => {
-                    debug!("Download P2P: parte concluída");
+                    debug!("P2P download: part complete");
                 }
                 iroh_blobs::api::downloader::DownloadProgressItem::Progress(bytes) => {
-                    debug!("Download P2P: {} bytes recebidos", bytes);
+                    debug!("P2P download: {} bytes received", bytes);
                 }
                 _ => {}
             }
         }
 
-        info!("Download P2P concluído: {}", hex::encode(hash.as_bytes()));
+        info!("P2P download complete: {}", hex::encode(hash.as_bytes()));
         Ok(())
     }
 
-    /// Verifica se um documento existe no blob store
+    /// Checks whether a document exists in the blob store.
     #[instrument(level = "debug", skip(self))]
     pub async fn has_document(&self, hash: &BlobHash) -> Result<bool> {
         let store = self.store.read().await;
 
-        // Usa nova API: blobs().has() - requer Hash owned
+        // Use the new API: blobs().has() - requires an owned Hash.
         let has_blob = store.blobs().has(*hash).await.unwrap_or(false);
 
         Ok(has_blob)
     }
 
-    /// Deleta um documento do blob store
+    /// Deletes a document from the blob store.
     ///
-    /// Remove a tag de proteção e opcionalmente deleta o blob físico.
+    /// Removes the protection tag and optionally deletes the physical blob.
     #[instrument(level = "debug", skip(self))]
     pub async fn delete_document(&self, hash: &BlobHash) -> Result<()> {
         let store = self.store.read().await;
 
-        // Remove tag de proteção
+        // Remove the protection tag.
         let tag_name = format!("doc_{}", hex::encode(hash.as_bytes()));
 
         store
@@ -250,24 +253,21 @@ impl BlobStore {
             .delete(tag_name.as_bytes())
             .await
             .map_err(|e| {
-                warn!("Erro ao deletar tag de documento: {}", e);
-                GuardianError::Other(format!("Erro ao deletar tag: {}", e))
+                warn!("Error deleting document tag: {}", e);
+                GuardianError::Other(format!("Error deleting tag: {}", e))
             })?;
 
-        // Nota: O blob físico será removido pelo GC quando não houver
-        // mais referências. Isso evita deleção acidental de blobs compartilhados.
+        // Note: The physical blob will be removed by GC when there are no more
+        // references. This avoids accidental deletion of shared blobs.
 
-        debug!(
-            "Tag de documento removida: {}",
-            hex::encode(hash.as_bytes())
-        );
+        debug!("Document tag removed: {}", hex::encode(hash.as_bytes()));
 
         Ok(())
     }
 
-    /// Lista todos os documentos tagueados no blob store
+    /// Lists all tagged documents in the blob store.
     ///
-    /// Retorna pares (hash, tamanho) para todos os documentos.
+    /// Returns (hash, size) pairs for all documents.
     #[instrument(level = "debug", skip(self))]
     pub async fn list_documents(&self) -> Result<Vec<(BlobHash, u64)>> {
         use futures::stream::StreamExt;
@@ -275,47 +275,47 @@ impl BlobStore {
         let store = self.store.read().await;
         let mut documents = Vec::new();
 
-        // Usa nova API: tags().list_prefix() para listar tags com prefixo "doc_"
+        // Use the new API: tags().list_prefix() to list tags with the "doc_" prefix.
         let mut tags_stream = store
             .tags()
             .list_prefix(b"doc_")
             .await
-            .map_err(|e| GuardianError::Other(format!("Erro ao obter tags: {}", e)))?;
+            .map_err(|e| GuardianError::Other(format!("Error getting tags: {}", e)))?;
 
         while let Some(tag_result) = tags_stream.next().await {
             match tag_result {
                 Ok(tag_info) => {
                     let hash = tag_info.hash;
-                    // Retorna size 0 por enquanto - API do iroh-blobs não fornece fácil acesso ao size
+                    // Return size 0 for now - the iroh-blobs API does not provide easy access to the size.
                     documents.push((hash, 0));
                 }
                 Err(e) => {
-                    warn!("Erro ao processar tag durante listagem: {}", e);
+                    warn!("Error processing tag during listing: {}", e);
                 }
             }
         }
 
-        debug!("Listados {} documentos no blob store", documents.len());
+        debug!("Listed {} documents in the blob store", documents.len());
 
         Ok(documents)
     }
 
-    /// Executa garbage collection manual
+    /// Performs manual garbage collection.
     ///
-    /// Remove blobs não referenciados por nenhuma tag.
+    /// Removes blobs not referenced by any tag.
     #[instrument(level = "debug", skip(self))]
     pub async fn gc(&self) -> Result<u64> {
         use futures::stream::StreamExt;
 
         let store = self.store.read().await;
 
-        // Coleta todos os hashes protegidos por tags
+        // Collect all hashes protected by tags.
         let mut protected_hashes = std::collections::BTreeSet::new();
         let mut tags_stream = store
             .tags()
             .list()
             .await
-            .map_err(|e| GuardianError::Other(format!("Erro ao obter tags para GC: {}", e)))?;
+            .map_err(|e| GuardianError::Other(format!("Error getting tags for GC: {}", e)))?;
 
         while let Some(tag_result) = tags_stream.next().await {
             if let Ok(tag_info) = tag_result {
@@ -323,36 +323,36 @@ impl BlobStore {
             }
         }
 
-        debug!("GC: {} hashes protegidos por tags", protected_hashes.len());
+        debug!("GC: {} hashes protected by tags", protected_hashes.len());
 
-        // NOTA: A API 0.94.0 gerencia GC automaticamente via FsStore
-        // GC manual não é exposto diretamente na nova API
-        // O GC roda periodicamente em background
+        // NOTE: The 0.94.0 API manages GC automatically via FsStore.
+        // Manual GC is not exposed directly in the new API.
+        // GC runs periodically in the background.
 
-        debug!("GC é gerenciado automaticamente pelo FsStore");
+        debug!("GC is managed automatically by FsStore");
 
-        Ok(0) // Retorna 0 pois GC é automático
+        Ok(0) // Returns 0 since GC is automatic.
     }
 
-    /// Retorna true se o BlobStore tem suporte a download P2P
+    /// Returns true if the BlobStore supports P2P download.
     pub fn has_p2p_support(&self) -> bool {
         self.endpoint.is_some()
     }
 
-    /// Cria uma instância de teste com store temporário
+    /// Creates a test instance with a temporary store.
     #[cfg(test)]
     pub async fn memory() -> Result<Self> {
-        // Cria um diretório temporário
+        // Create a temporary directory.
         let temp_dir =
             std::env::temp_dir().join(format!("iroh-blobs-test-{}", uuid::Uuid::new_v4()));
         tokio::fs::create_dir_all(&temp_dir).await.map_err(|e| {
-            GuardianError::Other(format!("Erro ao criar diretório temporário: {}", e))
+            GuardianError::Other(format!("Error creating temporary directory: {}", e))
         })?;
 
-        // Carrega FsStore no diretório temporário
+        // Load FsStore in the temporary directory.
         let store = FsStore::load(&temp_dir)
             .await
-            .map_err(|e| GuardianError::Other(format!("Erro ao criar store temporário: {}", e)))?;
+            .map_err(|e| GuardianError::Other(format!("Error creating temporary store: {}", e)))?;
 
         Ok(Self::new(Arc::new(RwLock::new(store))))
     }
@@ -392,9 +392,9 @@ mod tests {
 
         blobs_client.delete_document(&hash).await.unwrap();
 
-        // Após deletar a tag, o GC pode remover o blob
-        // Mas imediatamente após delete_document, ainda pode existir
-        // até o GC rodar
+        // After deleting the tag, GC may remove the blob.
+        // But immediately after delete_document it may still exist
+        // until GC runs.
     }
 
     #[tokio::test]

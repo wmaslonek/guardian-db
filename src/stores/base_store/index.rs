@@ -4,21 +4,21 @@ use crate::traits::StoreIndex;
 use std::collections::{HashMap, HashSet};
 use std::sync::RwLock;
 
-/// BaseIndex é a base de um índice para Log Stores.
-/// Mantém um mapeamento de chaves para valores, processando entradas do log
-/// de operações para manter o estado atualizado.
+/// BaseIndex is the base of an index for Log Stores.
+/// It maintains a mapping of keys to values, processing operation-log entries
+/// to keep the state up to date.
 pub struct BaseIndex {
-    /// ID do índice, geralmente a chave pública da loja.
+    /// Index ID, usually the store's public key.
     id: Vec<u8>,
 
-    /// Mapa interno para o índice baseado em hash.
-    /// Armazena valores como bytes para flexibilidade, protegido por RwLock
-    /// para permitir acesso concorrente seguro (múltiplos leitores ou um escritor).
+    /// Internal map for the hash-based index.
+    /// Stores values as bytes for flexibility, protected by an RwLock
+    /// to allow safe concurrent access (multiple readers or a single writer).
     index: RwLock<HashMap<String, Vec<u8>>>,
 }
 
-/// Construtor para o `BaseIndex`. Cria uma nova instância com um HashMap vazio
-/// para armazenar o índice de chave-valor.
+/// Constructor for the `BaseIndex`. Creates a new instance with an empty HashMap
+/// to store the key-value index.
 pub fn new_base_index(
     public_key: Vec<u8>,
 ) -> Box<dyn StoreIndex<Error = GuardianError> + Send + Sync> {
@@ -28,94 +28,100 @@ pub fn new_base_index(
     })
 }
 
-/// Implementação do trait `StoreIndex` para `BaseIndex`.
+/// `StoreIndex` trait implementation for `BaseIndex`.
 impl StoreIndex for BaseIndex {
-    /// Especifica que usaremos GuardianError como o tipo de erro associado.
+    /// Specifies that we will use GuardianError as the associated error type.
     type Error = GuardianError;
 
-    /// Verifica se uma chave existe no índice.
+    /// Checks whether a key exists in the index.
     fn contains_key(&self, key: &str) -> Result<bool, Self::Error> {
-        let index_lock = self.index.read().map_err(|e| {
-            GuardianError::Store(format!("Falha ao adquirir lock de leitura: {}", e))
-        })?;
+        let index_lock = self
+            .index
+            .read()
+            .map_err(|e| GuardianError::Store(format!("Failed to acquire read lock: {}", e)))?;
 
         Ok(index_lock.contains_key(key))
     }
 
-    /// Retorna uma cópia dos dados para uma chave específica como bytes.
+    /// Returns a copy of the data for a specific key as bytes.
     fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>, Self::Error> {
-        let index_lock = self.index.read().map_err(|e| {
-            GuardianError::Store(format!("Falha ao adquirir lock de leitura: {}", e))
-        })?;
+        let index_lock = self
+            .index
+            .read()
+            .map_err(|e| GuardianError::Store(format!("Failed to acquire read lock: {}", e)))?;
 
         Ok(index_lock.get(key).cloned())
     }
 
-    /// Retorna todas as chaves disponíveis no índice.
+    /// Returns all keys available in the index.
     fn keys(&self) -> Result<Vec<String>, Self::Error> {
-        let index_lock = self.index.read().map_err(|e| {
-            GuardianError::Store(format!("Falha ao adquirir lock de leitura: {}", e))
-        })?;
+        let index_lock = self
+            .index
+            .read()
+            .map_err(|e| GuardianError::Store(format!("Failed to acquire read lock: {}", e)))?;
 
         Ok(index_lock.keys().cloned().collect())
     }
 
-    /// Retorna o número de entradas no índice.
+    /// Returns the number of entries in the index.
     fn len(&self) -> Result<usize, Self::Error> {
-        let index_lock = self.index.read().map_err(|e| {
-            GuardianError::Store(format!("Falha ao adquirir lock de leitura: {}", e))
-        })?;
+        let index_lock = self
+            .index
+            .read()
+            .map_err(|e| GuardianError::Store(format!("Failed to acquire read lock: {}", e)))?;
 
         Ok(index_lock.len())
     }
 
-    /// Verifica se o índice está vazio.
+    /// Checks whether the index is empty.
     fn is_empty(&self) -> Result<bool, Self::Error> {
-        let index_lock = self.index.read().map_err(|e| {
-            GuardianError::Store(format!("Falha ao adquirir lock de leitura: {}", e))
-        })?;
+        let index_lock = self
+            .index
+            .read()
+            .map_err(|e| GuardianError::Store(format!("Failed to acquire read lock: {}", e)))?;
 
         Ok(index_lock.is_empty())
     }
 
-    /// Atualiza o índice processando as entradas do log de operações.
-    /// Implementa a lógica CRDT processando operações PUT e DEL.
+    /// Updates the index by processing the operation-log entries.
+    /// Implements the CRDT logic by processing PUT and DEL operations.
     fn update_index(&mut self, _log: &Log, entries: &[Entry]) -> Result<(), Self::Error> {
-        // Conjunto para rastrear chaves já processadas, garantindo que
-        // apenas a operação mais recente para cada chave seja aplicada.
+        // Set to track already-processed keys, ensuring that
+        // only the most recent operation for each key is applied.
         let mut handled = HashSet::new();
 
-        // Adquire um bloqueio de escrita para modificar o índice de forma segura.
-        let mut index = self.index.write().map_err(|e| {
-            GuardianError::Store(format!("Falha ao adquirir lock de escrita: {}", e))
-        })?;
+        // Acquire a write lock to modify the index safely.
+        let mut index = self
+            .index
+            .write()
+            .map_err(|e| GuardianError::Store(format!("Failed to acquire write lock: {}", e)))?;
 
-        // Itera sobre as entradas fornecidas em ordem reversa (do mais novo para o mais antigo).
-        // Isso garante que apenas a operação mais recente para cada chave seja aplicada.
+        // Iterate over the provided entries in reverse order (newest to oldest).
+        // This ensures that only the most recent operation for each key is applied.
         for entry in entries.iter().rev() {
-            // Parseia a operação da entrada do log
+            // Parse the operation from the log entry.
             let operation = match crate::stores::operation::parse_operation(entry.clone()) {
                 Ok(op) => op,
                 Err(e) => {
-                    // Log o erro mas continua processando outras entradas
-                    eprintln!("Aviso: Erro ao parsear operação: {}", e);
+                    // Log the error but continue processing other entries.
+                    eprintln!("Warning: Error parsing operation: {}", e);
                     continue;
                 }
             };
 
-            // Obtém a chave da operação
+            // Get the operation's key.
             let key = match operation.key() {
                 Some(k) if !k.is_empty() => k,
-                _ => continue, // Ignora entradas com chave nula ou vazia
+                _ => continue, // Ignore entries with a null or empty key.
             };
 
-            // Evita processar a mesma chave múltiplas vezes
+            // Avoid processing the same key multiple times.
             if handled.contains(key) {
                 continue;
             }
             handled.insert(key.clone());
 
-            // Aplica a operação baseada no tipo
+            // Apply the operation based on its type.
             match operation.op() {
                 "PUT" => {
                     let value = operation.value();
@@ -127,8 +133,8 @@ impl StoreIndex for BaseIndex {
                     index.remove(key);
                 }
                 _ => {
-                    // Ignora operações desconhecidas
-                    eprintln!("Aviso: Operação desconhecida ignorada: {}", operation.op());
+                    // Ignore unknown operations.
+                    eprintln!("Warning: Unknown operation ignored: {}", operation.op());
                 }
             }
         }
@@ -136,11 +142,12 @@ impl StoreIndex for BaseIndex {
         Ok(())
     }
 
-    /// Limpa todos os dados do índice.
+    /// Clears all data from the index.
     fn clear(&mut self) -> Result<(), Self::Error> {
-        let mut index_lock = self.index.write().map_err(|e| {
-            GuardianError::Store(format!("Falha ao adquirir lock de escrita: {}", e))
-        })?;
+        let mut index_lock = self
+            .index
+            .write()
+            .map_err(|e| GuardianError::Store(format!("Failed to acquire write lock: {}", e)))?;
 
         index_lock.clear();
         Ok(())
@@ -148,13 +155,13 @@ impl StoreIndex for BaseIndex {
 }
 
 impl BaseIndex {
-    /// Retorna o ID do índice (public key).
+    /// Returns the index ID (public key).
     pub fn id(&self) -> &[u8] {
         &self.id
     }
 
-    /// Retorna uma cópia do valor associado à chave, se existir.
-    /// Este é um método de conveniência que chama get_bytes() da trait.
+    /// Returns a copy of the value associated with the key, if it exists.
+    /// This is a convenience method that calls the trait's get_bytes().
     pub fn get_value(&self, key: &str) -> Result<Option<Vec<u8>>, GuardianError> {
         self.get_bytes(key)
     }

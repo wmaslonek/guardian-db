@@ -68,7 +68,7 @@ pub struct Entry {
     )]
     pub hash: Hash,
     pub id: String,
-    /// Payload binário da entrada (migrado de String para Vec<u8> na Fase 3)
+    /// Binary payload of the entry (migrated from String to Vec<u8> in Phase 3).
     pub payload: Vec<u8>,
     #[serde(
         serialize_with = "serialize_hash_vec",
@@ -77,11 +77,11 @@ pub struct Entry {
     pub next: Vec<Hash>,
     pub v: u32,
     pub clock: LamportClock,
-    // Campo opcional para armazenar a identidade associada à entrada
+    // Optional field to store the identity associated with the entry.
     pub identity: Option<Arc<Identity>>,
 }
 
-// Funções auxiliares de serialização para Hash
+// Helper serialization functions for Hash.
 fn serialize_hash<S>(hash: &Hash, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
@@ -167,7 +167,7 @@ impl Entry {
             })
             .collect();
         Entry {
-            //very much ad hoc - hash será calculado depois
+            //very much ad hoc - the hash will be computed later
             hash: Hash::from([0u8; 32]),
             id: log_id.to_owned(),
             payload: data.to_vec(),
@@ -200,7 +200,7 @@ impl Entry {
     ) -> Arc<Entry> {
         let mut e = Entry::new(identity, log_id, data, nexts, clock);
 
-        // Usa thread separada com novo Runtime para evitar "cannot start runtime from within a runtime"
+        // Use a separate thread with a new Runtime to avoid "cannot start runtime from within a runtime".
         let client_clone = client.clone();
         let entry_clone = e.clone();
         let hash_result = std::thread::spawn(move || {
@@ -216,7 +216,7 @@ impl Entry {
         Arc::new(e)
     }
 
-    /// Stores `entry` in the Client `iroh` and returns a future containing its hash.
+    /// Stores `entry` in the Client `Iroh` and returns a future containing its hash.
     ///
     /// **N.B.** *At the moment stores the entry as JSON, not CBOR DAG.*
     pub async fn hash_entry(client: &IrohClient, entry: &Entry) -> Result<Hash, Error> {
@@ -232,7 +232,7 @@ impl Entry {
 
         match client.add_bytes(e.as_bytes().to_vec()).await {
             Ok(response) => {
-                // Converte string hash para Hash
+                // Convert the hash string into a Hash.
                 let bytes = hex::decode(&response.hash)
                     .map_err(|e| Error::Other(format!("Failed to decode hash: {}", e)))?;
                 if bytes.len() != 32 {
@@ -246,7 +246,7 @@ impl Entry {
         }
     }
 
-    /// Returns the future containing the entry stored in the Client `iroh` with the hash `hash`.
+    /// Returns the future containing the entry stored in the Client `Iroh` with the hash `hash`.
     ///
     /// **N.B.** *At the moment converts the entry from postcard binary format.*
     pub async fn from_hash(client: &IrohClient, hash: &Hash) -> Result<Entry, Error> {
@@ -268,7 +268,7 @@ impl Entry {
     /// Returns a vector of entries.
     pub fn fetch_entries(client: &IrohClient, hashes: &[Hash]) -> Vec<Entry> {
         let hashes = Arc::new(Mutex::new(hashes.to_vec()));
-        let client = client.clone(); // Clone para evitar problemas de lifetime com thread
+        let client = client.clone(); // Clone to avoid lifetime issues with the thread.
         let mut es = Vec::new();
         loop {
             let mut result = Vec::new();
@@ -289,7 +289,7 @@ impl Entry {
                 });
             }
 
-            // Usa thread separada com novo Runtime para evitar "cannot start runtime from within a runtime"
+            // Use a separate thread with a new Runtime to avoid "cannot start runtime from within a runtime".
             let new_entries: Vec<Entry> = std::thread::spawn(move || {
                 tokio::runtime::Runtime::new()
                     .unwrap()
@@ -491,19 +491,19 @@ impl PartialOrd for Entry {
     }
 }
 
-// Implementação do trait LogEntry para Entry
+// LogEntry trait implementation for Entry.
 impl LogEntry for Entry {
     fn get_payload(&self) -> &[u8] {
         &self.payload
     }
 
     fn get_identity(&self) -> &Identity {
-        // Se temos uma identidade armazenada, a retornamos
+        // If we have a stored identity, return it.
         if let Some(ref identity_arc) = self.identity {
             return identity_arc.as_ref();
         }
 
-        // Caso contrário, retornamos uma identidade padrão baseada no clock ID
+        // Otherwise, return a default identity based on the clock ID.
         use crate::log::identity::Signatures;
         use std::sync::OnceLock;
 

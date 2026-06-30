@@ -21,7 +21,7 @@ mod guardian_core_tests {
     use crate::p2p::network::config::ClientConfig;
     use crate::p2p::network::core::IrohBackend;
     use crate::traits::{CreateDBOptions, MessageExchangeHeads};
-    use iroh::NodeId;
+    use iroh::EndpointId as NodeId;
     use iroh_blobs::Hash;
     use std::ops::Deref;
     use std::sync::Arc;

@@ -2,6 +2,12 @@ use crate::odm::error::{OdmError, Result};
 use serde_json::{Map, Number, Value};
 use std::collections::BTreeSet;
 
+/// Applies MongoDB-style update operators (`$set`, `$unset`, `$inc`) to a JSON
+/// document in place.
+///
+/// Returns `true` if the document was modified. Rejects replacement-style
+/// updates (keys not starting with `$`), writes to `immutable_fields`, and
+/// unsupported operators.
 pub(crate) fn apply_update(
     document: &mut Value,
     operations: &Value,
@@ -126,19 +132,197 @@ fn unset_path(document: &mut Value, path: &str) -> Result<bool> {
 }
 
 fn increment_path(document: &mut Value, path: &str, increment: &Value) -> Result<bool> {
-    let increment = increment.as_number().ok_or_else(|| {
+    if !increment.is_number() {
+        return Err(OdmError::InvalidUpdate(format!(
+            "$inc value for `{path}` must be numeric"
+        )));
+    }
+
+    // Clone the current value to release the immutable borrow before `set_path` (mutable).
+    let current = crate::odm::query::value_at_path(document, path).cloned();
+    if let Some(ref value) = current
+        && !value.is_number()
+    {
+        return Err(OdmError::InvalidUpdate(format!(
+            "$inc target `{path}` must be numeric"
+        )));
+    }
+
+    let result = add_json_numbers(current.as_ref(), increment, path)?;
+    set_path(document, path, result)
+}
+
+/// Adds two JSON numbers, preserving the **integer** type when both operands are
+/// integers (avoids, for example, `1024 + 1` becoming `1025.0`). Falls back to
+/// `f64` only when an operand is fractional or when the integer sum would
+/// overflow `i64`.
+fn add_json_numbers(current: Option<&Value>, increment: &Value, path: &str) -> Result<Value> {
+    let current_i = match current {
+        None => Some(0i64), // A missing field is treated as the integer 0.
+        Some(value) => value.as_i64(),
+    };
+    if let (Some(c), Some(i)) = (current_i, increment.as_i64())
+        && let Some(sum) = c.checked_add(i)
+    {
+        return Ok(Value::Number(Number::from(sum)));
+    }
+
+    // Fractional path (or i64 overflow): use f64.
+    let current_f = current.map_or(0.0, |value| value.as_f64().unwrap_or(0.0));
+    let increment_f = increment.as_f64().ok_or_else(|| {
         OdmError::InvalidUpdate(format!("$inc value for `{path}` must be numeric"))
     })?;
+    let number = Number::from_f64(current_f + increment_f).ok_or_else(|| {
+        OdmError::InvalidUpdate(format!("$inc for `{path}` produced a non-finite number"))
+    })?;
+    Ok(Value::Number(number))
+}
 
-    let zero = Number::from(0);
-    let current = match crate::odm::query::value_at_path(document, path) {
-        None => &zero,
-        Some(value) => value.as_number().ok_or_else(|| {
-            OdmError::InvalidUpdate(format!("$inc target `{path}` must be numeric"))
-        })?,
-    };
-    let number = add_numbers(current, increment, path)?;
-    set_path(document, path, Value::Number(number))
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn no_immutable() -> BTreeSet<String> {
+        BTreeSet::new()
+    }
+
+    // ─── $inc: type preservation (regression of the Number(1025.0) vs 1025 bug) ──
+
+    #[test]
+    fn inc_preserves_integer_type() {
+        let mut doc = json!({ "counter": 1024 });
+        let changed = apply_update(
+            &mut doc,
+            &json!({ "$inc": { "counter": 1 } }),
+            &no_immutable(),
+        )
+        .unwrap();
+        assert!(changed);
+        // Must be the integer 1025, NOT the float 1025.0.
+        assert_eq!(doc["counter"], json!(1025));
+        assert!(
+            doc["counter"].is_i64(),
+            "expected integer, got {:?}",
+            doc["counter"]
+        );
+    }
+
+    #[test]
+    fn inc_on_missing_field_starts_at_zero_integer() {
+        let mut doc = json!({});
+        apply_update(&mut doc, &json!({ "$inc": { "n": 5 } }), &no_immutable()).unwrap();
+        assert_eq!(doc["n"], json!(5));
+        assert!(doc["n"].is_i64());
+    }
+
+    #[test]
+    fn inc_with_negative_integer() {
+        let mut doc = json!({ "n": 10 });
+        apply_update(&mut doc, &json!({ "$inc": { "n": -3 } }), &no_immutable()).unwrap();
+        assert_eq!(doc["n"], json!(7));
+        assert!(doc["n"].is_i64());
+    }
+
+    #[test]
+    fn inc_with_float_operand_yields_float() {
+        let mut doc = json!({ "n": 1 });
+        apply_update(&mut doc, &json!({ "$inc": { "n": 0.5 } }), &no_immutable()).unwrap();
+        assert_eq!(doc["n"], json!(1.5));
+    }
+
+    #[test]
+    fn inc_on_float_target_yields_float() {
+        let mut doc = json!({ "n": 2.5 });
+        apply_update(&mut doc, &json!({ "$inc": { "n": 1 } }), &no_immutable()).unwrap();
+        assert_eq!(doc["n"], json!(3.5));
+    }
+
+    #[test]
+    fn inc_non_numeric_target_errors() {
+        let mut doc = json!({ "n": "abc" });
+        let err = apply_update(&mut doc, &json!({ "$inc": { "n": 1 } }), &no_immutable());
+        assert!(matches!(err, Err(OdmError::InvalidUpdate(_))));
+    }
+
+    #[test]
+    fn inc_non_numeric_operand_errors() {
+        let mut doc = json!({ "n": 1 });
+        let err = apply_update(&mut doc, &json!({ "$inc": { "n": "x" } }), &no_immutable());
+        assert!(matches!(err, Err(OdmError::InvalidUpdate(_))));
+    }
+
+    // ─── $set / $unset ───────────────────────────────────────────────────────
+
+    #[test]
+    fn set_nested_path_creates_intermediate_objects() {
+        let mut doc = json!({});
+        apply_update(
+            &mut doc,
+            &json!({ "$set": { "a.b.c": 7 } }),
+            &no_immutable(),
+        )
+        .unwrap();
+        assert_eq!(doc["a"]["b"]["c"], json!(7));
+    }
+
+    #[test]
+    fn set_same_value_reports_no_change() {
+        let mut doc = json!({ "x": 1 });
+        let changed =
+            apply_update(&mut doc, &json!({ "$set": { "x": 1 } }), &no_immutable()).unwrap();
+        assert!(!changed);
+    }
+
+    #[test]
+    fn unset_removes_field() {
+        let mut doc = json!({ "x": 1, "y": 2 });
+        let changed =
+            apply_update(&mut doc, &json!({ "$unset": { "x": "" } }), &no_immutable()).unwrap();
+        assert!(changed);
+        assert!(doc.get("x").is_none());
+        assert_eq!(doc["y"], json!(2));
+    }
+
+    #[test]
+    fn unset_missing_field_is_noop() {
+        let mut doc = json!({ "y": 2 });
+        let changed =
+            apply_update(&mut doc, &json!({ "$unset": { "x": "" } }), &no_immutable()).unwrap();
+        assert!(!changed);
+    }
+
+    // ─── Validations ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn immutable_field_is_rejected() {
+        let mut immutable = BTreeSet::new();
+        immutable.insert("id".to_string());
+        let mut doc = json!({ "id": "a" });
+        let err = apply_update(&mut doc, &json!({ "$set": { "id": "b" } }), &immutable);
+        assert!(matches!(err, Err(OdmError::ImmutableField(_))));
+    }
+
+    #[test]
+    fn replacement_update_without_operator_is_rejected() {
+        let mut doc = json!({ "x": 1 });
+        let err = apply_update(&mut doc, &json!({ "x": 2 }), &no_immutable());
+        assert!(matches!(err, Err(OdmError::InvalidUpdate(_))));
+    }
+
+    #[test]
+    fn unsupported_operator_is_rejected() {
+        let mut doc = json!({ "x": 1 });
+        let err = apply_update(&mut doc, &json!({ "$push": { "x": 2 } }), &no_immutable());
+        assert!(matches!(err, Err(OdmError::InvalidUpdate(_))));
+    }
+
+    #[test]
+    fn empty_operations_report_no_change() {
+        let mut doc = json!({ "x": 1 });
+        let changed = apply_update(&mut doc, &json!({}), &no_immutable()).unwrap();
+        assert!(!changed);
+    }
 }
 
 fn add_numbers(left: &Number, right: &Number, path: &str) -> Result<Number> {

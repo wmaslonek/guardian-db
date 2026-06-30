@@ -11,11 +11,12 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{Span, debug, instrument, warn};
 
-// Type alias para simplificar tipos complexos
+// Type alias to simplify the complex key-value store type used throughout this module.
 type KVStoreType =
     RwLock<Option<Arc<tokio::sync::Mutex<Box<dyn KeyValueStore<Error = GuardianError>>>>>>;
 
-// Simple string wrapper that implements Address for return values
+// Simple string wrapper that implements `Address` so plain strings can be
+// returned where an `Address` trait object is expected.
 #[derive(Debug, Clone)]
 struct StringAddress(String);
 
@@ -27,7 +28,7 @@ impl std::fmt::Display for StringAddress {
 
 impl Address for StringAddress {
     fn get_root(&self) -> Hash {
-        Hash::from_bytes([0u8; 32]) // Default hash for string addresses
+        Hash::from_bytes([0u8; 32]) // Default (zero) hash for string-based addresses.
     }
 
     fn get_path(&self) -> &str {
@@ -39,6 +40,8 @@ impl Address for StringAddress {
     }
 }
 
+/// Event emitted whenever the access controller's permissions change
+/// (for example after a `grant` or `revoke`).
 #[derive(Debug, Clone)]
 pub struct EventUpdated {
     pub controller_type: String,
@@ -48,6 +51,7 @@ pub struct EventUpdated {
 }
 
 impl EventUpdated {
+    /// Builds a new `EventUpdated`, stamping it with the current UTC time.
     pub fn new(controller_type: String, address: String, action: String) -> Self {
         Self {
             controller_type,
@@ -58,43 +62,52 @@ impl EventUpdated {
     }
 }
 
+/// Access controller backed by a GuardianDB key-value store.
+///
+/// Permissions are stored as a map from capability/role (e.g. `"write"`,
+/// `"admin"`) to a list of authorized identity keys, persisted in the
+/// underlying key-value store.
 pub struct GuardianDBAccessController {
-    /// EventBus para emitir eventos de access controller
+    /// EventBus used to emit access controller events.
     event_bus: EventBus,
 
-    /// Emitter type-safe para eventos de atualização (com mutabilidade interior)
+    /// Type-safe emitter for update events (with interior mutability so it can
+    /// be initialized lazily on first use).
     event_emitter: Arc<tokio::sync::Mutex<Option<Emitter<EventUpdated>>>>,
 
-    /// Uma referência compartilhada à instância principal do GuardianDB.
+    /// Shared reference to the main GuardianDB instance.
     guardian_db: Arc<dyn GuardianDBKVStoreProvider<Error = GuardianError>>,
 
-    /// O armazém de chave-valor para as permissões. Envolto em RwLock e Option
-    /// porque pode ser substituído dinamicamente pela função `load`.
+    /// The key-value store holding the permissions. Wrapped in `RwLock` and
+    /// `Option` because it can be replaced dynamically by the `load` method.
     kv_store: KVStoreType,
 
-    /// Mutex para serializar operações de grant/revoke (evita race conditions)
+    /// Mutex serializing grant/revoke operations to avoid race conditions.
     write_mutex: tokio::sync::Mutex<()>,
 
-    /// Opções de manifesto.
+    /// Manifest options.
     options: Box<dyn ManifestParams>,
 
-    /// Span para contexto de tracing estruturado.
+    /// Span for structured tracing context.
     span: Span,
 }
 
 impl GuardianDBAccessController {
-    /// Retorna uma referência ao span para contexto de tracing
+    /// Returns a reference to the span used for tracing context.
     pub fn span(&self) -> &Span {
         &self.span
     }
 
+    /// Returns the concrete controller type identifier.
     pub fn get_type(&self) -> &'static str {
         "GuardianDB"
     }
 
+    /// Returns the address of the underlying key-value store, or `None` if no
+    /// store is currently loaded.
     pub async fn address(&self) -> Option<Box<dyn Address>> {
         let store_guard = self.kv_store.read().await;
-        // Retorna o endereço do kv_store, se ele existir.
+        // Return the kv_store's address if a store exists.
         if let Some(store_arc) = store_guard.as_ref() {
             let store = store_arc.lock().await;
             let addr = store.address();
@@ -105,24 +118,29 @@ impl GuardianDBAccessController {
         }
     }
 
+    /// Returns the list of identity keys authorized for the given role,
+    /// or an empty list if the role has no authorizations.
     pub async fn get_authorized_by_role(&self, role: &str) -> Result<Vec<String>> {
         let authorizations = self.get_authorizations().await?;
 
-        // Retorna a lista de chaves para a "role", ou uma lista vazia se a "role" não existir.
+        // Return the keys for the role, or an empty list if the role is absent.
         Ok(authorizations.get(role).cloned().unwrap_or_default())
     }
 
+    /// Reads and aggregates all persisted authorizations from the store into a
+    /// `role -> keys` map. As a special rule, every key with `write` access is
+    /// also granted `admin` access.
     async fn get_authorizations(&self) -> Result<HashMap<String, Vec<String>>> {
         let mut authorizations_set: HashMap<String, HashSet<String>> = HashMap::new();
 
         let store_guard = self.kv_store.read().await;
         let store = match store_guard.as_ref() {
             Some(s) => s,
-            // Se não há store, não há autorizações.
+            // No store means no authorizations.
             None => return Ok(HashMap::new()),
         };
 
-        // Implementa store.all() para recuperar todas as autorizações persistidas
+        // Use store.all() to retrieve every persisted authorization entry.
         let store_lock = store.lock().await;
         let all_data = store_lock.all();
 
@@ -136,7 +154,7 @@ impl GuardianDBAccessController {
             }
         }
 
-        // Se a permissão 'write' existe, concede as mesmas chaves para 'admin'.
+        // If the 'write' permission exists, grant the same keys to 'admin'.
         if let Some(write_keys) = authorizations_set.get("write").cloned() {
             let admin_keys = authorizations_set.entry("admin".to_string()).or_default();
             for key in write_keys.iter() {
@@ -144,7 +162,7 @@ impl GuardianDBAccessController {
             }
         }
 
-        // Converte os valores de HashSet para Vec<String> no mapa final.
+        // Convert the HashSet values to Vec<String> in the final map.
         let authorizations_list = authorizations_set
             .into_iter()
             .map(|(permission, keys)| (permission, keys.into_iter().collect()))
@@ -153,6 +171,12 @@ impl GuardianDBAccessController {
         Ok(authorizations_list)
     }
 
+    /// Decides whether a log entry may be appended.
+    ///
+    /// Access is granted if the entry's identity id (or the universal `"*"`
+    /// key) appears in the combined `write` + `admin` authorization sets; in
+    /// that case the identity is also cryptographically verified. Otherwise an
+    /// "unauthorized" error is returned.
     #[instrument(skip(self, entry, identity_provider, _additional_context))]
     pub async fn can_append(
         &self,
@@ -170,7 +194,7 @@ impl GuardianDBAccessController {
 
         let entry_id = entry.get_identity().id();
 
-        // Verifica se a chave universal ("*") ou a ID específica da entrada está presente.
+        // Check whether the universal key ("*") or the entry's specific id is present.
         if access.contains(entry_id) || access.contains("*") {
             identity_provider
                 .verify_identity(entry.get_identity())
@@ -178,22 +202,24 @@ impl GuardianDBAccessController {
             return Ok(());
         }
 
-        Err(GuardianError::Store("Não autorizado".to_string()))
+        Err(GuardianError::Store("Not authorized".to_string()))
     }
 
+    /// Grants `key_id` the given `capability`, persisting the change and
+    /// emitting an update event. Concurrent grants/revokes are serialized.
     #[allow(dead_code)]
     #[instrument(skip(self), fields(capability = %capability, key_id = %key_id))]
     pub async fn grant(&self, capability: &str, key_id: &str) -> Result<()> {
-        // Serializa operações de grant para evitar race conditions
+        // Serialize grant operations to avoid race conditions.
         let _guard = self.write_mutex.lock().await;
 
         {
             let store_guard = self.kv_store.read().await;
             let store_arc = store_guard
                 .as_ref()
-                .ok_or_else(|| GuardianError::Store("kv_store não inicializado".to_string()))?;
+                .ok_or_else(|| GuardianError::Store("kv_store not initialized".to_string()))?;
 
-            // Usa um HashSet para evitar duplicatas automaticamente.
+            // Use a HashSet to automatically deduplicate keys.
             let mut capabilities: HashSet<String> = self
                 .get_authorized_by_role(capability)
                 .await?
@@ -206,83 +232,90 @@ impl GuardianDBAccessController {
 
             let capabilities_bytes = crate::guardian::serializer::serialize(&capabilities_vec)?;
 
-            // Implementa operações de store para persistir as permissões
+            // Persist the permissions in the store.
             let store = store_arc.lock().await;
             store
                 .put(capability, capabilities_bytes)
                 .await
-                .map_err(|e| GuardianError::Store(format!("Erro ao salvar no store: {}", e)))?;
+                .map_err(|e| GuardianError::Store(format!("Error saving to store: {}", e)))?;
         }
 
-        // Depois, emite evento de atualização usando EventBus
+        // Then emit an update event via the EventBus.
         self.on_update("grant", capability, key_id).await;
 
         Ok(())
     }
 
+    /// Revokes `key_id`'s `capability`. The updated permission list is
+    /// persisted, or the capability entry is deleted entirely if no keys
+    /// remain. Emits an update event. Concurrent grants/revokes are serialized.
     #[allow(dead_code)]
     #[instrument(skip(self), fields(capability = %capability, key_id = %key_id))]
     pub async fn revoke(&self, capability: &str, key_id: &str) -> Result<()> {
-        // Serializa operações de revoke para evitar race conditions
+        // Serialize revoke operations to avoid race conditions.
         let _guard = self.write_mutex.lock().await;
 
         {
             let store_guard = self.kv_store.read().await;
             let store_arc = store_guard
                 .as_ref()
-                .ok_or_else(|| GuardianError::Store("kv_store não inicializado".to_string()))?;
+                .ok_or_else(|| GuardianError::Store("kv_store not initialized".to_string()))?;
 
             let mut capabilities: Vec<String> = self.get_authorized_by_role(capability).await?;
 
-            // Remove a chave, se ela existir.
+            // Remove the key if it is present.
             capabilities.retain(|id| id != key_id);
 
             let store = store_arc.lock().await;
             if !capabilities.is_empty() {
                 let capabilities_bytes = crate::guardian::serializer::serialize(&capabilities)?;
 
-                // Implementa operações de store para persistir as permissões
+                // Persist the remaining permissions in the store.
                 store
                     .put(capability, capabilities_bytes)
                     .await
                     .map_err(|e| {
-                        GuardianError::Store(format!("Erro ao persistir permissões: {}", e))
+                        GuardianError::Store(format!("Error persisting permissions: {}", e))
                     })?;
             } else {
-                // Remove a entrada completamente se não há mais permissões
+                // Remove the entry entirely when no permissions remain.
                 store.delete(capability).await.map_err(|e| {
-                    GuardianError::Store(format!("Erro ao remover permissões: {}", e))
+                    GuardianError::Store(format!("Error removing permissions: {}", e))
                 })?;
             }
         }
 
-        // Depois, emite evento de atualização usando EventBus
+        // Then emit an update event via the EventBus.
         self.on_update("revoke", capability, key_id).await;
 
         Ok(())
     }
 
+    /// Loads (or reloads) the permissions store from the given address,
+    /// closing any currently loaded store first. The admin access from the
+    /// manifest options is used as the new store's write access, falling back
+    /// to universal access (`"*"`) when none is configured.
     #[instrument(skip(self), fields(address = %address))]
     pub async fn load(&self, address: &str) -> Result<()> {
         let mut store_guard = self.kv_store.write().await;
-        // Fecha qualquer store existente antes de carregar um novo.
+        // Close any existing store before loading a new one.
         if let Some(_store) = store_guard.take() {
-            // Ignora erro no close por enquanto
+            // Ignore close errors for now.
         }
 
         let write_access = self.options.get_access("admin");
         let write_access = match write_access {
             Some(access) if !access.is_empty() => access,
             _ => {
-                // Fix identity access - usa o ID da identidade do provedor
-                vec!["*".to_string()] // Permite acesso universal como fallback
+                // No configured access: fall back to universal access.
+                vec!["*".to_string()]
             }
         };
 
         let db_address = crate::access_control::ensure_address(address);
 
         let mut store_options = CreateDBOptions::default();
-        // Configura o access controller para o store
+        // Configure the access controller for the store.
         let iroh_ac_params = CreateAccessControllerOptions::new_simple("iroh".to_string(), {
             let mut access = HashMap::new();
             access.insert("write".to_string(), write_access);
@@ -290,72 +323,77 @@ impl GuardianDBAccessController {
         });
         store_options.access_controller = Some(Box::new(iroh_ac_params));
 
-        // Operações de store para carregar o key-value store
+        // Open the key-value store at the resolved address.
         let store = self
             .guardian_db
             .key_value(&db_address, &mut store_options)
             .await
-            .map_err(|e| GuardianError::Store(format!("Erro ao abrir key-value store: {}", e)))?;
+            .map_err(|e| GuardianError::Store(format!("Error opening key-value store: {}", e)))?;
 
-        // Salva o novo store
+        // Store the newly opened store.
         *store_guard = Some(Arc::new(tokio::sync::Mutex::new(store)));
 
         Ok(())
     }
 
+    /// Produces the manifest parameters describing this access controller,
+    /// used to persist a reference to it.
     #[instrument(skip(self))]
     pub async fn save(&self) -> Result<Box<dyn ManifestParams>> {
         let store_guard = self.kv_store.read().await;
         let store_arc = store_guard
             .as_ref()
-            .ok_or_else(|| GuardianError::Store("kv_store não inicializado".to_string()))?;
+            .ok_or_else(|| GuardianError::Store("kv_store not initialized".to_string()))?;
 
         let store = store_arc.lock().await;
         let addr = store.address();
         let addr_string = format!("{}", addr);
 
-        debug!(target: "access_controller", address = %addr_string, "Save executado para o store");
+        debug!(target: "access_controller", address = %addr_string, "Save executed for the store");
 
-        // Cria o manifesto baseado no endereço do store
-        // Use default Hash (zero hash)
+        // Build the manifest based on the store address.
+        // Uses a default (zero) Hash.
         let hash = iroh_blobs::Hash::from([0u8; 32]);
 
-        // Assume um construtor que cria um manifesto 'GuardianDB' a partir de um Hash.
+        // Build a 'GuardianDB' manifest from the Hash.
         let params = CreateAccessControllerOptions::new(hash, false, "GuardianDB".to_string());
         Ok(Box::new(params))
     }
 
+    /// Closes the underlying store (if loaded) and clears the reference to it.
     #[instrument(skip(self))]
     pub async fn close(&self) -> Result<()> {
         let mut store_guard = self.kv_store.write().await;
         if let Some(store_arc) = store_guard.take() {
-            // Fecha o store usando o método close() da trait Store
+            // Close the store via the Store trait's close() method.
             let store = store_arc.lock().await;
             match store.close().await {
-                Ok(_) => debug!(target: "access_controller", "Store fechado com sucesso"),
-                Err(e) => warn!(target: "access_controller", error = %e, "Erro ao fechar o store"),
+                Ok(_) => debug!(target: "access_controller", "Store closed successfully"),
+                Err(e) => warn!(target: "access_controller", error = %e, "Error closing the store"),
             }
         }
         Ok(())
     }
 
+    /// Emits an `EventUpdated` describing a permission change, lazily
+    /// initializing the event emitter on first use.
     async fn on_update(&self, action: &str, capability: &str, key_id: &str) {
         let mut emitter_guard = self.event_emitter.lock().await;
 
-        // Inicializa o emitter se não existir
+        // Initialize the emitter if it does not exist yet.
         if emitter_guard.is_none() {
             match self.event_bus.emitter::<EventUpdated>().await {
                 Ok(emitter) => {
                     *emitter_guard = Some(emitter);
                 }
                 Err(e) => {
-                    warn!(target: "GuardianDB::ac", error = %e, "Falha ao inicializar event emitter");
+                    warn!(target: "GuardianDB::ac", error = %e, "Failed to initialize event emitter");
                     return;
                 }
             }
         }
 
-        // Emite o evento usando EventBus
+        // Emit the event via the EventBus.
         if let Some(emitter) = emitter_guard.as_ref() {
             let address = self
                 .address()
@@ -370,25 +408,31 @@ impl GuardianDBAccessController {
             );
 
             if let Err(e) = emitter.emit(event) {
-                warn!(target: "GuardianDB::ac", error = %e, "Falha ao emitir evento de atualização");
+                warn!(target: "GuardianDB::ac", error = %e, "Failed to emit update event");
             } else {
-                debug!(target: "GuardianDB::ac", action = %action, capability = %capability, key_id = %key_id, "Evento emitido com sucesso");
+                debug!(target: "GuardianDB::ac", action = %action, capability = %capability, key_id = %key_id, "Event emitted successfully");
             }
         }
     }
 
+    /// Creates a new access controller, opening its backing key-value store and
+    /// granting the initial `write` access keys from the manifest params.
+    ///
+    /// When the params carry no name, a unique timestamp-based name is generated
+    /// to avoid collisions (the hash is intentionally not used as a name since it
+    /// looks like an address).
     #[instrument(skip(guardian_db, params))]
     pub async fn new(
         guardian_db: Arc<dyn GuardianDBKVStoreProvider<Error = GuardianError>>,
         params: Box<dyn crate::access_control::manifest::ManifestParams>,
     ) -> std::result::Result<Self, GuardianError> {
         let kv_provider = guardian_db;
-        // Use name if provided, otherwise generate a unique name
-        // Avoid using the hash as a database name since it looks like an address
+        // Use the provided name if present, otherwise generate a unique name.
+        // Avoid using the hash as a database name since it looks like an address.
         let addr_str = if !params.get_name().is_empty() {
             params.get_name().to_string()
         } else {
-            // Usar nome único baseado em timestamp para evitar colisões
+            // Use a unique timestamp-based name to avoid collisions.
             format!(
                 "test-ac-{}",
                 chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
@@ -408,26 +452,26 @@ impl GuardianDBAccessController {
             .key_value(&addr_str, &mut opts)
             .await
             .map_err(|e| {
-                GuardianError::Store(format!("Erro ao inicializar key-value store: {}", e))
+                GuardianError::Store(format!("Error initializing key-value store: {}", e))
             })?;
 
-        debug!(target: "access_controller", address = %addr_str, "Key-value store inicializada");
+        debug!(target: "access_controller", address = %addr_str, "Key-value store initialized");
 
-        // Usa nosso EventBus para emitir eventos type-safe
+        // Use our own EventBus to emit type-safe events.
         let event_bus = EventBus::new();
         let _write_access = params.get_access("write");
         let controller = Self {
             event_bus,
-            event_emitter: Arc::new(tokio::sync::Mutex::new(None)), // Será inicializado lazy quando necessário
+            event_emitter: Arc::new(tokio::sync::Mutex::new(None)), // Initialized lazily when needed.
             guardian_db: kv_provider,
-            kv_store: RwLock::new(Some(Arc::new(tokio::sync::Mutex::new(kv_store)))), // Inicializa com o store
+            kv_store: RwLock::new(Some(Arc::new(tokio::sync::Mutex::new(kv_store)))), // Initialize with the store.
             write_mutex: tokio::sync::Mutex::new(()),
             options: params,
-            // Cria um span para contexto de tracing
+            // Create a span for tracing context.
             span: tracing::info_span!("guardian_access_controller", address = %addr_str),
         };
 
-        // Inicializa permissões básicas se necessário
+        // Grant the initial permissions if any are configured.
         let write_access = controller.options.get_access("write");
         if let Some(access_keys) = write_access {
             for key in access_keys {
@@ -439,7 +483,8 @@ impl GuardianDBAccessController {
     }
 }
 
-// Implementação da trait AccessController para GuardianDBAccessController
+// AccessController trait implementation for GuardianDBAccessController.
+// Each method simply delegates to the inherent method of the same name.
 #[async_trait::async_trait]
 impl crate::access_control::traits::AccessController for GuardianDBAccessController {
     fn get_type(&self) -> &str {

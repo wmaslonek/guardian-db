@@ -1,23 +1,23 @@
-/// Backend Iroh Otimizado - Iroh Node embarcado nativo em Rust
+/// Optimized Iroh backend - native embedded Iroh Endpoint in Rust.
 ///
-/// Usa o Iroh Node embarcado com otimizações avançadas:
-/// - Cache inteligente com compressão automática
-/// - Pool de conexões com load balancing
-/// - Processamento em batch para throughput otimizado
-/// - Monitoramento de performance em tempo real
+/// Uses the embedded Iroh Endpoint with advanced optimizations:
+/// - Intelligent cache with automatic compression
+/// - Connection pool with load balancing
+/// - Batch processing for optimized throughput
+/// - Real-time performance monitoring
 use crate::guardian::error::{GuardianError, Result};
 use crate::p2p::network::{config::ClientConfig, types::*};
 use bytes::Bytes;
 use iroh::SecretKey;
 use iroh::endpoint::Endpoint;
 use iroh::protocol::Router;
-use iroh::{NodeAddr, NodeId};
+use iroh::{EndpointAddr as NodeAddr, EndpointId as NodeId};
 use iroh_blobs::api::Tag;
 use iroh_blobs::store::fs::FsStore;
 use iroh_blobs::{BlobFormat, BlobsProtocol, Hash as IrohHash, HashAndFormat};
 use iroh_docs::protocol::Docs;
 use iroh_gossip::net::Gossip;
-use rand;
+use iroh_mdns_address_lookup::MdnsAddressLookup;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -26,18 +26,15 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, info, warn};
-/// ALPN (Application-Layer Protocol Negotiation) para conexões Guardian
-/// Identifica o protocolo da aplicação na camada de transporte QUIC
-const GUARDIAN_ALPN: &[u8] = b"/guardian/1.0.0";
-
-// Módulos principais
+// Main modules.
 pub mod blobs;
 pub mod docs;
 pub mod gossip;
 pub mod key_synchronizer;
 pub mod networking_metrics;
+pub mod ticket_exchange;
 
-// Módulos de otimização
+// Optimization modules.
 pub mod batch_processor;
 pub mod connection_pool;
 pub mod optimized_cache;
@@ -47,35 +44,35 @@ pub use docs::WillowDocs;
 pub use gossip::EpidemicPubSub;
 pub use optimized_cache::OptimizedCache;
 
-/// Informações de um objeto fixado
+/// Information about a pinned object.
 #[derive(Debug, Clone)]
 pub struct PinInfo {
-    /// Hash BLAKE3 do conteúdo (hex string)
+    /// BLAKE3 hash of the content (hex string).
     pub hash: String,
     pub pin_type: PinType,
 }
 
-/// Tipo de fixação (pin)
+/// Pin type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PinType {
-    /// Fixação direta do objeto
+    /// Direct pin of the object.
     Direct,
-    /// Fixação recursiva (inclui referencias)
+    /// Recursive pin (includes references).
     Recursive,
-    /// Fixação indireta (referenciado por outro pin)
+    /// Indirect pin (referenced by another pin).
     Indirect,
 }
 
-/// Estatísticas de um bloco
+/// Statistics of a block.
 #[derive(Debug, Clone)]
 pub struct BlockStats {
-    /// Hash BLAKE3 do bloco
+    /// BLAKE3 hash of the block.
     pub hash: IrohHash,
     pub size: u64,
     pub exists_locally: bool,
 }
 
-/// Estatísticas de garbage collection
+/// Garbage collection statistics.
 #[derive(Debug, Clone)]
 pub struct GcStats {
     pub blocks_removed: u64,
@@ -83,35 +80,35 @@ pub struct GcStats {
     pub duration_ms: u64,
 }
 
-/// Métricas de performance do backend
+/// Backend performance metrics.
 #[derive(Debug, Clone)]
 pub struct BackendMetrics {
-    /// Operações por segundo
+    /// Operations per second.
     pub ops_per_second: f64,
-    /// Latência média em ms
+    /// Average latency in ms.
     pub avg_latency_ms: f64,
-    /// Número de operações totais
+    /// Total number of operations.
     pub total_operations: u64,
-    /// Número de erros
+    /// Number of errors.
     pub error_count: u64,
-    /// Uso de memória em bytes
+    /// Memory usage in bytes.
     pub memory_usage_bytes: u64,
 }
 
-/// Status de saúde do backend
+/// Backend health status.
 #[derive(Debug, Clone)]
 pub struct HealthStatus {
-    /// Backend está saudável
+    /// Whether the backend is healthy.
     pub healthy: bool,
-    /// Mensagem descritiva
+    /// Descriptive message.
     pub message: String,
-    /// Tempo de resposta em ms
+    /// Response time in ms.
     pub response_time_ms: u64,
-    /// Componentes verificados
+    /// Verified components.
     pub checks: Vec<HealthCheck>,
 }
 
-/// Verificação individual de saúde
+/// Individual health check.
 #[derive(Debug, Clone)]
 pub struct HealthCheck {
     pub name: String,
@@ -119,239 +116,240 @@ pub struct HealthCheck {
     pub message: String,
 }
 
-/// Store do iroh-blobs (apenas FsStore é utilizado atualmente)
+/// iroh-blobs store (only FsStore is currently used).
 enum StoreType {
     Fs(FsStore),
 }
 
-/// Backend Iroh Otimizado
+/// Optimized Iroh backend.
 ///
-/// Backend Iroh de alta performance com otimizações nativas:
-/// - Cache multinível com compressão inteligente
-/// - Pool de conexões com circuit breaking
-/// - Processamento em batch para máximo throughput
-/// - Monitoramento contínuo de performance
+/// High-performance Iroh backend with native optimizations:
+/// - Multi-level cache with intelligent compression
+/// - Connection pool with circuit breaking
+/// - Batch processing for maximum throughput
+/// - Continuous performance monitoring
 pub struct IrohBackend {
-    /// Configuração do backend
+    /// Backend configuration.
     #[allow(dead_code)]
     config: ClientConfig,
-    /// Diretório de dados do nó
+    /// Node data directory.
     data_dir: PathBuf,
-    /// Endpoint do Iroh para comunicação P2P
+    /// Iroh Endpoint for P2P communication.
     endpoint: Arc<RwLock<Option<Endpoint>>>,
-    /// Store do iroh-bytes para armazenamento
+    /// iroh-bytes store for storage.
     store: Arc<RwLock<Option<StoreType>>>,
-    /// Instância do protocolo Gossip para pub/sub
+    /// Gossip protocol instance for pub/sub.
     gossip: Arc<RwLock<Option<Gossip>>>,
-    /// Instância do protocolo Docs para KV store distribuído
+    /// Docs protocol instance for the distributed KV store.
     docs: Arc<RwLock<Option<Docs>>>,
-    /// Router para multiplexação de protocolos via ALPN
+    /// Router for protocol multiplexing via ALPN.
     router: Arc<RwLock<Option<Router>>>,
-    /// Chave secreta do nó
+    /// Node secret key.
     secret_key: SecretKey,
-    /// Métricas de performance
+    /// Performance metrics.
     metrics: Arc<RwLock<BackendMetrics>>,
-    /// Cache de objetos fixados
+    /// Cache of pinned objects.
     pinned_cache: Arc<Mutex<HashMap<String, PinType>>>,
-    /// Status do nó
+    /// Node status.
     node_status: Arc<RwLock<NodeStatus>>,
-    /// Cache de peers descobertos via Iroh Discovery Services (Pkarr/DNS/mDNS)
+    /// Cache of peers discovered via Iroh Discovery Services (Pkarr/DNS/mDNS).
     discovery_cache: Arc<RwLock<DiscoveryCache>>,
-    /// Cache otimizado com métricas integradas, compressão e evicção inteligente
+    /// Optimized cache with integrated metrics, compression and intelligent eviction.
     optimized_cache: Arc<OptimizedCache>,
-    /// Pool de conexões ativas
+    /// Pool of active connections.
     connection_pool: Arc<RwLock<HashMap<NodeId, ConnectionInfo>>>,
-    /// Monitor de performance em tempo real
+    /// Real-time performance monitor.
     performance_monitor: Arc<RwLock<PerformanceMonitor>>,
-    /// Coletor de métricas avançadas de networking
+    /// Advanced networking metrics collector.
     networking_metrics:
         Arc<crate::p2p::network::core::networking_metrics::NetworkingMetricsCollector>,
-    /// Sincronizador de chaves para consistência entre peers
+    /// Key synchronizer for consistency between peers.
     key_synchronizer: Arc<crate::p2p::network::core::key_synchronizer::KeySynchronizer>,
+    /// Registry of `DocTicket` providers per store address (secure automatic exchange).
+    ticket_registry: crate::p2p::network::core::ticket_exchange::TicketRegistry,
+    /// Peers we have already connected to (candidates for requesting tickets).
+    known_peers: Arc<RwLock<std::collections::HashSet<NodeId>>>,
 }
 
-/// Status interno do nó Iroh
+/// Internal status of the Iroh node.
 #[derive(Debug, Clone)]
 struct NodeStatus {
-    /// Nó está online e operacional
+    /// Whether the node is online and operational.
     is_online: bool,
-    /// Último erro encontrado
+    /// Last error encountered.
     last_error: Option<String>,
-    /// Timestamp da última atividade
+    /// Timestamp of the last activity.
     last_activity: Instant,
-    /// Número de peers conectados
+    /// Number of connected peers.
     connected_peers: u32,
 }
 
-/// Informações de um peer descoberto via Iroh Discovery Services
+/// Information about a peer discovered via Iroh Discovery Services.
 ///
-/// Esta estrutura armazena informações de peers descobertos via Pkarr, DNS ou mDNS.
+/// This structure stores information about peers discovered via Pkarr, DNS or mDNS.
 #[derive(Debug, Clone)]
 struct DiscoveredPeerInfo {
-    /// ID do node
+    /// Node ID.
     node_id: NodeId,
-    /// Endereços conhecidos (SocketAddr formatados como string)
+    /// Known addresses (SocketAddr formatted as strings).
     addresses: Vec<String>,
-    /// Última vez que foi visto
+    /// Last time it was seen.
     last_seen: Instant,
-    /// Latência aproximada
+    /// Approximate latency.
     #[allow(dead_code)]
     latency: Option<Duration>,
-    /// Protocolos suportados (identificadores informacionais)
+    /// Supported protocols (informational identifiers).
     protocols: Vec<String>,
 }
 
-/// Cache de informações de discovery para peers
+/// Discovery information cache for peers.
 ///
-/// Este cache armazena informações de
-/// discovery (Pkarr/DNS/mDNS) obtidas via Discovery Services.
+/// This cache stores discovery information (Pkarr/DNS/mDNS) obtained via Discovery Services.
 #[derive(Debug, Default)]
 struct DiscoveryCache {
-    /// Peers conhecidos indexados por NodeId
+    /// Known peers indexed by NodeId.
     peers: HashMap<NodeId, DiscoveredPeerInfo>,
-    /// Timestamp da última atualização
-    last_update: Option<Instant>,
 }
 
-/// Dados em cache com metadados
+/// Cached data with metadata.
 #[derive(Debug, Clone)]
 pub struct CachedData {
-    /// Dados do blob
+    /// Blob data.
     pub data: Bytes,
-    /// Timestamp de cache
+    /// Cache timestamp.
     pub cached_at: Instant,
-    /// Número de acessos
+    /// Number of accesses.
     pub access_count: u64,
-    /// Tamanho dos dados
+    /// Data size.
     pub size: usize,
 }
 
-/// Informações de conexão otimizada
+/// Optimized connection information.
 #[derive(Debug, Clone)]
 pub struct ConnectionInfo {
-    /// ID do node
+    /// Node ID.
     pub node_id: NodeId,
-    /// Endereço de conexão
+    /// Connection address.
     pub address: String,
-    /// Timestamp de conexão
+    /// Connection timestamp.
     pub connected_at: Instant,
-    /// Último uso
+    /// Last use.
     pub last_used: Instant,
-    /// Latência média (ms)
+    /// Average latency (ms).
     pub avg_latency_ms: f64,
-    /// Número de operações
+    /// Number of operations.
     pub operations_count: u64,
 }
 
-/// Monitor de performance em tempo real
+/// Real-time performance monitor.
 #[derive(Debug, Default)]
 pub struct PerformanceMonitor {
-    /// Métricas de throughput
+    /// Throughput metrics.
     pub throughput_metrics: ThroughputMetrics,
-    /// Métricas de latência
+    /// Latency metrics.
     pub latency_metrics: LatencyMetrics,
-    /// Métricas de recursos
+    /// Resource metrics.
     pub resource_metrics: ResourceMetrics,
-    /// Histórico de performance
+    /// Performance history.
     pub performance_history: Vec<PerformanceSnapshot>,
 }
 
-/// Métricas de throughput
+/// Throughput metrics.
 #[derive(Debug, Default, Clone)]
 pub struct ThroughputMetrics {
-    /// Operações por segundo
+    /// Operations per second.
     pub ops_per_second: f64,
-    /// Bytes por segundo
+    /// Bytes per second.
     pub bytes_per_second: u64,
-    /// Pico de throughput
+    /// Peak throughput.
     pub peak_throughput: f64,
-    /// Throughput médio
+    /// Average throughput.
     pub avg_throughput: f64,
 }
 
-/// Métricas de latência
+/// Latency metrics.
 #[derive(Debug, Default, Clone)]
 pub struct LatencyMetrics {
-    /// Latência média (ms)
+    /// Average latency (ms).
     pub avg_latency_ms: f64,
-    /// Latência P95 (ms)
+    /// P95 latency (ms).
     pub p95_latency_ms: f64,
-    /// Latência P99 (ms)
+    /// P99 latency (ms).
     pub p99_latency_ms: f64,
-    /// Latência mínima (ms)
+    /// Minimum latency (ms).
     pub min_latency_ms: f64,
-    /// Latência máxima (ms)
+    /// Maximum latency (ms).
     pub max_latency_ms: f64,
 }
 
-/// Métricas de recursos
+/// Resource metrics.
 #[derive(Debug, Default, Clone)]
 pub struct ResourceMetrics {
-    /// Uso de CPU (0.0-1.0)
+    /// CPU usage (0.0-1.0).
     pub cpu_usage: f64,
-    /// Uso de memória (bytes)
+    /// Memory usage (bytes).
     pub memory_usage_bytes: u64,
-    /// I/O de disco (bytes/s)
+    /// Disk I/O (bytes/s).
     pub disk_io_bps: u64,
-    /// Largura de banda (bytes/s)
+    /// Bandwidth (bytes/s).
     pub network_bandwidth_bps: u64,
 }
 
-/// Snapshot de performance em um momento específico
+/// Performance snapshot at a specific moment.
 #[derive(Debug, Clone)]
 pub struct PerformanceSnapshot {
-    /// Timestamp do snapshot
+    /// Snapshot timestamp.
     pub timestamp: Instant,
-    /// Métricas de throughput
+    /// Throughput metrics.
     pub throughput: ThroughputMetrics,
-    /// Métricas de latência
+    /// Latency metrics.
     pub latency: LatencyMetrics,
-    /// Métricas de recursos
+    /// Resource metrics.
     pub resources: ResourceMetrics,
 }
 
-/// Conteúdo em cache com metadados
+/// Cached content with metadata.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 struct CachedContent {
-    /// Dados do conteúdo
+    /// Content data.
     data: bytes::Bytes,
-    /// Timestamp de quando foi cacheado
+    /// Timestamp of when it was cached.
     cached_at: Instant,
-    /// Número de acessos ao cache
+    /// Number of cache accesses.
     access_count: u64,
-    /// Último acesso
+    /// Last access.
     last_accessed: Instant,
-    /// Tamanho em bytes
+    /// Size in bytes.
     size: usize,
-    /// Prioridade do cache (0-10)
+    /// Cache priority (0-10).
     priority: u8,
 }
 
-/// Metadados de conteúdo (reservado para uso futuro)
+/// Content metadata (reserved for future use).
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 struct ContentMetadata {
     #[allow(dead_code)]
     hash_str: String,
-    /// Tamanho do conteúdo
+    /// Content size.
     #[allow(dead_code)]
     size: usize,
-    /// Tipo de conteúdo
+    /// Content type.
     #[allow(dead_code)]
     content_type: Option<String>,
-    /// Hash do conteúdo
+    /// Content hash.
     #[allow(dead_code)]
     hash: String,
-    /// Peers que possuem o conteúdo
+    /// Peers that hold the content.
     #[allow(dead_code)]
     providers: Vec<NodeId>,
-    /// Timestamp de descoberta
+    /// Discovery timestamp.
     #[allow(dead_code)]
     discovered_at: Instant,
 }
 
-/// Estrutura simples para estatísticas de cache (API pública)
+/// Simple structure for cache statistics (public API).
 #[derive(Debug, Clone, Default)]
 pub struct SimpleCacheStats {
     pub entries_count: u32,
@@ -361,60 +359,60 @@ pub struct SimpleCacheStats {
 
 impl IrohBackend {
     // ╔════════════════════════════════════════════════════════════════════════════════╗
-    // ║                          INICIALIZAÇÃO E CONSTRUÇÃO                            ║
+    // ║                          INITIALIZATION AND CONSTRUCTION                          ║
     // ╚════════════════════════════════════════════════════════════════════════════════╝
 
-    /// Cria uma nova instância do backend Iroh
+    /// Creates a new instance of the Iroh backend.
     ///
-    /// # Argumentos
-    /// * `config` - Configuração do cliente contendo path de dados
+    /// # Arguments
+    /// * `config` - Client configuration containing the data path
     ///
-    /// # Retorna
-    /// Nova instância configurada do backend Iroh
+    /// # Returns
+    /// A new configured instance of the Iroh backend
     ///
-    /// # Erros
-    /// Retorna erro se não conseguir inicializar o nó Iroh
+    /// # Errors
+    /// Returns an error if the Iroh node cannot be initialized
     pub async fn new(config: &ClientConfig) -> Result<Self> {
         let data_dir = config
             .data_store_path
             .as_ref()
             .ok_or_else(|| {
                 GuardianError::Other(
-                    "Diretório de dados não configurado para backend Iroh".to_string(),
+                    "Data directory not configured for the Iroh backend".to_string(),
                 )
             })?
             .clone();
 
-        debug!("Inicializando backend Iroh no diretório: {:?}", data_dir);
+        debug!("Initializing Iroh backend in directory: {:?}", data_dir);
 
-        // Garante que o diretório existe
-        tokio::fs::create_dir_all(&data_dir).await.map_err(|e| {
-            GuardianError::Other(format!("Erro ao criar diretório de dados: {}", e))
-        })?;
+        // Ensure the directory exists.
+        tokio::fs::create_dir_all(&data_dir)
+            .await
+            .map_err(|e| GuardianError::Other(format!("Error creating data directory: {}", e)))?;
 
-        // Gera ou carrega chave secreta persistente para o nó
+        // Generate or load the node's persistent secret key.
         let secret_key = Self::load_or_generate_node_secret_key(&data_dir).await?;
 
         let data_dir_clone = data_dir.clone();
 
-        // Inicializa componentes otimizados
-        debug!("Inicializando componentes de otimização...");
+        // Initialize the optimized components.
+        debug!("Initializing optimization components...");
 
-        // Cache otimizado com compressão, métricas integradas e evicção inteligente
+        // Optimized cache with compression, integrated metrics and intelligent eviction.
         let cache_config = optimized_cache::CacheConfig {
-            max_data_cache_size: 256 * 1024 * 1024, // 256MB
+            max_data_cache_size: 256 * 1024 * 1024, // 256 MB
             max_data_entries: 10_000,
-            max_compressed_cache_size: 512 * 1024 * 1024, // 512MB
+            max_compressed_cache_size: 512 * 1024 * 1024, // 512 MB
             max_compressed_entries: 50_000,
             default_ttl_secs: 3600,
-            compression_threshold: 64 * 1024, // 64KB
+            compression_threshold: 64 * 1024, // 64 KB
             compression_level: 6,
             eviction_threshold: 0.85,
             enable_access_prediction: true,
         };
         let optimized_cache = Arc::new(OptimizedCache::new(cache_config));
 
-        // Pool de conexões vazio inicial
+        // Initially empty connection pool.
         let connection_pool = Arc::new(RwLock::new(HashMap::new()));
 
         let backend = Self {
@@ -435,14 +433,14 @@ impl IrohBackend {
             })),
             pinned_cache: Arc::new(Mutex::new(HashMap::new())),
             node_status: Arc::new(RwLock::new(NodeStatus {
-                is_online: false, // Inicia como offline até conectar
+                is_online: false, // Starts offline until it connects.
                 last_error: None,
                 last_activity: Instant::now(),
                 connected_peers: 0,
             })),
             discovery_cache: Arc::new(RwLock::new(DiscoveryCache::default())),
 
-            // Componentes otimizados
+            // Optimized components.
             optimized_cache,
             connection_pool,
             performance_monitor: Arc::new(RwLock::new(PerformanceMonitor::default())),
@@ -453,28 +451,30 @@ impl IrohBackend {
             key_synchronizer: Arc::new(
                 crate::p2p::network::core::key_synchronizer::KeySynchronizer::new(config).await?,
             ),
+            ticket_registry: crate::p2p::network::core::ticket_exchange::new_registry(),
+            known_peers: Arc::new(RwLock::new(std::collections::HashSet::new())),
         };
-        // Inicializa o nó Iroh de forma assíncrona
+        // Initialize the Iroh node asynchronously.
         backend.initialize_node().await?;
         info!(
-            "Backend Iroh otimizado inicializado com sucesso em {:?}",
+            "Optimized Iroh backend initialized successfully at {:?}",
             data_dir_clone
         );
-        info!("Otimizações ativas: cache inteligente, connection pooling, batch processing");
+        info!("Active optimizations: intelligent cache, connection pooling, batch processing");
         Ok(backend)
     }
 
-    /// Carrega chave secreta existente ou gera uma nova de forma segura
+    /// Loads an existing secret key or securely generates a new one.
     ///
-    /// - Busca arquivo de chave existente no diretório de dados
-    /// - Gera nova chave criptograficamente segura se necessário
-    /// - Salva chave gerada para reutilização futura
+    /// - Looks for an existing key file in the data directory
+    /// - Generates a new cryptographically secure key if needed
+    /// - Saves the generated key for future reuse
     async fn load_or_generate_node_secret_key(data_dir: &std::path::Path) -> Result<SecretKey> {
         let key_file = data_dir.join("node_secret.key");
 
-        // Tenta carregar chave existente
+        // Try to load an existing key.
         if key_file.exists() {
-            debug!("Carregando chave secreta existente de {:?}", key_file);
+            debug!("Loading existing secret key from {:?}", key_file);
 
             match tokio::fs::read(&key_file).await {
                 Ok(key_bytes) if key_bytes.len() == 32 => {
@@ -482,76 +482,82 @@ impl IrohBackend {
                     key_array.copy_from_slice(&key_bytes);
 
                     let secret_key = SecretKey::from_bytes(&key_array);
-                    info!("Chave secreta do nó carregada com sucesso");
+                    info!("Node secret key loaded successfully");
                     return Ok(secret_key);
                 }
                 Ok(_) => {
-                    warn!("Arquivo de chave com tamanho inválido, gerando nova");
+                    warn!("Key file has an invalid size, generating a new one");
                 }
                 Err(e) => {
-                    warn!("Erro ao ler arquivo de chave: {}, gerando nova", e);
+                    warn!("Error reading key file: {}, generating a new one", e);
                 }
             }
         }
 
-        // Gera nova chave criptografica
-        debug!("Gerando nova chave secreta para o nó");
-        let random_bytes: [u8; 32] = rand::random();
-        let secret_key = SecretKey::from_bytes(&random_bytes);
+        // Generate a new cryptographic key.
+        debug!("Generating a new secret key for the node");
+        let secret_key = SecretKey::generate();
 
-        // Salva chave para uso futuro
+        // Save the key for future use.
         if let Err(e) = tokio::fs::write(&key_file, secret_key.to_bytes()).await {
-            warn!(
-                "Erro ao salvar chave secreta: {} - Usando chave temporária",
-                e
-            );
+            warn!("Error saving secret key: {} - Using a temporary key", e);
         } else {
-            info!("Nova chave secreta salva em {:?}", key_file);
+            info!("New secret key saved to {:?}", key_file);
         }
 
         Ok(secret_key)
     }
 
-    /// Inicializa o nó Iroh embarcado
+    /// Initializes the embedded Iroh node.
     async fn initialize_node(&self) -> Result<()> {
-        debug!("Inicializando nó Iroh com FsStore para persistência...");
+        debug!("Initializing Iroh node with FsStore for persistence...");
 
-        // Cria diretório específico para o store
+        // Create a specific directory for the store.
         let store_dir = self.data_dir.join("iroh_store");
-        tokio::fs::create_dir_all(&store_dir).await.map_err(|e| {
-            GuardianError::Other(format!("Erro ao criar diretório do store: {}", e))
-        })?;
+        tokio::fs::create_dir_all(&store_dir)
+            .await
+            .map_err(|e| GuardianError::Other(format!("Error creating store directory: {}", e)))?;
 
-        // Inicializa o FsStore com persistência
+        // Initialize the FsStore with persistence.
         let fs_store = FsStore::load(&store_dir)
             .await
-            .map_err(|e| GuardianError::Other(format!("Erro ao inicializar FsStore: {}", e)))?;
+            .map_err(|e| GuardianError::Other(format!("Error initializing FsStore: {}", e)))?;
 
-        // Armazena o store
+        // Store the store.
         {
             let mut store_lock = self.store.write().await;
             *store_lock = Some(StoreType::Fs(fs_store));
         }
 
-        // Inicializa o Endpoint para comunicação P2P com discovery services nativos
-        // O Iroh 0.92.0 usa discovery_n0() para serviços DNS+Pkarr da n0.computer
-        // e discovery_local_network() para descoberta mDNS local (requer feature flag)
-        let endpoint = Endpoint::builder()
+        // Initialize the Endpoint for P2P communication with native address lookup services.
+        // Iroh 1.0 uses the N0 preset, which enables DNS + Pkarr discovery via n0.computer (global).
+        // Local mDNS discovery (LAN) is added after binding via iroh-mdns-address-lookup.
+        let endpoint = Endpoint::builder(iroh::endpoint::presets::N0)
             .secret_key(self.secret_key.clone())
-            .discovery_n0() // DNS + Pkarr discovery via n0.computer (global)
-            .discovery_local_network() // mDNS local network discovery (LAN)
             .bind()
             .await
-            .map_err(|e| GuardianError::Other(format!("Erro ao inicializar Endpoint: {}", e)))?;
+            .map_err(|e| GuardianError::Other(format!("Error initializing Endpoint: {}", e)))?;
 
-        // Armazena o endpoint
+        // mDNS discovery on the local network (LAN), equivalent to the former discovery_local_network().
+        match MdnsAddressLookup::builder().build(endpoint.id()) {
+            Ok(mdns) => match endpoint.address_lookup() {
+                Ok(services) => {
+                    services.add(mdns);
+                    debug!("Local mDNS discovery (LAN) enabled");
+                }
+                Err(e) => warn!("Address lookup unavailable for mDNS: {}", e),
+            },
+            Err(e) => warn!("Could not start local mDNS discovery: {}", e),
+        }
+
+        // Store the endpoint.
         {
             let mut endpoint_lock = self.endpoint.write().await;
             *endpoint_lock = Some(endpoint.clone());
         }
 
-        // Inicializa Gossip com o Endpoint compartilhado
-        debug!("Inicializando Gossip protocol...");
+        // Initialize Gossip with the shared Endpoint.
+        debug!("Initializing the Gossip protocol...");
         let gossip = Gossip::builder()
             .max_message_size(self.config.gossip.max_message_size)
             .spawn(endpoint.clone());
@@ -559,67 +565,72 @@ impl IrohBackend {
             let mut gossip_lock = self.gossip.write().await;
             *gossip_lock = Some(gossip.clone());
         }
-        info!("Gossip protocol inicializado com sucesso");
+        info!("Gossip protocol initialized successfully");
 
-        // Inicializa Router para multiplexação ALPN dos protocolos
-        debug!("Configurando Router para multiplexação ALPN...");
+        // Initialize the Router for ALPN protocol multiplexing.
+        debug!("Configuring the Router for ALPN multiplexing...");
 
-        // Inicializa BlobsProtocol com o store e endpoint compartilhados
-        debug!("Inicializando BlobsProtocol...");
+        // Initialize BlobsProtocol with the shared store and endpoint.
+        debug!("Initializing BlobsProtocol...");
         let store_lock = self.store.read().await;
         let store_for_blobs = store_lock
             .as_ref()
-            .ok_or_else(|| GuardianError::Other("Store não inicializado".to_string()))?;
+            .ok_or_else(|| GuardianError::Other("Store not initialized".to_string()))?;
 
         let blobs = match store_for_blobs {
-            StoreType::Fs(fs_store) => {
-                BlobsProtocol::new(fs_store.as_ref(), endpoint.clone(), None)
-            }
+            StoreType::Fs(fs_store) => BlobsProtocol::new(fs_store.as_ref(), None),
         };
         drop(store_lock);
 
-        // Inicializa Docs protocol
-        debug!("Inicializando Docs protocol...");
+        // Initialize the Docs protocol.
+        debug!("Initializing the Docs protocol...");
         let docs_dir = self.data_dir.join("iroh_docs");
         tokio::fs::create_dir_all(&docs_dir)
             .await
-            .map_err(|e| GuardianError::Other(format!("Erro ao criar diretório docs: {}", e)))?;
+            .map_err(|e| GuardianError::Other(format!("Error creating docs directory: {}", e)))?;
 
-        // Obter store para Docs (FsStore implementa AsRef<Store>)
+        // Get the store for Docs (FsStore implements AsRef<Store>).
         let store_lock = self.store.read().await;
         let blobs_store = match store_lock.as_ref() {
             Some(StoreType::Fs(fs_store)) => fs_store.as_ref().clone(),
-            None => return Err(GuardianError::Other("Store não inicializado".into())),
+            None => return Err(GuardianError::Other("Store not initialized".into())),
         };
         drop(store_lock);
 
-        // Cria Docs usando Builder pattern
+        // Create Docs using the Builder pattern.
         let docs = Docs::persistent(docs_dir)
             .spawn(endpoint.clone(), blobs_store, gossip.clone())
             .await
-            .map_err(|e| GuardianError::Other(format!("Erro ao inicializar Docs: {}", e)))?;
+            .map_err(|e| GuardianError::Other(format!("Error initializing Docs: {}", e)))?;
 
-        // Armazena Docs
+        // Store Docs.
         {
             let mut docs_lock = self.docs.write().await;
             *docs_lock = Some(docs.clone());
         }
-        info!("Docs protocol inicializado com sucesso");
+        info!("Docs protocol initialized successfully");
 
-        // Configura Router com Gossip, Blobs e Docs (todos compatíveis com iroh 0.92.0)
+        // Configure the Router with Gossip, Blobs, Docs and the ticket exchange protocol.
+        let ticket_handler = crate::p2p::network::core::ticket_exchange::TicketProtocolHandler::new(
+            self.ticket_registry.clone(),
+        );
         let router = Router::builder(endpoint.clone())
             .accept(iroh_gossip::ALPN, gossip)
             .accept(iroh_blobs::ALPN, blobs)
             .accept(iroh_docs::ALPN, docs)
+            .accept(
+                crate::p2p::network::core::ticket_exchange::TICKET_ALPN,
+                ticket_handler,
+            )
             .spawn();
 
         {
             let mut router_lock = self.router.write().await;
             *router_lock = Some(router);
         }
-        info!("Router configurado com ALPN multiplexing: Gossip + Blobs + Docs ativos");
+        info!("Router configured with ALPN multiplexing: Gossip + Blobs + Docs active");
 
-        // Atualiza status como online
+        // Update the status to online.
         {
             let mut status = self.node_status.write().await;
             status.is_online = true;
@@ -627,298 +638,346 @@ impl IrohBackend {
             status.last_error = None;
         }
 
-        // Discovery é gerenciado automaticamente pelo Endpoint via discovery_n0() e discovery_local_network()
-        // O Iroh publica e descobre peers automaticamente via PkarrPublisher, DnsDiscovery e MdnsDiscovery
-        debug!("Discovery services nativos do Iroh ativados no Endpoint");
-        info!("Backend Iroh inicializado com discovery services ativos");
+        // Discovery is managed automatically by the Endpoint via discovery_n0() and discovery_local_network().
+        // Iroh publishes and discovers peers automatically via PkarrPublisher, DnsDiscovery and MdnsDiscovery.
+        debug!("Iroh's native discovery services enabled on the Endpoint");
+        info!("Iroh backend initialized with active discovery services");
         Ok(())
     }
 
-    /// Desliga o backend, garantindo que todas as operações pendentes
-    /// sejam finalizadas e os dados persistidos no disco.
+    /// Shuts down the backend, ensuring all pending operations
+    /// are finished and the data is persisted to disk.
     ///
-    /// Este método é especialmente importante para garantir que tags do FsStore sejam
-    /// sincronizadas para o banco de dados SQLite (blobs.db) antes do shutdown.
+    /// This method is especially important to ensure FsStore tags are
+    /// synchronized to the SQLite database (blobs.db) before shutdown.
     pub async fn shutdown(&self) -> Result<()> {
-        debug!("Iniciando shutdown do IrohBackend");
+        debug!("Starting IrohBackend shutdown");
 
-        // 1. Para de aceitar novas conexões no endpoint
+        // 1. Stop accepting new connections on the endpoint.
         if let Ok(endpoint_arc) = self.get_endpoint().await {
             let endpoint_lock = endpoint_arc.read().await;
             if let Some(endpoint) = endpoint_lock.as_ref() {
-                // Aguarda um pouco para operações pendentes
+                // Wait a bit for pending operations.
                 tokio::time::sleep(Duration::from_millis(100)).await;
 
-                // Fecha todas as conexões ativas
+                // Close all active connections.
                 endpoint.close().await;
-                debug!("Endpoint fechado");
+                debug!("Endpoint closed");
             }
         }
 
-        // 2. Força flush de tags pendentes fazendo uma leitura
-        // Isso ajuda a garantir que o SQLite WAL seja sincronizado
+        // 2. Force a flush of pending tags by performing a read.
+        // This helps ensure the SQLite WAL is synchronized.
         if (self.pin_ls().await).is_ok() {
-            debug!("Tags listadas para forçar sync");
+            debug!("Tags listed to force a sync");
         }
 
-        // 3. Aguarda um pouco para garantir que operações assíncronas finalizem
+        // 3. Wait a bit to ensure asynchronous operations finish.
         tokio::time::sleep(Duration::from_millis(500)).await;
 
-        // 4. Limpa o cache otimizado
+        // 4. Clear the optimized cache.
         let _ = self.optimized_cache.clear().await;
-        debug!("Cache otimizado limpo");
+        debug!("Optimized cache cleared");
 
-        // 5. Atualiza status do nó
+        // 5. Update the node status.
         {
             let mut status = self.node_status.write().await;
             status.is_online = false;
             status.last_activity = Instant::now();
         }
 
-        info!("Shutdown do IrohBackend concluído");
+        info!("IrohBackend shutdown complete");
         Ok(())
     }
 
-    /// Obtém referência para o store se disponível
+    /// Returns a reference to the store if available.
     async fn get_store(&self) -> Result<Arc<RwLock<Option<StoreType>>>> {
         let store_lock = self.store.read().await;
         if store_lock.is_none() {
             drop(store_lock);
-            return Err(GuardianError::Other("Store não inicializado".to_string()));
+            return Err(GuardianError::Other("Store not initialized".to_string()));
         }
         Ok(self.store.clone())
     }
 
-    /// Obtém store específico para BlobStore
+    /// Returns the specific store for BlobStore.
     ///
-    /// Retorna Arc<RwLock<FsStore>> para uso direto pelo BlobStore.
-    /// Garante que o store está inicializado e desempacota o StoreType::Fs.
+    /// Returns Arc<RwLock<FsStore>> for direct use by BlobStore.
+    /// Ensures the store is initialized and unwraps the StoreType::Fs.
     pub async fn get_store_for_blobs(&self) -> Result<Arc<RwLock<FsStore>>> {
         let store_lock = self.store.read().await;
         match store_lock.as_ref() {
             Some(StoreType::Fs(fs_store)) => Ok(Arc::new(RwLock::new(fs_store.clone()))),
             None => {
                 drop(store_lock);
-                Err(GuardianError::Other("Store não inicializado".to_string()))
+                Err(GuardianError::Other("Store not initialized".to_string()))
             }
         }
     }
 
-    /// Obtém referência para o endpoint se disponível
+    /// Returns a reference to the endpoint if available.
     pub async fn get_endpoint(&self) -> Result<Arc<RwLock<Option<Endpoint>>>> {
         let endpoint_lock = self.endpoint.read().await;
         if endpoint_lock.is_none() {
             drop(endpoint_lock);
-            return Err(GuardianError::Other(
-                "Endpoint não inicializado".to_string(),
-            ));
+            return Err(GuardianError::Other("Endpoint not initialized".to_string()));
         }
         Ok(self.endpoint.clone())
     }
 
-    /// Obtém referência para o Gossip se disponível
+    // ─── Automatic DocTicket exchange (secure replication of iroh-docs stores) ─────────────
+
+    /// Registers a store as a `DocTicket` provider, indexed by its address.
+    ///
+    /// When an authorized peer requests this address's ticket via
+    /// [`ticket_exchange::TICKET_ALPN`], the handler delivers the capability matching the
+    /// peer's role: `write_ticket` (carries the namespace secret) for write-authorized peers,
+    /// `read_ticket` (namespace public key only) for read-only peers.
+    pub async fn register_ticket_provider(
+        &self,
+        address: String,
+        read_ticket: String,
+        write_ticket: String,
+        access_controller: Arc<dyn crate::access_control::traits::AccessController>,
+    ) {
+        let provider = crate::p2p::network::core::ticket_exchange::TicketProvider {
+            read_ticket,
+            write_ticket,
+            access_controller,
+        };
+        self.ticket_registry.write().await.insert(address, provider);
+    }
+
+    /// Registers a peer we have connected to (a candidate for requesting tickets).
+    pub async fn note_known_peer(&self, peer: NodeId) {
+        self.known_peers.write().await.insert(peer);
+    }
+
+    /// Requests the `DocTicket` for `address` from each known peer, returning the first granted one.
+    ///
+    /// Used by iroh-docs stores when opening without a ticket: it tries to join the shared
+    /// namespace of a peer that already holds it (and authorizes this node), instead of creating
+    /// an isolated namespace.
+    pub async fn request_ticket_from_known_peers(&self, address: &str) -> Option<String> {
+        let peers: Vec<NodeId> = {
+            let kp = self.known_peers.read().await;
+            kp.iter().copied().collect()
+        };
+        if peers.is_empty() {
+            return None;
+        }
+
+        let endpoint_arc = self.get_endpoint().await.ok()?;
+        let endpoint_lock = endpoint_arc.read().await;
+        let endpoint = endpoint_lock.as_ref()?.clone();
+        drop(endpoint_lock);
+
+        for peer in peers {
+            match crate::p2p::network::core::ticket_exchange::request_ticket(
+                &endpoint, peer, address,
+            )
+            .await
+            {
+                Ok(Some(ticket)) => {
+                    info!(peer = %peer.fmt_short(), address, "DocTicket obtained from peer via automatic exchange");
+                    return Some(ticket);
+                }
+                Ok(None) => {
+                    debug!(peer = %peer.fmt_short(), address, "Peer did not provide a ticket (denied/unavailable)");
+                }
+                Err(e) => {
+                    debug!(peer = %peer.fmt_short(), address, error = %e, "Failed to request ticket from peer");
+                }
+            }
+        }
+        None
+    }
+
+    /// Resolves a store's shared namespace deterministically, avoiding split-brain
+    /// when multiple nodes open the same store simultaneously.
+    ///
+    /// Rule: the node with the **smallest `EndpointId`** among {self, known peers} is the namespace
+    /// "creator"; the others wait and import its ticket.
+    ///
+    /// - Tries to obtain the ticket immediately (common case: a peer already created and registered it).
+    /// - If no peer provided one and a peer with a smaller id exists (which should be the creator),
+    ///   it makes a few short retries to give it time to create/register.
+    /// - If this node has the smallest id (or no one responded after the retries), returns `None`
+    ///   and the caller creates a new namespace (taking the creator role).
+    pub async fn resolve_shared_ticket(&self, store_key: &str) -> Option<String> {
+        // Immediate attempt.
+        if let Some(ticket) = self.request_ticket_from_known_peers(store_key).await {
+            return Some(ticket);
+        }
+
+        // Is there any known peer with a smaller EndpointId than ours?
+        let my_id = self.secret_key().public();
+        let lower_peer_exists = {
+            let kp = self.known_peers.read().await;
+            kp.iter().any(|p| p.as_bytes() < my_id.as_bytes())
+        };
+
+        if !lower_peer_exists {
+            // We are the node with the smallest id (or have no peers): we take the creator role.
+            return None;
+        }
+
+        // There is a peer that should be the creator — give it time to create/register and try again.
+        const MAX_RETRIES: u32 = 10;
+        const RETRY_DELAY: Duration = Duration::from_millis(300);
+        for attempt in 1..=MAX_RETRIES {
+            tokio::time::sleep(RETRY_DELAY).await;
+            if let Some(ticket) = self.request_ticket_from_known_peers(store_key).await {
+                debug!(
+                    store_key,
+                    attempt, "DocTicket obtained from the creator after a retry"
+                );
+                return Some(ticket);
+            }
+        }
+
+        // Fallback: the creator did not respond in time; we take the namespace to avoid blocking.
+        warn!(
+            store_key,
+            "Expected creator did not provide the ticket in time; creating a local namespace (possible split-brain)"
+        );
+        None
+    }
+
+    /// Returns a reference to the Gossip if available.
     pub async fn get_gossip(&self) -> Result<Arc<RwLock<Option<Gossip>>>> {
         let gossip_lock = self.gossip.read().await;
         if gossip_lock.is_none() {
             drop(gossip_lock);
-            return Err(GuardianError::Other("Gossip não inicializado".to_string()));
+            return Err(GuardianError::Other("Gossip not initialized".to_string()));
         }
         Ok(self.gossip.clone())
     }
 
-    /// Obtém referência para o Router se disponível
+    /// Returns a reference to the Router if available.
     pub async fn get_router(&self) -> Result<Arc<RwLock<Option<Router>>>> {
         let router_lock = self.router.read().await;
         if router_lock.is_none() {
             drop(router_lock);
-            return Err(GuardianError::Other("Router não inicializado".to_string()));
+            return Err(GuardianError::Other("Router not initialized".to_string()));
         }
         Ok(self.router.clone())
     }
 
-    /// Obtém referência para o Docs se disponível
+    /// Returns a reference to Docs if available.
     pub async fn get_docs(&self) -> Result<Arc<RwLock<Option<Docs>>>> {
         let docs_lock = self.docs.read().await;
         if docs_lock.is_none() {
             drop(docs_lock);
-            return Err(GuardianError::Other("Docs não inicializado".to_string()));
+            return Err(GuardianError::Other("Docs not initialized".to_string()));
         }
         Ok(self.docs.clone())
     }
 
-    /// Descobre peers ativamente usando subscribe() do Discovery trait
+    /// Actively discovers peers using the Discovery trait's subscribe().
     ///
-    /// Usa discovery services (Pkarr/DNS/mDNS) para descoberta ativa em tempo real.
-    /// Faz polling do subscribe() stream para capturar eventos de descoberta passiva.
-    pub async fn discover_peers_active(&self, timeout: Duration) -> Result<Vec<NodeAddr>> {
-        debug!("Iniciando descoberta ativa de peers via Discovery::subscribe()");
-
-        let endpoint_arc = self.get_endpoint().await?;
-        let endpoint_lock = endpoint_arc.read().await;
-        let endpoint = endpoint_lock
-            .as_ref()
-            .ok_or_else(|| GuardianError::Other("Endpoint não inicializado".to_string()))?;
-
-        // Obtém o discovery service se disponível
-        let discovery = endpoint.discovery().ok_or_else(|| {
-            GuardianError::Other("Discovery services não configurados".to_string())
-        })?;
-
-        let mut discovered = Vec::new();
-        let start = Instant::now();
-
-        // Usa subscribe() para obter stream de eventos de descoberta passiva
-        debug!("Fazendo subscribe() no discovery por {:?}", timeout);
-
-        // subscribe() retorna BoxStream<DiscoveryEvent> para descoberta passiva
-        // DiscoveryEvent contém DiscoveryItem com informações do peer descoberto
-        if let Some(mut stream) = discovery.subscribe() {
-            use futures::StreamExt;
-
-            tokio::select! {
-                _ = tokio::time::sleep(timeout) => {
-                    debug!("Timeout de discovery atingido após {:?}", start.elapsed());
-                }
-                _ = async {
-                    while let Some(event) = stream.next().await {
-                        // DiscoveryEvent contém informações do peer descoberto
-                        // Converte DiscoveryItem para NodeAddr
-                        match event {
-                            iroh::discovery::DiscoveryEvent::Discovered(item) => {
-                                // DiscoveryItem tem método into_node_addr() para conversão direta
-                                let node_addr = item.into_node_addr();
-                                discovered.push(node_addr);
-
-                                if discovered.len() >= 50 { // Limite máximo
-                                    break;
-                                }
-                            }
-                            iroh::discovery::DiscoveryEvent::Expired(node_id) => {
-                                // Peer expirado/perdido, pode ignorar ou logar
-                                debug!("Peer expirado detectado: {}", node_id);
-                            }
-                        }
-
-                        if start.elapsed() >= timeout {
-                            break;
-                        }
-                    }
-                } => {}
-            }
-        } else {
-            debug!("Discovery não suporta subscribe() - usando apenas remote_info()");
-        }
-
-        info!(
-            "Descoberta ativa concluída: {} peers encontrados",
-            discovered.len()
+    /// Uses discovery services (Pkarr/DNS/mDNS) for active, real-time discovery.
+    /// Polls the subscribe() stream to capture passive discovery events.
+    pub async fn discover_peers_active(&self, _timeout: Duration) -> Result<Vec<NodeAddr>> {
+        // API CHANGE (Iroh 1.0): passive discovery via Discovery::subscribe()
+        // was replaced by a pull-based model in AddressLookupServices::resolve(endpoint_id),
+        // which resolves a specific peer. There is no longer passive enumeration of all peers.
+        // To resolve a specific peer, use discover_peer_integrated(node_id).
+        debug!(
+            "discover_peers_active: passive enumeration is not supported in Iroh 1.0; \
+             use discover_peer_integrated(node_id) to resolve a specific peer"
         );
-        Ok(discovered)
+        Ok(Vec::new())
     }
 
-    /// Descobre um peer específico usando Endpoint do Iroh
+    /// Discovers a specific peer using the Iroh Endpoint.
     ///
-    /// Primeiro tenta remote_info() (peers conhecidos), depois discovery ativa.
+    /// First tries remote_info() (known peers), then active discovery.
     pub async fn discover_peer_integrated(&self, node_id: NodeId) -> Result<Vec<NodeAddr>> {
-        debug!("Descobrindo peer {} via Endpoint do Iroh", node_id);
+        debug!("Discovering peer {} via the Iroh Endpoint", node_id);
 
         let endpoint_arc = self.get_endpoint().await?;
         let endpoint_lock = endpoint_arc.read().await;
         let endpoint = endpoint_lock
             .as_ref()
-            .ok_or_else(|| GuardianError::Other("Endpoint não inicializado".to_string()))?;
+            .ok_or_else(|| GuardianError::Other("Endpoint not initialized".to_string()))?;
 
-        // Primeiro tenta remote_info() para peers já conhecidos
-        if let Some(remote_info) = endpoint.remote_info(node_id) {
-            // Extrai SocketAddr dos DirectAddrInfo
-            let direct_addresses: Vec<_> = remote_info
-                .addrs
-                .iter()
-                .map(|addr_info| addr_info.addr)
-                .collect();
-
-            // Extrai RelayUrl do RelayUrlInfo se disponível
-            let relay_url = remote_info
-                .relay_url
-                .as_ref()
-                .map(|info| info.relay_url.clone());
-
-            // Constrói NodeAddr a partir do RemoteInfo
-            let node_addr = NodeAddr::from_parts(node_id, relay_url, direct_addresses);
-            info!("Peer {} encontrado via remote_info()", node_id);
-            return Ok(vec![node_addr]);
+        // First try remote_info() for already-known peers (now asynchronous in Iroh 1.0).
+        if let Some(remote_info) = endpoint.remote_info(node_id).await {
+            // Build EndpointAddr from the RemoteInfo (TransportAddr unifies IP + relay).
+            let node_addr = NodeAddr::from_parts(
+                remote_info.id(),
+                remote_info.into_addrs().map(|a| a.into_addr()),
+            );
+            if !node_addr.addrs.is_empty() {
+                info!("Peer {} found via remote_info()", node_id);
+                return Ok(vec![node_addr]);
+            }
         }
 
         debug!(
-            "Peer {} não está em remote_info(), tentando discovery ativa",
+            "Peer {} is not in remote_info(), trying address lookup (resolve)",
             node_id
         );
-        drop(endpoint_lock);
-        drop(endpoint_arc);
 
-        // Se não encontrou via remote_info(), tenta discovery ativa
-        if let Ok(discovered_peers) = self.discover_peers_active(Duration::from_secs(5)).await {
-            // Filtra pelo node_id específico
-            let matching_peers: Vec<NodeAddr> = discovered_peers
-                .into_iter()
-                .filter(|addr| addr.node_id == node_id)
-                .collect();
+        // Iroh 1.0 pull-based model: resolve(endpoint_id) via AddressLookupServices.
+        let services = endpoint
+            .address_lookup()
+            .map_err(|e| GuardianError::Other(format!("Address lookup not configured: {}", e)))?;
 
-            if !matching_peers.is_empty() {
-                info!("Peer {} descoberto via discovery ativa", node_id);
-                return Ok(matching_peers);
+        use futures::StreamExt;
+        let mut stream = services.resolve(node_id);
+        let mut discovered: Vec<NodeAddr> = Vec::new();
+        let deadline = tokio::time::sleep(Duration::from_secs(5));
+        tokio::pin!(deadline);
+        loop {
+            tokio::select! {
+                _ = &mut deadline => break,
+                item = stream.next() => match item {
+                    Some(Ok(Ok(item))) => discovered.push(item.into_endpoint_addr()),
+                    Some(_) => continue,
+                    None => break,
+                }
             }
         }
 
-        debug!("Peer {} não encontrado após discovery ativa", node_id);
+        if !discovered.is_empty() {
+            info!("Peer {} discovered via address lookup", node_id);
+            return Ok(discovered);
+        }
+
+        debug!("Peer {} not found after address lookup", node_id);
         Err(GuardianError::Other(format!(
-            "Peer {} não encontrado via remote_info() nem discovery ativa",
+            "Peer {} not found via remote_info() or address lookup",
             node_id
         )))
     }
 
-    /// Atualiza cache de peers com informações descobertas
-    async fn update_discovery_cache(&self, peer_info: &DiscoveredPeerInfo) -> Result<()> {
-        let mut discovery_cache = self.discovery_cache.write().await;
-
-        // Atualiza informações do peer no cache local
-        discovery_cache
-            .peers
-            .insert(peer_info.node_id, peer_info.clone());
-        discovery_cache.last_update = Some(Instant::now());
-
-        debug!(
-            "Cache de discovery atualizado para node: {}",
-            peer_info.node_id
-        );
-        Ok(())
-    }
-
-    /// Obtém conteúdo do cache otimizado se disponível
+    /// Gets content from the optimized cache if available.
     async fn get_from_cache(&self, hash_str: &str) -> Option<bytes::Bytes> {
-        // OptimizedCache já atualiza métricas automaticamente (hits/misses)
+        // OptimizedCache already updates metrics automatically (hits/misses).
         self.optimized_cache.get(hash_str).await
     }
 
-    /// Adiciona conteúdo ao cache otimizado
+    /// Adds content to the optimized cache.
     async fn add_to_cache(&self, hash_str: &str, data: bytes::Bytes) -> Result<()> {
-        // OptimizedCache gerencia automaticamente:
-        // - Compressão (se data.len() >= compression_threshold)
-        // - Métricas (hits, misses, bytes_cached)
-        // - Evicção inteligente (quando necessário)
+        // OptimizedCache manages automatically:
+        // - Compression (if data.len() >= compression_threshold)
+        // - Metrics (hits, misses, bytes_cached)
+        // - Intelligent eviction (when needed)
         self.optimized_cache.put(hash_str, data.clone()).await?;
 
         debug!(
-            "Conteúdo adicionado ao cache: {} ({} bytes)",
+            "Content added to the cache: {} ({} bytes)",
             hash_str,
             data.len()
         );
         Ok(())
     }
 
-    /// Atualiza métricas após uma operação
+    /// Updates metrics after an operation.
     async fn update_metrics(&self, duration: Duration, success: bool) {
-        // Atualiza métricas básicas
+        // Update the basic metrics.
         {
             let mut metrics = self.metrics.write().await;
             metrics.total_operations += 1;
@@ -926,7 +985,7 @@ impl IrohBackend {
                 metrics.error_count += 1;
             }
 
-            // Atualiza latência média
+            // Update the average latency.
             let new_latency = duration.as_millis() as f64;
             if metrics.total_operations == 1 {
                 metrics.avg_latency_ms = new_latency;
@@ -934,17 +993,17 @@ impl IrohBackend {
                 metrics.avg_latency_ms = (metrics.avg_latency_ms * 0.9) + (new_latency * 0.1);
             }
 
-            // Calcula ops/segundo
+            // Compute ops/second.
             let ops_window = std::cmp::min(metrics.total_operations, 3600);
             metrics.ops_per_second = ops_window as f64 / 3600.0;
-        } // Drop do lock de métricas aqui
+        } // Drop the metrics lock here.
 
-        // Atualiza performance monitor com métricas detalhadas
+        // Update the performance monitor with detailed metrics.
         {
             let mut monitor = self.performance_monitor.write().await;
             let latency_ms = duration.as_millis() as f64;
 
-            // Atualiza métricas de latência
+            // Update the latency metrics.
             if monitor.latency_metrics.min_latency_ms == 0.0
                 || latency_ms < monitor.latency_metrics.min_latency_ms
             {
@@ -954,7 +1013,7 @@ impl IrohBackend {
                 monitor.latency_metrics.max_latency_ms = latency_ms;
             }
 
-            // Atualiza latência média com média móvel
+            // Update the average latency with a moving average.
             if monitor.latency_metrics.avg_latency_ms == 0.0 {
                 monitor.latency_metrics.avg_latency_ms = latency_ms;
             } else {
@@ -962,7 +1021,7 @@ impl IrohBackend {
                     (monitor.latency_metrics.avg_latency_ms * 0.95) + (latency_ms * 0.05);
             }
 
-            // Atualiza métricas de throughput
+            // Update the throughput metrics.
             monitor.throughput_metrics.ops_per_second = (monitor.throughput_metrics.ops_per_second
                 * 0.95)
                 + (1.0 / duration.as_secs_f64() * 0.05);
@@ -975,17 +1034,17 @@ impl IrohBackend {
             }
         }
 
-        // Atualiza status do nó em escopo separado
+        // Update the node status in a separate scope.
         {
             let mut status = self.node_status.write().await;
             status.last_activity = Instant::now();
             if success {
                 status.last_error = None;
             }
-        } // Drop do lock de status aqui
+        } // Drop the status lock here.
     }
 
-    /// Executa operação com tracking de métricas
+    /// Runs an operation with metrics tracking.
     async fn execute_with_metrics<F, T>(&self, operation: F) -> Result<T>
     where
         F: std::future::Future<Output = Result<T>> + Send,
@@ -996,7 +1055,7 @@ impl IrohBackend {
 
         self.update_metrics(duration, result.is_ok()).await;
 
-        // Atualiza erro no status se necessário
+        // Update the error in the status if needed.
         if let Err(ref e) = result {
             let mut status = self.node_status.write().await;
             status.last_error = Some(e.to_string());
@@ -1005,20 +1064,19 @@ impl IrohBackend {
         result
     }
 
-    /// Converte erro do Iroh para GuardianError
+    /// Converts an Iroh error into a GuardianError.
     fn map_iroh_error(error: impl std::fmt::Display) -> GuardianError {
-        GuardianError::Other(format!("Erro Iroh: {}", error))
+        GuardianError::Other(format!("Iroh error: {}", error))
     }
 
-    /// Converte string hexadecimal para Hash BLAKE3 do Iroh
+    /// Converts a hexadecimal string into an Iroh BLAKE3 Hash.
     fn parse_hash(hash_str: &str) -> Result<IrohHash> {
-        let hash_bytes = hex::decode(hash_str).map_err(|e| {
-            GuardianError::Other(format!("Hash hex inválido '{}': {}", hash_str, e))
-        })?;
+        let hash_bytes = hex::decode(hash_str)
+            .map_err(|e| GuardianError::Other(format!("Invalid hex hash '{}': {}", hash_str, e)))?;
 
         if hash_bytes.len() != 32 {
             return Err(GuardianError::Other(format!(
-                "Hash deve ter 32 bytes, encontrado: {}",
+                "Hash must be 32 bytes, found: {}",
                 hash_bytes.len()
             )));
         }
@@ -1028,37 +1086,37 @@ impl IrohBackend {
         Ok(IrohHash::from(hash_array))
     }
 
-    /// Converte Hash BLAKE3 do Iroh para string hexadecimal
+    /// Converts an Iroh BLAKE3 Hash into a hexadecimal string.
     fn hash_to_string(hash: &IrohHash) -> String {
         hex::encode(hash.as_bytes())
     }
 
     // ╔════════════════════════════════════════════════════════════════════════════════╗
-    // ║                           OPERAÇÕES DE CONTEÚDO                                ║
+    // ║                              CONTENT OPERATIONS                                   ║
     // ╚════════════════════════════════════════════════════════════════════════════════╝
 
     pub async fn add(&self, mut data: Pin<Box<dyn AsyncRead + Send>>) -> Result<AddResponse> {
         let start = Instant::now();
 
-        debug!("Adicionando conteúdo via Iroh");
+        debug!("Adding content via Iroh");
 
-        // Lê dados para buffer
+        // Read the data into a buffer.
         let mut buffer = Vec::new();
         data.read_to_end(&mut buffer)
             .await
-            .map_err(|e| GuardianError::Other(format!("Erro ao ler dados: {}", e)))?;
+            .map_err(|e| GuardianError::Other(format!("Error reading data: {}", e)))?;
 
-        // Converte para bytes::Bytes e salva o tamanho
+        // Convert to bytes::Bytes and save the size.
         let bytes_data = Bytes::from(buffer);
         let data_size = bytes_data.len();
 
-        // Obtém referência ao store e clona a referência
+        // Get a reference to the store and clone the reference.
         let store_arc = self.get_store().await?;
         let (temp_tag, store_type_name) = {
             let store_lock = store_arc.read().await;
             match store_lock
                 .as_ref()
-                .ok_or_else(|| GuardianError::Other("Store não disponível".to_string()))?
+                .ok_or_else(|| GuardianError::Other("Store not available".to_string()))?
             {
                 StoreType::Fs(fs_store) => {
                     let outcome = fs_store
@@ -1068,36 +1126,36 @@ impl IrohBackend {
                     (outcome.hash, "FsStore")
                 }
             }
-        }; // Drop do lock aqui
+        }; // Drop the lock here.
 
-        // Obtém hash do outcome
+        // Get the hash from the outcome.
         let hash = temp_tag;
 
-        // Converte Hash BLAKE3 para string hex
+        // Convert the BLAKE3 Hash into a hex string.
         let hash_str = Self::hash_to_string(&hash);
 
-        // Adiciona conteúdo ao cache inteligente para acesso futuro rápido
+        // Add the content to the intelligent cache for fast future access.
         if let Err(e) = self.add_to_cache(&hash_str, bytes_data.clone()).await {
-            warn!("Erro ao adicionar conteúdo ao cache: {}", e);
+            warn!("Error adding content to the cache: {}", e);
         }
 
-        // Cache já adicionado no método add_to_cache
+        // Cache already added in the add_to_cache method.
 
         debug!(
-            "Conteúdo adicionado com hash: {} usando {} (cached)",
+            "Content added with hash: {} using {} (cached)",
             hash_str, store_type_name
         );
 
-        // Atualiza métricas manualmente
+        // Update metrics manually.
         let duration = start.elapsed();
         self.update_metrics(duration, true).await;
 
-        // Registra operação add no NetworkingMetrics
+        // Record the add operation in NetworkingMetrics.
         self.networking_metrics
             .record_add_operation(duration.as_millis() as f64, data_size as u64)
             .await;
 
-        // Usa o tamanho salvo anteriormente
+        // Use the size saved earlier.
         Ok(AddResponse {
             hash: hash_str,
             name: "unnamed".to_string(),
@@ -1105,53 +1163,53 @@ impl IrohBackend {
         })
     }
 
-    /// Recupera conteúdo do store pelo hash BLAKE3
+    /// Retrieves content from the store by its BLAKE3 hash.
     ///
-    /// # Argumentos
-    /// * `hash_str` - Hash BLAKE3 em formato hexadecimal
+    /// # Arguments
+    /// * `hash_str` - BLAKE3 hash in hexadecimal format
     pub async fn cat(&self, hash_str: &str) -> Result<Pin<Box<dyn AsyncRead + Send>>> {
         let start = Instant::now();
 
         debug!(
-            "Recuperando conteúdo {} via Iroh (verificando cache primeiro)",
+            "Retrieving content {} via Iroh (checking cache first)",
             hash_str
         );
 
-        // Primeiro, tenta obter do cache para performance otimizada
+        // First, try to get it from the cache for optimized performance.
         if let Some(cached_data) = self.get_from_cache(hash_str).await {
             debug!(
-                "Cache hit! Retornando conteúdo de {} bytes do cache",
+                "Cache hit! Returning content of {} bytes from the cache",
                 cached_data.len()
             );
 
-            // Atualiza métricas com tempo de cache (muito rápido)
+            // Update metrics with the cache time (very fast).
             let duration = start.elapsed();
             self.update_metrics(duration, true).await;
 
-            // Registra operação cat do cache no NetworkingMetrics
+            // Record the cache cat operation in NetworkingMetrics.
             self.networking_metrics
                 .record_cat_operation(duration.as_millis() as f64, cached_data.len() as u64)
                 .await;
 
-            // Retorna dados do cache como AsyncRead
+            // Return the cached data as AsyncRead.
             let cursor = std::io::Cursor::new(cached_data.to_vec());
             return Ok(Box::pin(cursor));
         }
 
-        debug!("Cache miss para {}, buscando no store", hash_str);
+        debug!("Cache miss for {}, fetching from the store", hash_str);
 
-        // Parse hash hexadecimal para IrohHash
+        // Parse the hexadecimal hash into an IrohHash.
         let hash = Self::parse_hash(hash_str)?;
 
-        // Busca conteúdo no store
+        // Fetch the content from the store.
         let buffer_vec = {
             let store_guard = self.store.read().await;
             let buffer_bytes: bytes::Bytes = match store_guard.as_ref() {
                 Some(StoreType::Fs(store)) => {
-                    // API 0.94.0: usa reader direto para obter dados
+                    // API 0.94.0: use a direct reader to get the data.
                     let mut reader = store.reader(hash);
 
-                    // Lê todo o conteúdo usando read_to_end() com buffer
+                    // Read all the content using read_to_end() with a buffer.
                     let mut buffer = Vec::new();
                     reader
                         .read_to_end(&mut buffer)
@@ -1162,37 +1220,37 @@ impl IrohBackend {
                 }
                 None => {
                     return Err(GuardianError::Other(
-                        "Store do Iroh não inicializado".to_string(),
+                        "Iroh store not initialized".to_string(),
                     ));
                 }
             };
 
-            // Converte de bytes::Bytes para Vec<u8>
+            // Convert from bytes::Bytes to Vec<u8>.
             buffer_bytes.to_vec()
         };
 
-        // Adiciona dados recuperados ao cache para próximas consultas
+        // Add the retrieved data to the cache for future lookups.
         let buffer_bytes = bytes::Bytes::from(buffer_vec.clone());
         if let Err(e) = self.add_to_cache(hash_str, buffer_bytes).await {
-            warn!("Erro ao adicionar conteúdo recuperado ao cache: {}", e);
+            warn!("Error adding retrieved content to the cache: {}", e);
         } else {
             debug!(
-                "Conteúdo {} adicionado ao cache após recuperação do store",
+                "Content {} added to the cache after retrieval from the store",
                 hash_str
             );
         }
 
         debug!(
-            "Conteúdo {} recuperado, {} bytes (cached para futuro)",
+            "Content {} retrieved, {} bytes (cached for the future)",
             hash_str,
             buffer_vec.len()
         );
 
-        // Atualiza métricas de sucesso
+        // Update success metrics.
         let duration = start.elapsed();
         self.update_metrics(duration, true).await;
 
-        // Registra operação cat do store no NetworkingMetrics
+        // Record the store cat operation in NetworkingMetrics.
         self.networking_metrics
             .record_cat_operation(duration.as_millis() as f64, buffer_vec.len() as u64)
             .await;
@@ -1201,80 +1259,77 @@ impl IrohBackend {
         Ok(Box::pin(cursor))
     }
 
-    /// Fixa um objeto no store usando o sistema de Tags persistentes do Iroh
+    /// Pins an object in the store using Iroh's persistent Tags system.
     ///
-    /// Ciclo de vida das tags:
-    /// 1. TempTag - Protege temporariamente durante a operação (drop automático)
-    /// 2. Tag persistente - Criada com set_tag(), protege contra GC permanentemente
-    /// 3. Tag persiste mesmo após reinicialização do nó
+    /// Tag lifecycle:
+    /// 1. TempTag - Temporarily protects during the operation (automatic drop)
+    /// 2. Persistent tag - Created with set_tag(), protects against GC permanently
+    /// 3. The tag persists even after the node restarts
     ///
-    /// # Argumentos
-    /// * `hash_str` - Hash BLAKE3 em formato hexadecimal do conteúdo a fixar
+    /// # Arguments
+    /// * `hash_str` - BLAKE3 hash in hexadecimal format of the content to pin
     pub async fn pin_add(&self, hash_str: &str) -> Result<()> {
         self.execute_with_metrics(async {
-            debug!(
-                "Fixando objeto {} via Iroh usando Tags persistentes",
-                hash_str
-            );
+            debug!("Pinning object {} via Iroh using persistent Tags", hash_str);
 
-            // Obtém referência ao store
+            // Get a reference to the store.
             let store_arc = self.get_store().await?;
 
-            // Parse hash hexadecimal
+            // Parse the hexadecimal hash.
             let hash = Self::parse_hash(hash_str)?;
             let hash_and_format = HashAndFormat::new(hash, BlobFormat::Raw);
 
-            // Verifica se o conteúdo existe e cria TempTag para proteção durante operação
+            // Check that the content exists and create a TempTag for protection during the operation.
             let _temp_tag = {
                 let store_lock = store_arc.read().await;
                 match store_lock.as_ref().unwrap() {
                     StoreType::Fs(fs_store) => {
-                        // API 0.94.0: usa has para verificar existência
+                        // API 0.94.0: use has to check existence.
                         let has_blob = fs_store.has(hash).await.unwrap_or(false);
 
                         if !has_blob {
                             return Err(GuardianError::Other(format!(
-                                "Conteúdo {} não encontrado no store",
+                                "Content {} not found in the store",
                                 hash_str
                             )));
                         }
 
-                        // Retorna hash para criar tag permanente
+                        // Return the hash to create a permanent tag.
                         hash_and_format.hash
                     }
                 }
             };
 
-            // Cria Tag persistente que sobrevive ao GC
+            // Create a persistent Tag that survives GC.
             let permanent_tag = {
                 let store_lock = store_arc.read().await;
                 match store_lock.as_ref().unwrap() {
                     StoreType::Fs(fs_store) => {
-                        // Cria tag permanente com nome baseado no hash
+                        // Create a permanent tag with a name based on the hash.
                         let tag_name = format!("pin-{}", hash_str);
                         let tag = Tag::from(tag_name.as_str());
 
-                        // Define a tag no store - isso persiste no disco
+                        // Set the tag in the store - this persists to disk.
                         fs_store
                             .tags()
                             .set(tag.as_ref(), hash_and_format)
                             .await
                             .map_err(Self::map_iroh_error)?;
 
-                        debug!("Tag persistente '{}' criada para hash {}", tag_name, hash);
+                        debug!("Persistent tag '{}' created for hash {}", tag_name, hash);
                         tag
                     }
                 }
             };
 
-            // Adiciona ao cache local para rastreamento rápido
+            // Add it to the local cache for fast tracking.
             {
                 let mut pinned = self.pinned_cache.lock().await;
                 pinned.insert(hash_str.to_string(), PinType::Direct);
             }
 
             info!(
-                "Objeto {} fixado com sucesso usando Tag persistente: {}",
+                "Object {} pinned successfully using persistent Tag: {}",
                 hash_str, permanent_tag
             );
             Ok(())
@@ -1282,21 +1337,21 @@ impl IrohBackend {
         .await
     }
 
-    /// Remove a fixação de um objeto usando Store::delete_tag()
+    /// Removes the pin from an object using Store::delete_tag().
     ///
-    /// Remove a Tag persistente associada ao hash, permitindo que o GC
-    /// possa remover o conteúdo em futuras execuções.
+    /// Removes the persistent Tag associated with the hash, allowing GC
+    /// to remove the content in future runs.
     ///
-    /// # Argumentos
-    /// * `hash_str` - Hash BLAKE3 em formato hexadecimal do conteúdo a desfixar
+    /// # Arguments
+    /// * `hash_str` - BLAKE3 hash in hexadecimal format of the content to unpin
     pub async fn pin_rm(&self, hash_str: &str) -> Result<()> {
         self.execute_with_metrics(async {
             debug!(
-                "Desfixando objeto {} via Iroh removendo Tag permanente",
+                "Unpinning object {} via Iroh by removing the permanent Tag",
                 hash_str
             );
 
-            // Primeiro verifica se está fixado no cache local
+            // First check whether it is pinned in the local cache.
             let was_cached = {
                 let mut cache = self.pinned_cache.lock().await;
                 cache.remove(hash_str).is_some()
@@ -1304,37 +1359,37 @@ impl IrohBackend {
 
             if !was_cached {
                 return Err(GuardianError::Other(format!(
-                    "Objeto {} não estava fixado",
+                    "Object {} was not pinned",
                     hash_str
                 )));
             }
 
-            // Obtém referência ao store para remover a tag permanente
+            // Get a reference to the store to remove the permanent tag.
             let store_arc = self.get_store().await?;
 
-            // Remove a tag permanente do Iroh store
+            // Remove the permanent tag from the Iroh store.
             {
                 let store_lock = store_arc.read().await;
                 match store_lock.as_ref().unwrap() {
                     StoreType::Fs(fs_store) => {
-                        // Nome da tag baseado no hash (mesmo padrão usado em pin_add)
+                        // Tag name based on the hash (same pattern used in pin_add).
                         let tag_name = format!("pin-{}", hash_str);
                         let tag = Tag::from(tag_name.as_str());
 
-                        // Remove a tag do store usando delete_tag
+                        // Remove the tag from the store using delete_tag.
                         fs_store
                             .tags()
                             .delete(tag.as_ref())
                             .await
                             .map_err(Self::map_iroh_error)?;
 
-                        debug!("Tag permanente '{}' removida do store", tag_name);
+                        debug!("Permanent tag '{}' removed from the store", tag_name);
                     }
                 }
             }
 
             info!(
-                "Objeto {} desfixado com sucesso - Tag permanente removida do Iroh",
+                "Object {} unpinned successfully - permanent Tag removed from Iroh",
                 hash_str
             );
             Ok(())
@@ -1342,43 +1397,43 @@ impl IrohBackend {
         .await
     }
 
-    /// Lista todos os objetos fixados usando Store::tags() iterator
+    /// Lists all pinned objects using the Store::tags() iterator.
     ///
-    /// Itera sobre todas as Tags persistentes no store e filtra aquelas que
-    /// começam com "pin-" (convencionado em pin_add()).
+    /// Iterates over all persistent Tags in the store and filters those that
+    /// start with "pin-" (the convention used in pin_add()).
     ///
-    /// # Retorna
-    /// Vec com informações de cada objeto fixado (hash e tipo de pin)
+    /// # Returns
+    /// A Vec with information about each pinned object (hash and pin type)
     pub async fn pin_ls(&self) -> Result<Vec<PinInfo>> {
         self.execute_with_metrics(async {
-            debug!("Listando objetos fixados via Iroh através das Tags permanentes");
+            debug!("Listing pinned objects via Iroh through the persistent Tags");
 
-            // Obtém referência ao store para listar tags
+            // Get a reference to the store to list tags.
             let store_arc = self.get_store().await?;
             let mut pins = Vec::new();
 
-            // Lista todas as tags no store do Iroh
+            // List all tags in the Iroh store.
             {
                 let store_lock = store_arc.read().await;
                 match store_lock.as_ref().unwrap() {
                     StoreType::Fs(fs_store) => {
-                        use futures::stream::StreamExt; // Para usar next()
+                        use futures::stream::StreamExt; // To use next().
 
-                        // Obtém stream de todas as tags no store
+                        // Get a stream of all tags in the store.
                         let mut tags_stream =
                             fs_store.tags().list().await.map_err(Self::map_iroh_error)?;
 
-                        // Processa cada tag para encontrar pins (tags que começam com "pin-")
+                        // Process each tag to find pins (tags that start with "pin-").
                         while let Some(tag_result) = tags_stream.next().await {
                             match tag_result {
                                 Ok(tag_info) => {
                                     let tag_name = String::from_utf8_lossy(tag_info.name.as_ref());
 
-                                    // Verifica se é uma tag de pin
+                                    // Check whether it is a pin tag.
                                     if let Some(hash_str) = tag_name.strip_prefix("pin-") {
-                                        // Extrai o hash do nome da tag
+                                        // Extract the hash from the tag name.
 
-                                        // Determina o tipo de pin baseado no formato
+                                        // Determine the pin type based on the format.
                                         let pin_type = match tag_info.format {
                                             BlobFormat::Raw => PinType::Recursive,
                                             BlobFormat::HashSeq => PinType::Direct,
@@ -1389,15 +1444,12 @@ impl IrohBackend {
                                             pin_type: pin_type.clone(),
                                         });
 
-                                        debug!(
-                                            "Pin encontrado: {} (tipo: {:?})",
-                                            hash_str, pin_type
-                                        );
+                                        debug!("Pin found: {} (type: {:?})", hash_str, pin_type);
                                     }
                                 }
                                 Err(e) => {
-                                    warn!("Erro ao processar tag durante listagem de pins: {}", e);
-                                    // Continua com as outras tags
+                                    warn!("Error processing tag during pin listing: {}", e);
+                                    // Continue with the other tags.
                                 }
                             }
                         }
@@ -1405,32 +1457,32 @@ impl IrohBackend {
                 }
             }
 
-            // Também verifica o cache local para compatibilidade (pode ter pins não sincronizados)
+            // Also check the local cache for compatibility (it may have unsynced pins).
             {
                 let cache = self.pinned_cache.lock().await;
                 for (hash_str, pin_type) in cache.iter() {
-                    // Evita duplicatas - só adiciona se não encontrou nas tags
+                    // Avoid duplicates - only add if not already found in the tags.
                     if !pins.iter().any(|p| &p.hash == hash_str) {
                         pins.push(PinInfo {
                             hash: hash_str.clone(),
                             pin_type: pin_type.clone(),
                         });
                         debug!(
-                            "Pin do cache local adicionado: {} (tipo: {:?})",
+                            "Pin from local cache added: {} (type: {:?})",
                             hash_str, pin_type
                         );
                     }
                 }
             }
 
-            info!("Encontrados {} objetos fixados via Iroh Tags", pins.len());
+            info!("Found {} pinned objects via Iroh Tags", pins.len());
             Ok(pins)
         })
         .await
     }
 
     // ╔════════════════════════════════════════════════════════════════════════════════╗
-    // ║                        OPERAÇÕES DE REDE E CONECTIVIDADE                       ║
+    // ║                       NETWORK AND CONNECTIVITY OPERATIONS                         ║
     // ╚════════════════════════════════════════════════════════════════════════════════╝
 
     pub async fn connect(&self, peer: &NodeId) -> Result<()> {
@@ -1641,16 +1693,16 @@ impl IrohBackend {
 
     pub async fn peers(&self) -> Result<Vec<PeerInfo>> {
         self.execute_with_metrics(async {
-            debug!("Listando peers conectados via Iroh Endpoint e Connection Pool");
+            debug!("Listing connected peers via the Iroh Endpoint and Connection Pool");
 
-            // Obtém referência ao endpoint
+            // Get a reference to the endpoint.
             let endpoint_arc = self.get_endpoint().await?;
             let endpoint_lock = endpoint_arc.read().await;
             let endpoint = endpoint_lock
                 .as_ref()
-                .ok_or_else(|| GuardianError::Other("Endpoint não disponível".to_string()))?;
+                .ok_or_else(|| GuardianError::Other("Endpoint not available".to_string()))?;
 
-            // Obtém informações de conexão do endpoint
+            // Get connection information from the endpoint.
             let local_addr = endpoint
                 .bound_sockets()
                 .into_iter()
@@ -1661,12 +1713,12 @@ impl IrohBackend {
             let mut peers = Vec::new();
             let mut node_ids_seen = std::collections::HashSet::new();
 
-            debug!("Endpoint local bound em: {}", local_addr);
+            debug!("Local endpoint bound at: {}", local_addr);
 
-            // Primeiro, obtém peers do connection pool (conexões ativas confirmadas)
+            // First, get peers from the connection pool (confirmed active connections).
             {
                 let pool = self.connection_pool.read().await;
-                debug!("Connection pool contém {} conexões ativas", pool.len());
+                debug!("Connection pool contains {} active connections", pool.len());
 
                 for conn_info in pool.values() {
                     node_ids_seen.insert(conn_info.node_id);
@@ -1684,15 +1736,15 @@ impl IrohBackend {
                 }
             }
 
-            // Depois, adiciona peers do cache de discovery que não estão no pool
+            // Then, add peers from the discovery cache that are not in the pool.
             let discovered_peers = {
                 let discovery_cache = self.discovery_cache.read().await;
                 discovery_cache.peers.values().cloned().collect::<Vec<_>>()
             };
 
-            // Converte peers do cache de discovery para PeerInfo (evitando duplicatas)
+            // Convert discovery-cache peers into PeerInfo (avoiding duplicates).
             for discovered_peer in discovered_peers {
-                // Evita duplicatas
+                // Avoid duplicates.
                 if node_ids_seen.contains(&discovered_peer.node_id) {
                     continue;
                 }
@@ -1706,39 +1758,14 @@ impl IrohBackend {
                 });
             }
 
-            // Por fim, adiciona peers conhecidos pelo Endpoint via remote_info_iter()
-            for remote_info in endpoint.remote_info_iter() {
-                // Evita duplicatas
-                let node_id = remote_info.node_id;
-                if node_ids_seen.contains(&node_id) {
-                    continue;
-                }
-                node_ids_seen.insert(node_id);
-
-                // Extrai endereços diretos
-                let addresses: Vec<String> = remote_info
-                    .addrs
-                    .iter()
-                    .map(|addr_info| addr_info.addr.to_string())
-                    .collect();
-
-                // Considera conectado se temos endereços diretos recentes
-                let has_recent_addrs = !remote_info.addrs.is_empty();
-
-                peers.push(PeerInfo {
-                    id: node_id,
-                    addresses,
-                    protocols: vec![
-                        "iroh/blobs/0.92.0".to_string(),
-                        "iroh/gossip/0.92.0".to_string(),
-                        "iroh/docs/0.92.0".to_string(),
-                    ],
-                    connected: has_recent_addrs,
-                });
-            }
+            // API CHANGE (Iroh 1.0): Endpoint::remote_info_iter() was removed — there is no
+            // longer enumeration of all known remotes. The peer list is assembled from the
+            // connection pool and the discovery cache above. For a specific peer, use
+            // remote_info(id).await or address_lookup().resolve(id).
+            let _ = &node_ids_seen;
 
             info!(
-                "Encontrados {} peers (connection pool + discovery cache + remote_info)",
+                "Found {} peers (connection pool + discovery cache)",
                 peers.len()
             );
             Ok(peers)
@@ -1748,27 +1775,27 @@ impl IrohBackend {
 
     pub async fn id(&self) -> Result<NodeInfo> {
         self.execute_with_metrics(async {
-            debug!("Obtendo informações do nó via Iroh Endpoint");
+            debug!("Getting node information via the Iroh Endpoint");
 
-            // Obtém referência ao endpoint
+            // Get a reference to the endpoint.
             let endpoint_arc = self.get_endpoint().await?;
             let endpoint_lock = endpoint_arc.read().await;
             let endpoint = endpoint_lock
                 .as_ref()
-                .ok_or_else(|| GuardianError::Other("Endpoint não disponível".to_string()))?;
+                .ok_or_else(|| GuardianError::Other("Endpoint not available".to_string()))?;
 
-            // Obtém o NodeId do endpoint
-            let node_id = endpoint.node_id();
+            // Get the EndpointId from the endpoint (Iroh 1.0: node_id() -> id()).
+            let node_id = endpoint.id();
 
-            // Obtém endereços de rede do endpoint
+            // Get the endpoint's network addresses.
             let addresses: Vec<String> = endpoint
                 .bound_sockets()
                 .into_iter()
                 .map(|addr| addr.to_string())
                 .collect();
 
-            debug!("NodeId Iroh: {}", node_id);
-            debug!("Endereços bound: {:?}", addresses);
+            debug!("Iroh NodeId: {}", node_id);
+            debug!("Bound addresses: {:?}", addresses);
 
             Ok(NodeInfo {
                 id: node_id,
@@ -1782,16 +1809,16 @@ impl IrohBackend {
     }
 
     // ╔════════════════════════════════════════════════════════════════════════════════╗
-    // ║                     OPERAÇÕES DE REPOSITÓRIO E VERSÃO                          ║
+    // ║                      REPOSITORY AND VERSION OPERATIONS                            ║
     // ╚════════════════════════════════════════════════════════════════════════════════╝
 
     pub async fn repo_stat(&self) -> Result<RepoStats> {
         self.execute_with_metrics(async {
-            debug!("Obtendo estatísticas do repositório via Iroh FsStore");
+            debug!("Getting repository statistics via the Iroh FsStore");
 
             let store_path = self.data_dir.join("iroh_store");
 
-            // Tenta obter estatísticas do diretório do store
+            // Try to get statistics from the store directory.
             let (num_objects, repo_size) = match tokio::fs::read_dir(&store_path).await {
                 Ok(mut entries) => {
                     let mut count = 0;
@@ -1808,14 +1835,14 @@ impl IrohBackend {
 
                     (count, total_size)
                 }
-                Err(_) => (0, 0), // Fallback se não conseguir ler o diretório
+                Err(_) => (0, 0), // Fallback if the directory cannot be read.
             };
 
             Ok(RepoStats {
                 num_objects: num_objects as u64,
                 repo_size,
                 repo_path: store_path.to_string_lossy().to_string(),
-                version: "15".to_string(), // Versão compatível com FsStore
+                version: "15".to_string(), // Version compatible with FsStore.
             })
         })
         .await
@@ -1826,7 +1853,7 @@ impl IrohBackend {
             Ok(VersionInfo {
                 version: "iroh-0.92.0".to_string(),
                 commit: "embedded".to_string(),
-                repo: "15".to_string(), // Versão do repo iroh
+                repo: "15".to_string(), // iroh repo version.
                 system: std::env::consts::OS.to_string(),
             })
         })
@@ -1834,7 +1861,7 @@ impl IrohBackend {
     }
 
     // ╔════════════════════════════════════════════════════════════════════════════════╗
-    // ║                  METADADOS, STATUS E HEALTH CHECKS                             ║
+    // ║                    METADATA, STATUS AND HEALTH CHECKS                             ║
     // ╚════════════════════════════════════════════════════════════════════════════════╝
 
     pub async fn is_online(&self) -> bool {
@@ -1845,21 +1872,21 @@ impl IrohBackend {
     pub async fn metrics(&self) -> Result<BackendMetrics> {
         let mut metrics = self.metrics.read().await.clone();
 
-        // Adiciona informações de cache às métricas usando OptimizedCache
+        // Add cache information to the metrics using OptimizedCache.
         let cache_stats = self.optimized_cache.get_stats().await;
         let hit_ratio = cache_stats.hit_rate;
 
-        // Adiciona uso de memória estimado incluindo cache
+        // Add estimated memory usage including the cache.
         metrics.memory_usage_bytes = self.estimate_memory_usage().await;
 
-        // Atualiza ops_per_second baseado em cache performance
+        // Update ops_per_second based on cache performance.
         if hit_ratio > 0.0 {
-            // Cache hits melhoram significativamente a performance
-            metrics.ops_per_second *= 1.0 + (hit_ratio * 2.0); // Boost baseado em hit ratio
+            // Cache hits significantly improve performance.
+            metrics.ops_per_second *= 1.0 + (hit_ratio * 2.0); // Boost based on hit ratio.
         }
 
         debug!(
-            "Métricas de performance - Hit ratio: {:.2}%, Total bytes cached: {}",
+            "Performance metrics - Hit ratio: {:.2}%, Total bytes cached: {}",
             hit_ratio * 100.0,
             cache_stats.total_bytes_cached
         );
@@ -1872,18 +1899,18 @@ impl IrohBackend {
         let mut checks = Vec::new();
         let mut healthy = true;
 
-        // Check 1: Status do nó
+        // Check 1: Node status.
         {
             let status = self.node_status.read().await;
             checks.push(HealthCheck {
                 name: "node_status".to_string(),
                 passed: status.is_online,
                 message: if status.is_online {
-                    "Nó Iroh online".to_string()
+                    "Iroh node online".to_string()
                 } else {
                     format!(
-                        "Nó Iroh offline: {}",
-                        status.last_error.as_deref().unwrap_or("razão desconhecida")
+                        "Iroh node offline: {}",
+                        status.last_error.as_deref().unwrap_or("unknown reason")
                     )
                 },
             });
@@ -1893,15 +1920,15 @@ impl IrohBackend {
             }
         }
 
-        // Check 2: Diretório de dados acessível
+        // Check 2: Data directory accessible.
         let data_check = tokio::fs::metadata(&self.data_dir).await.is_ok();
         checks.push(HealthCheck {
             name: "data_directory".to_string(),
             passed: data_check,
             message: if data_check {
-                "Diretório de dados acessível".to_string()
+                "Data directory accessible".to_string()
             } else {
-                "Diretório de dados inacessível".to_string()
+                "Data directory inaccessible".to_string()
             },
         });
 
@@ -1909,24 +1936,24 @@ impl IrohBackend {
             healthy = false;
         }
 
-        // Check 3: Métricas básicas
+        // Check 3: Basic metrics.
         let metrics_check = self.metrics().await.is_ok();
         checks.push(HealthCheck {
             name: "metrics".to_string(),
             passed: metrics_check,
             message: if metrics_check {
-                "Métricas disponíveis".to_string()
+                "Metrics available".to_string()
             } else {
-                "Erro ao acessar métricas".to_string()
+                "Error accessing metrics".to_string()
             },
         });
 
         let response_time = start.elapsed();
 
         let message = if healthy {
-            "Backend Iroh operacional".to_string()
+            "Iroh backend operational".to_string()
         } else {
-            "Backend Iroh com problemas".to_string()
+            "Iroh backend has problems".to_string()
         };
 
         Ok(HealthStatus {
@@ -1938,55 +1965,55 @@ impl IrohBackend {
     }
 
     // ╔════════════════════════════════════════════════════════════════════════════════╗
-    // ║                      OTIMIZAÇÕES E CACHE MANAGEMENT                            ║
+    // ║                      OPTIMIZATIONS AND CACHE MANAGEMENT                           ║
     // ╚════════════════════════════════════════════════════════════════════════════════╝
 
-    // === MÉTRICAS E MONITORAMENTO ===
-    /// Estima uso de memória do backend
+    // === METRICS AND MONITORING ===
+    /// Estimates the backend's memory usage.
     async fn estimate_memory_usage(&self) -> u64 {
         let pinned_cache_size = self.pinned_cache.lock().await.len() as u64 * 64;
 
-        // Usa estatísticas do OptimizedCache
+        // Use statistics from OptimizedCache.
         let cache_stats = self.optimized_cache.get_stats().await;
         let data_cache_size = cache_stats.total_bytes_cached;
 
-        // Estima overhead do cache de discovery
+        // Estimate the discovery cache overhead.
         let discovery_cache_size = {
             let discovery_cache = self.discovery_cache.read().await;
-            discovery_cache.peers.len() as u64 * 256 // Estimativa por peer
+            discovery_cache.peers.len() as u64 * 256 // Estimate per peer.
         };
 
         pinned_cache_size + data_cache_size + discovery_cache_size
     }
 
-    // === DESCOBERTA DE PEERS ===
-    /// Descobre um peer específico
+    // === PEER DISCOVERY ===
+    /// Discovers a specific peer.
     pub async fn discover_peer_with_endpoint(&mut self, node_id: NodeId) -> Result<Vec<NodeAddr>> {
         debug!(
-            "Descobrindo peer {} usando recursos concretos do IrohBackend",
+            "Discovering peer {} using the IrohBackend's concrete resources",
             node_id
         );
 
-        // Usa Endpoint diretamente para discovery
+        // Use the Endpoint directly for discovery.
         let discovered_addresses = self.discover_peer_integrated(node_id).await?;
 
         if discovered_addresses.is_empty() {
-            debug!("Nenhum endereço encontrado para peer {}", node_id);
+            debug!("No address found for peer {}", node_id);
             return Err(GuardianError::Other(format!(
-                "Nenhum endereço encontrado para peer {}",
+                "No address found for peer {}",
                 node_id
             )));
         }
 
         debug!(
-            "Peer {} descoberto com sucesso: {} endereços",
+            "Peer {} discovered successfully: {} addresses",
             node_id,
             discovered_addresses.len()
         );
 
-        // Log de sucesso da descoberta
+        // Log discovery success.
         info!(
-            "Descoberta bem-sucedida: {} endereços para peer {}",
+            "Successful discovery: {} addresses for peer {}",
             discovered_addresses.len(),
             node_id
         );
@@ -1994,122 +2021,34 @@ impl IrohBackend {
         Ok(discovered_addresses)
     }
 
-    /// Inicia polling contínuo do Discovery::subscribe() em background
-    ///
-    /// Cria uma task que monitora continuamente o discovery subscribe() stream e atualiza
-    /// o cache de peers descobertos. Útil para manter lista de peers sempre atualizada.
-    pub async fn start_continuous_discovery(&self, interval: Duration) -> Result<()> {
-        debug!(
-            "Iniciando polling contínuo de discovery com resubscribe a cada {:?}",
-            interval
-        );
-
-        let endpoint_arc = self.get_endpoint().await?;
-        let discovery_cache = self.discovery_cache.clone();
-
-        // Spawn background task para polling contínuo
-        tokio::spawn(async move {
-            loop {
-                let endpoint_lock = endpoint_arc.read().await;
-                if let Some(endpoint) = endpoint_lock.as_ref()
-                    && let Some(discovery) = endpoint.discovery()
-                {
-                    debug!("Executando ciclo de discovery via subscribe()");
-
-                    // Obtém stream de descoberta passiva
-                    if let Some(mut stream) = discovery.subscribe() {
-                        use futures::StreamExt;
-
-                        // Processa eventos por um período antes de resubscrever
-                        let cycle_start = Instant::now();
-                        while let Some(event) = stream.next().await {
-                            match event {
-                                iroh::discovery::DiscoveryEvent::Discovered(item) => {
-                                    // DiscoveryItem derefs para NodeData, tem método node_id()
-                                    let node_id = item.node_id();
-                                    let peer_info = DiscoveredPeerInfo {
-                                        node_id,
-                                        addresses: item
-                                            .direct_addresses() // via Deref<Target=NodeData>
-                                            .iter()
-                                            .map(|addr| format!("{}", addr))
-                                            .collect(),
-                                        last_seen: Instant::now(),
-                                        latency: None,
-                                        protocols: vec![
-                                            "iroh/blobs/0.92.0".to_string(),
-                                            "iroh/gossip/0.92.0".to_string(),
-                                        ],
-                                    };
-
-                                    // Atualiza cache
-                                    let mut cache = discovery_cache.write().await;
-                                    cache.peers.insert(peer_info.node_id, peer_info);
-                                    cache.last_update = Some(Instant::now());
-                                    drop(cache);
-
-                                    debug!("Peer descoberto via subscribe(): {}", node_id);
-                                }
-                                iroh::discovery::DiscoveryEvent::Expired(node_id) => {
-                                    debug!("Peer expirado: {}", node_id);
-                                    // Opcionalmente remove do cache ou marca como inativo
-                                }
-                            }
-
-                            // Após interval, resubscribe para pegar novos eventos
-                            if cycle_start.elapsed() >= interval {
-                                debug!("Ciclo de discovery completo, resubscrevendo...");
-                                break;
-                            }
-                        }
-                    } else {
-                        debug!("Discovery não suporta subscribe(), aguardando...");
-                        drop(endpoint_lock);
-                        tokio::time::sleep(interval * 2).await;
-                        continue;
-                    }
-                }
-
-                drop(endpoint_lock);
-                tokio::time::sleep(interval).await;
-            }
-        });
-
-        info!(
-            "Polling contínuo de discovery iniciado (interval: {:?})",
-            interval
-        );
-        Ok(())
-    }
-
-    /// Obtém estatísticas do cache otimizado
+    /// Gets statistics from the optimized cache.
     pub async fn get_cache_statistics(&self) -> Result<SimpleCacheStats> {
         let cache_stats = self.optimized_cache.get_stats().await;
 
-        // Converte CacheStats do OptimizedCache para SimpleCacheStats (API pública)
+        // Convert OptimizedCache's CacheStats into SimpleCacheStats (public API).
         Ok(SimpleCacheStats {
-            entries_count: 0, // OptimizedCache não expõe contagem direta
+            entries_count: 0, // OptimizedCache does not expose a direct count.
             hit_ratio: cache_stats.hit_rate,
             total_size_bytes: cache_stats.total_bytes_cached,
         })
     }
 
-    /// Executa otimização automática de performance
+    /// Runs automatic performance optimization.
     pub async fn optimize_performance(&self) -> Result<()> {
-        debug!("Iniciando otimização automática de performance");
+        debug!("Starting automatic performance optimization");
 
-        // Otimiza cache baseado em métricas
+        // Optimize the cache based on metrics.
         self.optimize_cache_with_metrics().await?;
 
-        // 3. Atualiza métricas de performance
+        // 3. Update performance metrics.
         {
             let stats = self.get_cache_statistics().await?;
             let mut metrics = self.metrics.write().await;
 
-            // Ajusta ops_per_second baseado em performance de cache
+            // Adjust ops_per_second based on cache performance.
             let hit_ratio = stats.hit_ratio;
 
-            // Performance boost baseado em hit ratio
+            // Performance boost based on the hit ratio.
             if hit_ratio > 0.5 {
                 metrics.ops_per_second = (metrics.ops_per_second * (1.0 + hit_ratio)).max(10.0);
             }
@@ -2118,27 +2057,27 @@ impl IrohBackend {
         }
 
         info!(
-            "Otimização de performance concluída com hit ratio: {:.2}",
+            "Performance optimization complete with hit ratio: {:.2}",
             self.get_cache_statistics().await?.hit_ratio
         );
         Ok(())
     }
 
-    /// Otimiza cache baseado em métricas de uso
+    /// Optimizes the cache based on usage metrics.
     async fn optimize_cache_with_metrics(&self) -> Result<()> {
         let cache_stats = self.optimized_cache.get_stats().await;
         let hit_ratio = cache_stats.hit_rate;
 
         debug!(
-            "Otimizando cache - Hit Ratio atual: {:.2}%",
+            "Optimizing cache - Current Hit Ratio: {:.2}%",
             hit_ratio * 100.0
         );
 
-        // OptimizedCache gerencia evicção inteligente automaticamente
-        // quando o threshold configurado é atingido
+        // OptimizedCache manages intelligent eviction automatically
+        // when the configured threshold is reached.
         if hit_ratio < 0.3 {
             info!(
-                "Hit ratio baixo detectado ({:.1}%) - OptimizedCache gerenciará evicção automaticamente",
+                "Low hit ratio detected ({:.1}%) - OptimizedCache will manage eviction automatically",
                 hit_ratio * 100.0
             );
         }
@@ -2146,31 +2085,31 @@ impl IrohBackend {
         Ok(())
     }
 
-    /// Utiliza configuração para ajustes dinâmicos
+    /// Uses the configuration for dynamic adjustments.
     pub async fn get_config_info(&self) -> String {
         format!(
-            "Backend configurado com data_store_path: {:?}",
+            "Backend configured with data_store_path: {:?}",
             self.config.data_store_path
         )
     }
 
-    /// Obtém informações do pool de conexões
+    /// Gets information about the connection pool.
     pub async fn get_connection_pool_status(&self) -> String {
         let pool = self.connection_pool.read().await;
-        format!("Pool de conexões ativo com {} peers", pool.len())
+        format!("Connection pool active with {} peers", pool.len())
     }
 
-    /// Obtém conexão do pool ou retorna erro se não existir
+    /// Gets a connection from the pool, or returns an error if it does not exist.
     pub async fn get_connection_from_pool(&self, node_id: &NodeId) -> Result<ConnectionInfo> {
         let mut pool = self.connection_pool.write().await;
 
         if let Some(conn_info) = pool.get_mut(node_id) {
-            // Atualiza timestamp de último uso
+            // Update the last-used timestamp.
             conn_info.last_used = Instant::now();
             conn_info.operations_count += 1;
 
             debug!(
-                "Conexão obtida do pool: {} (operações: {})",
+                "Connection obtained from the pool: {} (operations: {})",
                 node_id.fmt_short(),
                 conn_info.operations_count
             );
@@ -2178,37 +2117,37 @@ impl IrohBackend {
             Ok(conn_info.clone())
         } else {
             Err(GuardianError::Other(format!(
-                "Conexão não encontrada no pool: {}",
+                "Connection not found in the pool: {}",
                 node_id.fmt_short()
             )))
         }
     }
 
-    /// Remove conexão do pool
+    /// Removes a connection from the pool.
     pub async fn remove_connection_from_pool(&self, node_id: &NodeId) -> Result<()> {
         let mut pool = self.connection_pool.write().await;
 
         if pool.remove(node_id).is_some() {
             info!(
-                "Conexão removida do pool: {} ({} conexões restantes)",
+                "Connection removed from the pool: {} ({} connections remaining)",
                 node_id.fmt_short(),
                 pool.len()
             );
 
-            // Atualiza contador de peers conectados
+            // Update the connected-peers counter.
             let mut status = self.node_status.write().await;
             status.connected_peers = status.connected_peers.saturating_sub(1);
 
             Ok(())
         } else {
             Err(GuardianError::Other(format!(
-                "Conexão não encontrada no pool: {}",
+                "Connection not found in the pool: {}",
                 node_id.fmt_short()
             )))
         }
     }
 
-    /// Limpa conexões antigas do pool (não usadas há mais de timeout)
+    /// Clears stale connections from the pool (unused for longer than the timeout).
     pub async fn cleanup_stale_connections(&self, timeout: Duration) -> Result<u32> {
         let mut pool = self.connection_pool.write().await;
         let mut removed_count = 0;
@@ -2223,16 +2162,19 @@ impl IrohBackend {
         for node_id in stale_peers {
             pool.remove(&node_id);
             removed_count += 1;
-            debug!("Conexão stale removida do pool: {}", node_id.fmt_short());
+            debug!(
+                "Stale connection removed from the pool: {}",
+                node_id.fmt_short()
+            );
         }
 
         if removed_count > 0 {
             info!(
-                "Cleanup do connection pool: {} conexões antigas removidas",
+                "Connection pool cleanup: {} stale connections removed",
                 removed_count
             );
 
-            // Atualiza contador de peers conectados
+            // Update the connected-peers counter.
             let mut status = self.node_status.write().await;
             status.connected_peers = pool.len() as u32;
         }
@@ -2240,18 +2182,18 @@ impl IrohBackend {
         Ok(removed_count)
     }
 
-    /// Lista todas as conexões ativas no pool
+    /// Lists all active connections in the pool.
     pub async fn list_active_connections(&self) -> Vec<ConnectionInfo> {
         let pool = self.connection_pool.read().await;
         pool.values().cloned().collect()
     }
 
-    /// Atualiza latência de uma conexão no pool
+    /// Updates the latency of a connection in the pool.
     pub async fn update_connection_latency(&self, node_id: &NodeId, latency_ms: f64) -> Result<()> {
         let mut pool = self.connection_pool.write().await;
 
         if let Some(conn_info) = pool.get_mut(node_id) {
-            // Média móvel exponencial para suavizar flutuações
+            // Exponential moving average to smooth out fluctuations.
             conn_info.avg_latency_ms = if conn_info.avg_latency_ms == 0.0 {
                 latency_ms
             } else {
@@ -2259,7 +2201,7 @@ impl IrohBackend {
             };
 
             debug!(
-                "Latência atualizada para {}: {:.2}ms",
+                "Latency updated for {}: {:.2}ms",
                 node_id.fmt_short(),
                 conn_info.avg_latency_ms
             );
@@ -2267,32 +2209,32 @@ impl IrohBackend {
             Ok(())
         } else {
             Err(GuardianError::Other(format!(
-                "Conexão não encontrada no pool: {}",
+                "Connection not found in the pool: {}",
                 node_id.fmt_short()
             )))
         }
     }
 
     // === NODE INFO ===
-    /// Retorna a secret key do nó
+    /// Returns the node's secret key.
     pub fn secret_key(&self) -> &SecretKey {
         &self.secret_key
     }
 
-    /// Retorna referência à configuração do backend
+    /// Returns a reference to the backend configuration.
     pub fn config(&self) -> &ClientConfig {
         &self.config
     }
 
     // === KEY SYNCHRONIZATION ===
-    /// Obtém referência ao key synchronizer
+    /// Gets a reference to the key synchronizer.
     pub fn get_key_synchronizer(
         &self,
     ) -> Arc<crate::p2p::network::core::key_synchronizer::KeySynchronizer> {
         self.key_synchronizer.clone()
     }
 
-    /// Adiciona peer confiável ao key synchronizer
+    /// Adds a trusted peer to the key synchronizer.
     pub async fn add_trusted_peer_for_sync(
         &self,
         node_id: NodeId,
@@ -2303,12 +2245,12 @@ impl IrohBackend {
             .await
     }
 
-    /// Remove peer confiável do key synchronizer
+    /// Removes a trusted peer from the key synchronizer.
     pub async fn remove_trusted_peer_from_sync(&self, node_id: &NodeId) -> Result<bool> {
         self.key_synchronizer.remove_trusted_peer(node_id).await
     }
 
-    /// Sincroniza chave específica com peers
+    /// Synchronizes a specific key with peers.
     pub async fn sync_key_with_peers(
         &self,
         key_id: &str,
@@ -2317,14 +2259,14 @@ impl IrohBackend {
         self.key_synchronizer.sync_key(key_id, operation).await
     }
 
-    /// Obtém estatísticas de sincronização de chaves
+    /// Gets key synchronization statistics.
     pub async fn get_key_sync_statistics(
         &self,
     ) -> crate::p2p::network::core::key_synchronizer::SyncStatistics {
         self.key_synchronizer.get_statistics().await
     }
 
-    /// Obtém status de sincronização de uma chave
+    /// Gets the synchronization status of a key.
     pub async fn get_key_sync_status(
         &self,
         key_id: &str,
@@ -2332,17 +2274,17 @@ impl IrohBackend {
         self.key_synchronizer.get_key_sync_status(key_id).await
     }
 
-    /// Lista chaves sincronizadas
+    /// Lists synchronized keys.
     pub async fn list_synchronized_keys(&self) -> Vec<String> {
         self.key_synchronizer.list_synchronized_keys().await
     }
 
-    /// Lista peers confiáveis para sincronização
+    /// Lists trusted peers for synchronization.
     pub async fn list_trusted_peers_for_sync(&self) -> Vec<NodeId> {
         self.key_synchronizer.list_trusted_peers().await
     }
 
-    /// Processa mensagem de sincronização recebida
+    /// Processes a received synchronization message.
     pub async fn handle_sync_message(
         &self,
         message: crate::p2p::network::core::key_synchronizer::SyncMessage,
@@ -2350,53 +2292,53 @@ impl IrohBackend {
         self.key_synchronizer.handle_sync_message(message).await
     }
 
-    /// Força sincronização completa de todas as chaves
+    /// Forces a full synchronization of all keys.
     pub async fn force_full_key_sync(&self) -> Result<()> {
         self.key_synchronizer.force_full_sync().await
     }
 
-    /// Exporta configuração de sincronização
+    /// Exports the synchronization configuration.
     pub async fn export_key_sync_config(&self) -> Result<Vec<u8>> {
         self.key_synchronizer.export_sync_config().await
     }
 
-    /// Limpa cache de mensagens antigas (método simplificado)
+    /// Clears the cache of old messages (simplified method).
     pub async fn cleanup_sync_cache(&self) -> Result<u64> {
-        // KeySynchronizer não expõe método público de cleanup
-        // Este é um placeholder para compatibilidade futura
+        // KeySynchronizer does not expose a public cleanup method.
+        // This is a placeholder for future compatibility.
         Ok(0)
     }
 
-    /// Exporta estatísticas de sincronização como JSON
+    /// Exports synchronization statistics as JSON.
     pub async fn export_sync_statistics_json(&self) -> Result<String> {
         let stats = self.get_key_sync_statistics().await;
         serde_json::to_string_pretty(&stats)
-            .map_err(|e| GuardianError::Other(format!("Erro ao serializar estatísticas: {}", e)))
+            .map_err(|e| GuardianError::Other(format!("Error serializing statistics: {}", e)))
     }
 
-    /// Gera relatório de sincronização de chaves
+    /// Generates a key synchronization report.
     pub async fn generate_key_sync_report(&self) -> String {
         let stats = self.get_key_sync_statistics().await;
         let trusted_peers = self.list_trusted_peers_for_sync().await;
 
         format!(
             r#"
-=== RELATÓRIO DE SINCRONIZAÇÃO DE CHAVES ===
+=== KEY SYNCHRONIZATION REPORT ===
 
-Estatísticas Gerais:
-   - Mensagens sincronizadas: {}
-   - Mensagens pendentes: {}
-   - Taxa de sucesso: {:.1}%
-   - Latência média: {:.2}ms
+General Statistics:
+   - Messages synchronized: {}
+   - Pending messages: {}
+   - Success rate: {:.1}%
+   - Average latency: {:.2}ms
 
-Conflitos:
-   - Detectados: {}
-   - Resolvidos: {}
-   - Taxa de resolução: {:.1}%
+Conflicts:
+   - Detected: {}
+   - Resolved: {}
+   - Resolution rate: {:.1}%
 
 Peers:
-   - Peers ativos: {}
-   - Peers confiáveis: {}
+   - Active peers: {}
+   - Trusted peers: {}
 
 Status: {}
 "#,
@@ -2414,69 +2356,69 @@ Status: {}
             stats.active_peers,
             trusted_peers.len(),
             if stats.success_rate > 0.95 {
-                "✓ Saudável"
+                "✓ Healthy"
             } else if stats.success_rate > 0.80 {
-                "⚠ Atenção"
+                "⚠ Attention"
             } else {
-                "✗ Crítico"
+                "✗ Critical"
             }
         )
     }
 
     // === NETWORKING METRICS ===
-    /// Obtém métricas de networking atualizadas
+    /// Gets up-to-date networking metrics.
     pub async fn get_networking_metrics(&self) -> Result<networking_metrics::NetworkingMetrics> {
-        // Atualiza métricas computadas antes de retornar
+        // Update the computed metrics before returning.
         self.networking_metrics.update_computed_metrics().await;
         Ok(self.networking_metrics.get_metrics().await)
     }
 
-    /// Gera relatório detalhado de métricas de networking
+    /// Generates a detailed networking metrics report.
     pub async fn generate_networking_report(&self) -> String {
         self.networking_metrics.update_computed_metrics().await;
         self.networking_metrics.generate_report().await
     }
 
-    /// Exporta métricas de networking como JSON
+    /// Exports networking metrics as JSON.
     pub async fn export_networking_metrics_json(&self) -> Result<String> {
         self.networking_metrics.update_computed_metrics().await;
         self.networking_metrics.export_json().await
     }
 
     // === PERFORMANCE MONITORING ===
-    /// Obtém status do monitor de performance
+    /// Gets the performance monitor status.
     pub async fn get_performance_monitor_status(&self) -> String {
         let monitor = self.performance_monitor.read().await;
         format!(
-            "Monitor de performance ativo - Throughput: {:.2} ops/s",
+            "Performance monitor active - Throughput: {:.2} ops/s",
             monitor.throughput_metrics.ops_per_second
         )
     }
 
-    /// Obtém referência ao performance monitor
+    /// Gets a reference to the performance monitor.
     pub fn get_performance_monitor(&self) -> Arc<RwLock<PerformanceMonitor>> {
         self.performance_monitor.clone()
     }
 
-    /// Obtém métricas de throughput
+    /// Gets the throughput metrics.
     pub async fn get_throughput_metrics(&self) -> ThroughputMetrics {
         let monitor = self.performance_monitor.read().await;
         monitor.throughput_metrics.clone()
     }
 
-    /// Obtém métricas de latência
+    /// Gets the latency metrics.
     pub async fn get_latency_metrics(&self) -> LatencyMetrics {
         let monitor = self.performance_monitor.read().await;
         monitor.latency_metrics.clone()
     }
 
-    /// Obtém métricas de recursos
+    /// Gets the resource metrics.
     pub async fn get_resource_metrics(&self) -> ResourceMetrics {
         let monitor = self.performance_monitor.read().await;
         monitor.resource_metrics.clone()
     }
 
-    /// Cria snapshot de performance atual
+    /// Creates a snapshot of the current performance.
     pub async fn create_performance_snapshot(&self) -> PerformanceSnapshot {
         let monitor = self.performance_monitor.read().await;
         PerformanceSnapshot {
@@ -2487,20 +2429,20 @@ Status: {}
         }
     }
 
-    /// Obtém histórico de snapshots de performance
+    /// Gets the history of performance snapshots.
     pub async fn get_performance_history(&self) -> Vec<PerformanceSnapshot> {
         let monitor = self.performance_monitor.read().await;
         monitor.performance_history.clone()
     }
 
-    /// Adiciona snapshot ao histórico (limitado aos últimos 100)
+    /// Adds a snapshot to the history (limited to the last 100).
     pub async fn record_performance_snapshot(&self) -> Result<()> {
         let snapshot = self.create_performance_snapshot().await;
         let mut monitor = self.performance_monitor.write().await;
 
         monitor.performance_history.push(snapshot);
 
-        // Mantém apenas últimos 100 snapshots
+        // Keep only the last 100 snapshots.
         if monitor.performance_history.len() > 100 {
             monitor.performance_history.remove(0);
         }
@@ -2508,7 +2450,7 @@ Status: {}
         Ok(())
     }
 
-    /// Atualiza métricas de recursos manualmente
+    /// Updates resource metrics manually.
     pub async fn update_resource_metrics(
         &self,
         cpu_usage: f64,
@@ -2526,17 +2468,17 @@ Status: {}
         Ok(())
     }
 
-    /// Reseta métricas de performance
+    /// Resets the performance metrics.
     pub async fn reset_performance_metrics(&self) -> Result<()> {
         let mut monitor = self.performance_monitor.write().await;
 
         *monitor = PerformanceMonitor::default();
 
-        info!("Métricas de performance resetadas");
+        info!("Performance metrics reset");
         Ok(())
     }
 
-    /// Calcula percentis de latência (P95, P99)
+    /// Computes latency percentiles (P95, P99).
     pub async fn calculate_latency_percentiles(&self) -> Result<(f64, f64)> {
         let monitor = self.performance_monitor.read().await;
 
@@ -2558,7 +2500,7 @@ Status: {}
         let p95 = latencies.get(p95_idx).copied().unwrap_or(0.0);
         let p99 = latencies.get(p99_idx).copied().unwrap_or(0.0);
 
-        // Atualiza no monitor
+        // Update it in the monitor.
         drop(monitor);
         let mut monitor_mut = self.performance_monitor.write().await;
         monitor_mut.latency_metrics.p95_latency_ms = p95;
@@ -2567,7 +2509,7 @@ Status: {}
         Ok((p95, p99))
     }
 
-    /// Gera relatório detalhado de performance monitor
+    /// Generates a detailed performance monitor report.
     pub async fn generate_performance_monitor_report(&self) -> String {
         let monitor = self.performance_monitor.read().await;
         let (p95, p99) = self
@@ -2577,30 +2519,30 @@ Status: {}
 
         format!(
             r#"
-=== RELATÓRIO DE PERFORMANCE MONITOR ===
+=== PERFORMANCE MONITOR REPORT ===
 
 Throughput:
-   - Operações/segundo: {:.2}
-   - Bytes/segundo: {}
-   - Pico de throughput: {:.2} ops/s
-   - Throughput médio: {:.2} ops/s
+   - Operations/second: {:.2}
+   - Bytes/second: {}
+   - Peak throughput: {:.2} ops/s
+   - Average throughput: {:.2} ops/s
 
-Latência:
-   - Latência média: {:.2}ms
-   - Latência mínima: {:.2}ms
-   - Latência máxima: {:.2}ms
-   - Latência P95: {:.2}ms
-   - Latência P99: {:.2}ms
+Latency:
+   - Average latency: {:.2}ms
+   - Minimum latency: {:.2}ms
+   - Maximum latency: {:.2}ms
+   - P95 latency: {:.2}ms
+   - P99 latency: {:.2}ms
 
-Recursos:
-   - Uso de CPU: {:.1}%
-   - Uso de memória: {:.2}MB
-   - I/O de disco: {:.2}MB/s
-   - Largura de banda: {:.2}MB/s
+Resources:
+   - CPU usage: {:.1}%
+   - Memory usage: {:.2}MB
+   - Disk I/O: {:.2}MB/s
+   - Bandwidth: {:.2}MB/s
 
-Histórico:
-   - Snapshots registrados: {}
-   - Período monitorado: {} snapshots
+History:
+   - Snapshots recorded: {}
+   - Monitored period: {} snapshots
 
 Status: {}
 "#,
@@ -2620,17 +2562,17 @@ Status: {}
             monitor.performance_history.len(),
             monitor.performance_history.len(),
             if monitor.latency_metrics.avg_latency_ms < 50.0 {
-                "✓ Excelente"
+                "✓ Excellent"
             } else if monitor.latency_metrics.avg_latency_ms < 100.0 {
-                "✓ Bom"
+                "✓ Good"
             } else if monitor.latency_metrics.avg_latency_ms < 200.0 {
-                "⚠ Moderado"
+                "⚠ Moderate"
             } else {
-                "✗ Crítico"
+                "✗ Critical"
             }
         )
     }
-    /// Gera relatório detalhado de performance
+    /// Generates a detailed performance report.
     pub async fn generate_performance_report(&self) -> String {
         let cache_stats = self.get_cache_statistics().await.unwrap_or_default();
         let metrics = self.metrics.read().await;
@@ -2638,7 +2580,7 @@ Status: {}
 
         let hit_ratio = cache_stats.hit_ratio;
 
-        // Informações do connection pool
+        // Connection pool information.
         let (pool_size, avg_pool_latency, total_pool_operations) = {
             let pool = self.connection_pool.read().await;
             let size = pool.len();
@@ -2651,11 +2593,11 @@ Status: {}
             (size, avg_latency, total_ops)
         };
 
-        // Informações do key synchronizer
+        // Key synchronizer information.
         let sync_stats = self.get_key_sync_statistics().await;
         let trusted_peers_count = self.list_trusted_peers_for_sync().await.len();
 
-        // Informações do performance monitor
+        // Performance monitor information.
         let perf_throughput = self.get_throughput_metrics().await;
         let perf_latency = self.get_latency_metrics().await;
         let perf_resources = self.get_resource_metrics().await;
@@ -2663,58 +2605,58 @@ Status: {}
 
         format!(
             r#"
-RELATÓRIO DE PERFORMANCE IROH BACKEND
+IROH BACKEND PERFORMANCE REPORT
 
-Métricas Gerais:
-   - Operações por segundo: {:.2}
-   - Latência média: {:.2}ms  
-   - Total de operações: {}
-   - Erros: {}
-   - Uso de memória: {:.2}MB
+General Metrics:
+   - Operations per second: {:.2}
+   - Average latency: {:.2}ms
+   - Total operations: {}
+   - Errors: {}
+   - Memory usage: {:.2}MB
 
 Cache Statistics:
    - Cache hits: {}
    - Cache misses: {}
    - Hit ratio: {:.1}%
-   - Bytes em cache: {:.2}MB
-   - Entradas no cache: {}
-   - Bytes economizados: {:.2}MB
-   - Tempo médio de acesso: {:.2}ms
+   - Bytes cached: {:.2}MB
+   - Cache entries: {}
+   - Bytes saved: {:.2}MB
+   - Average access time: {:.2}ms
 
 Connection Pool:
-   - Conexões ativas: {}
-   - Latência média do pool: {:.2}ms
-   - Total de operações via pool: {}
-   - Eficiência de reutilização: {:.1}%
+   - Active connections: {}
+   - Average pool latency: {:.2}ms
+   - Total operations via pool: {}
+   - Reuse efficiency: {:.1}%
 
 Key Synchronization:
-   - Mensagens sincronizadas: {}
-   - Mensagens pendentes: {}
-   - Taxa de sucesso: {:.1}%
-   - Conflitos (resolvidos/total): {}/{}
-   - Peers confiáveis: {}
-   - Latência média de sync: {:.2}ms
+   - Messages synchronized: {}
+   - Pending messages: {}
+   - Success rate: {:.1}%
+   - Conflicts (resolved/total): {}/{}
+   - Trusted peers: {}
+   - Average sync latency: {:.2}ms
 
 Performance Monitor:
-   - Throughput: {:.2} ops/s (pico: {:.2})
-   - Bytes/segundo: {}
-   - Latência média: {:.2}ms
-   - Latência (min/max): {:.2}ms / {:.2}ms
-   - Latência P95/P99: {:.2}ms / {:.2}ms
-   - Uso de CPU: {:.1}%
-   - Uso de memória: {:.2}MB
-   - I/O de disco: {:.2}MB/s
-   - Snapshots registrados: {}
+   - Throughput: {:.2} ops/s (peak: {:.2})
+   - Bytes/second: {}
+   - Average latency: {:.2}ms
+   - Latency (min/max): {:.2}ms / {:.2}ms
+   - Latency P95/P99: {:.2}ms / {:.2}ms
+   - CPU usage: {:.1}%
+   - Memory usage: {:.2}MB
+   - Disk I/O: {:.2}MB/s
+   - Snapshots recorded: {}
 
-Otimizações:
-   - Cache inteligente: ✓ Ativo
-   - Connection pooling: ✓ Ativo
-   - Key synchronization: ✓ Ativo
-   - Performance monitoring: ✓ Ativo
-   - Eviction adaptativo: ✓ Configurado
-   - Priorização dinâmica: ✓ Funcionando
-   - Discovery caching: ✓ Integrado
-   
+Optimizations:
+   - Intelligent cache: ✓ Active
+   - Connection pooling: ✓ Active
+   - Key synchronization: ✓ Active
+   - Performance monitoring: ✓ Active
+   - Adaptive eviction: ✓ Configured
+   - Dynamic prioritization: ✓ Working
+   - Discovery caching: ✓ Integrated
+
 Performance Score: {:.1}/10
 "#,
             metrics.ops_per_second,
@@ -2722,13 +2664,13 @@ Performance Score: {:.1}/10
             metrics.total_operations,
             metrics.error_count,
             memory_usage as f64 / 1_048_576.0,
-            cache_stats.entries_count, // hits estimados
-            0,                         // misses (não disponível em SimpleCacheStats)
+            cache_stats.entries_count, // estimated hits
+            0,                         // misses (not available in SimpleCacheStats)
             hit_ratio * 100.0,
             cache_stats.total_size_bytes as f64 / 1_048_576.0,
             cache_stats.entries_count,
-            cache_stats.total_size_bytes as f64 / 1_048_576.0, // bytes saved estimados
-            1.0,                                               // tempo de acesso rápido para LRU
+            cache_stats.total_size_bytes as f64 / 1_048_576.0, // estimated bytes saved
+            1.0,                                               // fast access time for LRU
             pool_size,
             avg_pool_latency,
             total_pool_operations,

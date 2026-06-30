@@ -1,8 +1,8 @@
 [package]
 name = "guardian-db-derive"
-version = "0.16.0"
+version = "0.17.0"
 edition = "2024"
-rust-version = "1.90.0"
+rust-version = "1.95.0"
 license = "MIT OR Apache-2.0"
 description = "Derive macros for guardian-db ODM models"
 repository = "https://github.com/wmaslonek/guardian-db/"

@@ -13,12 +13,11 @@ use crate::stores::events::{
     EventReplicated, EventWrite,
 };
 use crate::stores::operation::Operation;
-use crate::stores::replicator::replication_info::ReplicationInfo;
 use crate::traits::{
     DirectChannel, MessageExchangeHeads, MessageMarshaler, NewStoreOptions, PubSubInterface,
     PubSubTopic, Store, StoreIndex, TracerWrapper,
 };
-use iroh::NodeId;
+use iroh::EndpointId as NodeId;
 use iroh_blobs::Hash;
 use opentelemetry::trace::{TracerProvider, noop::NoopTracerProvider};
 use parking_lot::{MappedRwLockReadGuard, Mutex, RwLock};
@@ -37,12 +36,12 @@ pub mod utils;
 
 pub struct LogAndIndex {
     pub oplog: Arc<RwLock<Log>>,
-    /// Índice ativo da store - protegido independentemente para acesso flexível
+    /// Active store index - protected independently for flexible access.
     pub active_index: Arc<RwLock<Option<Box<dyn StoreIndex<Error = GuardianError> + Send + Sync>>>>,
 }
 
 impl LogAndIndex {
-    /// Cria uma nova instância com proteções thread-safe independentes
+    /// Creates a new instance with independent thread-safe protections.
     pub fn new(
         oplog: Log,
         index: Option<Box<dyn StoreIndex<Error = GuardianError> + Send + Sync>>,
@@ -53,7 +52,7 @@ impl LogAndIndex {
         }
     }
 
-    /// Acesso thread-safe ao oplog sem limitações de lifetime
+    /// Thread-safe access to the oplog without lifetime limitations.
     pub fn with_oplog<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&Log) -> R,
@@ -62,7 +61,7 @@ impl LogAndIndex {
         f(&guard)
     }
 
-    /// Acesso thread-safe ao oplog para modificações
+    /// Thread-safe access to the oplog for modifications.
     pub fn with_oplog_mut<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&mut Log) -> R,
@@ -71,7 +70,7 @@ impl LogAndIndex {
         f(&mut guard)
     }
 
-    /// Acesso thread-safe ao índice ativo
+    /// Thread-safe access to the active index.
     pub fn with_index<F, R>(&self, f: F) -> Option<R>
     where
         F: FnOnce(&dyn StoreIndex<Error = GuardianError>) -> R,
@@ -80,7 +79,7 @@ impl LogAndIndex {
         guard.as_ref().map(|index| f(index.as_ref()))
     }
 
-    /// Acesso thread-safe ao índice ativo para modificações
+    /// Thread-safe access to the active index for modifications.
     pub fn with_index_mut<F, R>(&self, f: F) -> Result<Option<R>>
     where
         F: FnOnce(&mut dyn StoreIndex<Error = GuardianError>) -> Result<R>,
@@ -92,9 +91,9 @@ impl LogAndIndex {
         }
     }
 
-    /// Atualiza o índice com as entradas do oplog de forma thread-safe
+    /// Updates the index with the oplog entries in a thread-safe way.
     pub fn update_index_safe(&self) -> Result<usize> {
-        // Primeiro, coletamos as entradas do oplog
+        // First, collect the oplog entries.
         let entries: Vec<Entry> = self.with_oplog(|oplog| {
             oplog
                 .values()
@@ -103,24 +102,24 @@ impl LogAndIndex {
                 .collect()
         });
 
-        // Atualiza o índice com as entradas coletadas
+        // Update the index with the collected entries.
         match self.with_index_mut(|index| {
-            // Criamos uma referência temporária ao oplog para a atualização
+            // Create a temporary reference to the oplog for the update.
             let oplog_guard = self.oplog.read();
             index.update_index(&oplog_guard, &entries)
         })? {
             Some(_result) => Ok(entries.len()),
-            None => Ok(0), // Nenhum índice ativo
+            None => Ok(0), // No active index.
         }
     }
 
-    /// Verifica se existe um índice ativo
+    /// Checks whether an active index exists.
     pub fn has_active_index(&self) -> bool {
         let guard = self.active_index.read();
         guard.is_some()
     }
 
-    /// Retorna uma referência Arc ao oplog para compatibilidade com Store trait
+    /// Returns an Arc reference to the oplog for compatibility with the Store trait.
     pub fn op_log_arc(&self) -> Arc<RwLock<Log>> {
         self.oplog.clone()
     }
@@ -144,12 +143,12 @@ struct CanAppendContextImpl {
 
 impl CanAppendAdditionalContext for CanAppendContextImpl {
     fn get_log_entries(&self) -> Vec<Box<dyn LogEntry>> {
-        // Obtém todas as entradas do log e as converte para LogEntry
+        // Get all log entries and convert them into LogEntry.
         self.log
             .values()
             .into_iter()
             .map(|arc_entry| {
-                // Cria um LogEntry baseado em Entry
+                // Create a LogEntry based on Entry.
                 #[derive(Clone)]
                 struct EntryLogEntry {
                     entry: Entry,
@@ -172,19 +171,19 @@ impl CanAppendAdditionalContext for CanAppendContextImpl {
     }
 }
 
-// Implementação alternativa que usa snapshot das entradas
-// para evitar problemas de empréstimo com o log
+// Alternative implementation that uses a snapshot of the entries
+// to avoid borrowing issues with the log.
 struct CanAppendContextSnapshot {
     entries: Vec<Box<dyn LogEntry>>,
 }
 
 impl CanAppendAdditionalContext for CanAppendContextSnapshot {
     fn get_log_entries(&self) -> Vec<Box<dyn LogEntry>> {
-        // Cria novas instâncias das entradas ao invés de clonar as boxes
+        // Create new instances of the entries instead of cloning the boxes.
         self.entries
             .iter()
             .map(|entry_box| {
-                // Para cada entrada, criamos uma nova EntryLogEntry clonável
+                // For each entry, create a new clonable EntryLogEntry.
                 #[derive(Clone)]
                 struct ClonableEntryLogEntry {
                     payload: Vec<u8>,
@@ -219,7 +218,7 @@ pub struct StoreSnapshot {
     pub store_type: String,
 }
 
-/// Estatísticas de retry para monitoramento de P2P communication
+/// Retry statistics for monitoring P2P communication.
 #[derive(Debug, Clone, Default)]
 pub struct RetryMetrics {
     pub total_connection_attempts: u64,
@@ -263,7 +262,7 @@ impl RetryMetrics {
         self.failed_after_all_retries += 1;
     }
 
-    // NOVOS MÉTODOS: Para peer exchange
+    // NEW METHODS: For peer exchange.
     pub fn record_peer_exchange_attempt(&mut self) {
         self.peer_exchange_attempts += 1;
     }
@@ -288,14 +287,14 @@ impl RetryMetrics {
         self.peer_exchange_cancellations += 1;
     }
 
-    /// Registra quando um peer se desconecta
+    /// Records when a peer disconnects.
     pub fn record_peer_disconnection(&mut self) {
-        // Pode ser usado para estatísticas de churn de peers
-        // Por enquanto, apenas incrementa contador global
-        // Pode ser expandido para incluir métricas específicas de disconnection
+        // Can be used for peer churn statistics.
+        // For now, this is a placeholder.
+        // It can be expanded to include disconnection-specific metrics.
     }
 
-    /// Calcula taxa de sucesso geral de conexões
+    /// Computes the overall connection success rate.
     pub fn connection_success_rate(&self) -> f64 {
         if self.total_connection_attempts == 0 {
             return 0.0;
@@ -304,7 +303,7 @@ impl RetryMetrics {
         (successful as f64 / self.total_connection_attempts as f64) * 100.0
     }
 
-    /// Calcula taxa de sucesso geral de envios
+    /// Computes the overall send success rate.
     pub fn send_success_rate(&self) -> f64 {
         if self.total_send_attempts == 0 {
             return 0.0;
@@ -313,7 +312,7 @@ impl RetryMetrics {
         (successful as f64 / self.total_send_attempts as f64) * 100.0
     }
 
-    /// Calcula taxa de sucesso de peer exchange
+    /// Computes the peer exchange success rate.
     pub fn peer_exchange_success_rate(&self) -> f64 {
         if self.peer_exchange_attempts == 0 {
             return 0.0;
@@ -326,11 +325,11 @@ impl RetryMetrics {
     }
 }
 
-/// Esta struct é o núcleo de qualquer loja (ex: kvstore, feed) no GuardianDB.
-/// Ela gerencia o log de operações (OpLog), o estado interno (índice),
-/// a replicação com outros peers, o cache e o ciclo de vida da loja.
+/// This struct is the core of any store (e.g. kvstore, feed) in GuardianDB.
+/// It manages the operation log (OpLog), the internal state (index),
+/// replication with other peers, the cache, and the store's lifecycle.
 pub struct BaseStore {
-    // --- Identificadores e Configuração Essencial ---
+    // --- Identifiers and Essential Configuration ---
     id: String,
     node_id: NodeId,
     identity: Arc<Identity>,
@@ -341,17 +340,16 @@ pub struct BaseStore {
     reference_count: usize,
     sort_fn: SortFn,
 
-    // --- Componentes Principais e APIs Externas ---
+    // --- Main Components and External APIs ---
     client: Arc<IrohClient>,
     access_controller: Arc<dyn AccessController>,
     identity_provider: Arc<dyn IdentityProvider>,
 
-    // --- Estado Interno ---
+    // --- Internal State ---
     cache: Arc<dyn Datastore>,
     log_and_index: LogAndIndex,
 
-    // --- Componentes de Replicação ---
-    replication_status: Arc<Mutex<ReplicationInfo>>,
+    // --- Replication Components ---
     pubsub: Arc<dyn PubSubInterface<Error = GuardianError> + Send + Sync>,
     message_marshaler: Arc<dyn MessageMarshaler<Error = GuardianError> + Send + Sync>,
     direct_channel:
@@ -359,34 +357,34 @@ pub struct BaseStore {
     topic:
         Arc<tokio::sync::Mutex<Option<Arc<dyn PubSubTopic<Error = GuardianError> + Send + Sync>>>>,
 
-    // --- Sistema de Eventos e Observabilidade ---
+    // --- Event System and Observability ---
     event_bus: Arc<EventBus>,
-    emitter_interface: Arc<dyn EmitterInterface + Send + Sync>, // Para compatibilidade com Store trait
+    emitter_interface: Arc<dyn EmitterInterface + Send + Sync>, // For compatibility with the Store trait.
     emitters: Emitters,
     span: Span,
     tracer: Arc<TracerWrapper>,
     sync_observer: Arc<crate::reactive_synchronizer::SyncObserver>,
 
-    // --- Métricas de Retry para P2P Communication ---
+    // --- Retry Metrics for P2P Communication ---
     retry_metrics: Arc<Mutex<RetryMetrics>>,
 
-    // --- Gerenciamento de Ciclo de Vida ---
+    // --- Lifecycle Management ---
     cancellation_token: CancellationToken,
-    tasks: Mutex<JoinSet<()>>, // Adiciona um JoinSet para gerenciar tarefas em background
+    tasks: Mutex<JoinSet<()>>, // Adds a JoinSet to manage background tasks.
 }
 
-// Definimos um "type alias" para o cache para tornar a assinatura
-// da função `cache()` mais limpa e legível.
+// We define a "type alias" for the cache to make the signature
+// of the `cache()` function cleaner and more readable.
 pub type CacheRef = Arc<dyn Datastore>;
 
-// Type alias para o "guard" que aponta para o campo `index` dentro do lock.
+// Type alias for the "guard" that points to the `index` field inside the lock.
 pub type IndexGuard<'a> =
     MappedRwLockReadGuard<'a, dyn StoreIndex<Error = GuardianError> + Send + Sync>;
 
 pub type IndexBuilder =
     Arc<dyn Fn(&[u8]) -> Box<dyn StoreIndex<Error = GuardianError> + Send + Sync>>;
 
-// O `sortFn` é uma função de ordenação.
+// `sortFn` is a sorting function.
 pub type SortFn = fn(&Entry, &Entry) -> std::cmp::Ordering;
 fn default_sort_fn(a: &Entry, b: &Entry) -> std::cmp::Ordering {
     // First compare by clock time
@@ -405,14 +403,14 @@ fn default_sort_fn(a: &Entry, b: &Entry) -> std::cmp::Ordering {
 }
 
 impl BaseStore {
-    /// Cria um cache baseado em sled com configurações otimizadas
+    /// Creates a sled-based cache with optimized settings.
     ///
-    /// Esta função cria um sistema de cache usando LevelDownCache (baseado em sled).
-    /// O cache é usado para:
-    /// - Armazenar heads locais e remotos
-    /// - Cachear entradas frequentemente acessadas
-    /// - Manter estado de sincronização e replicação
-    /// - Otimizar performance de queries no log
+    /// This function creates a cache system using LevelDownCache (based on sled).
+    /// The cache is used to:
+    /// - Store local and remote heads
+    /// - Cache frequently accessed entries
+    /// - Keep synchronization and replication state
+    /// - Optimize log query performance
     fn create_cache(address: &dyn Address, cache_dir: &str) -> Result<Arc<dyn Datastore>> {
         use crate::cache::level_down::LevelDownCache;
         use crate::cache::{Cache, CacheMode, Options};
@@ -423,34 +421,34 @@ impl BaseStore {
             cache_dir
         );
 
-        // Configurações otimizadas para o cache
+        // Optimized settings for the cache.
         let cache_options = Options {
-            // Span para logging estruturado
+            // Span for structured logging.
             span: None,
-            // 100MB de cache é adequado para a maioria dos casos de uso
+            // 100MB of cache is adequate for most use cases.
             max_cache_size: Some(100 * 1024 * 1024), // 100MB
-            // Auto detecta se deve usar cache persistente ou em memória baseado no ambiente
+            // Auto-detects whether to use a persistent or in-memory cache based on the environment.
             cache_mode: CacheMode::Auto,
         };
 
-        // Cria o gerenciador de cache usando a interface Cache trait
+        // Create the cache manager using the Cache trait interface.
         let cache_manager = LevelDownCache::new(Some(&cache_options));
 
-        // Prepara o endereço para uso com o cache
-        // O endereço é convertido para string e re-parseado para garantir formato consistente
+        // Prepare the address for use with the cache.
+        // The address is converted to a string and re-parsed to ensure a consistent format.
         let address_string = address.to_string();
 
-        // Usa a função parse do módulo address
+        // Use the parse function from the address module.
         let parsed_address = crate::address::parse(&address_string)
             .map_err(|e| GuardianError::Store(format!("Failed to parse address: {}", e)))?;
 
-        // Carrega o cache usando o diretório configurado
+        // Load the cache using the configured directory.
         let boxed_datastore = cache_manager
             .load(cache_dir, &parsed_address)
             .map_err(|e| GuardianError::Store(format!("Failed to create cache: {}", e)))?;
 
-        // Converte Box<dyn Datastore + Send + Sync> para Arc<dyn Datastore> de forma segura
-        // Usando Arc::from com wrapper explícito para evitar problemas de trait object
+        // Convert Box<dyn Datastore + Send + Sync> to Arc<dyn Datastore> safely,
+        // using an explicit wrapper to avoid trait-object issues.
         struct DatastoreWrapper {
             inner: Box<dyn Datastore + Send + Sync>,
         }
@@ -511,9 +509,9 @@ impl BaseStore {
         Ok(arc_datastore)
     }
 
-    /// Helper method para criar um contexto de acesso baseado no log atual
+    /// Helper method to create an access context based on the current log.
     fn create_append_context(&self) -> impl CanAppendAdditionalContext {
-        // Cria um snapshot das entradas do log atual para usar como contexto
+        // Create a snapshot of the current log entries to use as context.
         let entries = self.log_and_index.with_oplog(|oplog| {
             oplog
                 .values()
@@ -543,23 +541,23 @@ impl BaseStore {
         CanAppendContextSnapshot { entries }
     }
 
-    /// Retorna o nome do banco de dados (store).
+    /// Returns the database (store) name.
     pub fn db_name(&self) -> &str {
         &self.db_name
     }
 
-    /// Retorna o Client do GuardianDB.
+    /// Returns the GuardianDB Client.
     pub fn client(&self) -> Arc<IrohClient> {
         self.client.clone()
     }
 
-    /// Retorna uma referência imutável à identidade da store.
+    /// Returns an immutable reference to the store's identity.
     pub fn identity(&self) -> &Identity {
         &self.identity
     }
 
-    /// Retorna uma referência thread-safe ao OpLog da store.
-    /// Usa a nova arquitetura para acesso seguro sem limitações de lifetime.
+    /// Returns a thread-safe reference to the store's OpLog.
+    /// Uses the new architecture for safe access without lifetime limitations.
     pub fn op_log(&self) -> Arc<RwLock<Log>> {
         self.log_and_index.oplog.clone()
     }
@@ -580,38 +578,38 @@ impl BaseStore {
         self.log_and_index.with_oplog_mut(f)
     }
 
-    /// Retorna uma referência ao controlador de acesso da store.
-    /// O AccessController é responsável por validar permissões de escrita e leitura,
-    /// gerenciar chaves autorizadas e controlar o acesso ao log de operações.
+    /// Returns a reference to the store's access controller.
+    /// The AccessController is responsible for validating read and write permissions,
+    /// managing authorized keys and controlling access to the operation log.
     ///
-    /// # Funcionalidades do AccessController
-    /// - Validação de permissões para operações de escrita (`can_append`)
-    /// - Gerenciamento de chaves autorizadas por role/capability
-    /// - Controle de acesso baseado em identidades
-    /// - Persistência de configurações de acesso
+    /// # AccessController features
+    /// - Permission validation for write operations (`can_append`)
+    /// - Management of authorized keys by role/capability
+    /// - Identity-based access control
+    /// - Persistence of access configurations
     ///
-    /// # Uso no Guardian-DB
-    /// Este controlador é usado principalmente durante:
-    /// - Validação de entradas no `sync()` method
-    /// - Verificação de permissões no `add_operation()`
-    /// - Controle de acesso durante replicação
+    /// # Use in Guardian-DB
+    /// This controller is used mainly during:
+    /// - Entry validation in the `sync()` method
+    /// - Permission checks in `add_operation()`
+    /// - Access control during replication
     ///
-    /// # Retorna
-    /// Uma referência imutável ao AccessController ativo da store
+    /// # Returns
+    /// An immutable reference to the store's active AccessController
     pub fn access_controller(&self) -> &dyn AccessController {
         self.access_controller.as_ref()
     }
 
-    /// Métodos auxiliares para trabalhar com o AccessController
-    /// Verifica se uma identidade tem permissão para escrever na store
+    /// Helper methods for working with the AccessController.
+    /// Checks whether an identity has permission to write to the store.
     pub async fn can_write(&self, identity: &Identity) -> bool {
-        // Usa o AccessController para verificar permissões de escrita
+        // Use the AccessController to check write permissions.
         match self.access_controller.get_authorized_by_role("write").await {
             Ok(authorized_keys) => {
-                // Verifica se a chave pública da identidade está autorizada
+                // Check whether the identity's public key is authorized.
                 let identity_key = identity.pub_key();
                 authorized_keys.contains(&identity_key.to_string())
-                    || authorized_keys.contains(&"*".to_string()) // Permissão universal
+                    || authorized_keys.contains(&"*".to_string()) // Universal permission.
             }
             Err(e) => {
                 warn!("Failed to check write permissions: {}", e);
@@ -620,14 +618,14 @@ impl BaseStore {
         }
     }
 
-    /// Verifica se uma identidade tem permissão para ler da store
+    /// Checks whether an identity has permission to read from the store.
     pub async fn can_read(&self, identity: &Identity) -> bool {
         match self.access_controller.get_authorized_by_role("read").await {
             Ok(authorized_keys) => {
                 let identity_key = identity.pub_key();
                 authorized_keys.contains(&identity_key.to_string()) ||
                 authorized_keys.contains(&"*".to_string()) ||
-                // Se não há restrições de leitura específicas, permite leitura se pode escrever
+                // If there are no specific read restrictions, allow reading if writing is allowed.
                 (authorized_keys.is_empty() && self.can_write(identity).await)
             }
             Err(e) => {
@@ -637,7 +635,7 @@ impl BaseStore {
         }
     }
 
-    /// Concede permissão de escrita para uma chave específica
+    /// Grants write permission to a specific key.
     pub async fn grant_write_access(&self, key_id: &str) -> Result<()> {
         debug!("Granting write access to key: {}", key_id);
 
@@ -653,7 +651,7 @@ impl BaseStore {
         Ok(())
     }
 
-    /// Remove permissão de escrita de uma chave específica  
+    /// Removes write permission from a specific key.
     pub async fn revoke_write_access(&self, key_id: &str) -> Result<()> {
         debug!("Revoking write access from key: {}", key_id);
 
@@ -669,7 +667,7 @@ impl BaseStore {
         Ok(())
     }
 
-    /// Lista todas as chaves com permissão de escrita
+    /// Lists all keys with write permission.
     pub async fn list_write_keys(&self) -> Result<Vec<String>> {
         self.access_controller
             .get_authorized_by_role("write")
@@ -677,7 +675,7 @@ impl BaseStore {
             .map_err(|e| GuardianError::Store(format!("Failed to list write keys: {}", e)))
     }
 
-    /// Lista todas as chaves com permissão de leitura
+    /// Lists all keys with read permission.
     pub async fn list_read_keys(&self) -> Result<Vec<String>> {
         self.access_controller
             .get_authorized_by_role("read")
@@ -685,12 +683,12 @@ impl BaseStore {
             .map_err(|e| GuardianError::Store(format!("Failed to list read keys: {}", e)))
     }
 
-    /// Retorna o tipo do AccessController (simple, guardian, iroh, etc.)
+    /// Returns the AccessController type (simple, guardian, iroh, etc.).
     pub fn access_controller_type(&self) -> &str {
         self.access_controller.get_type()
     }
 
-    /// Salva a configuração atual do AccessController
+    /// Saves the current AccessController configuration.
     pub async fn save_access_controller(&self) -> Result<()> {
         debug!("Saving access controller configuration");
 
@@ -709,56 +707,56 @@ impl BaseStore {
         }
     }
 
-    /// Retorna uma referência ao IdentityProvider da store.
+    /// Returns a reference to the store's IdentityProvider.
     pub fn identity_provider(&self) -> &dyn IdentityProvider {
         self.identity_provider.as_ref()
     }
 
-    /// ***Por enquanto, vamos simplificar retornando uma referência direta
+    /// ***For now, let's simplify by returning a direct reference.
     pub fn cache(&self) -> Arc<dyn Datastore> {
         self.cache.clone()
     }
 
-    /// Retorna acesso ao PubSub da store
+    /// Returns access to the store's PubSub.
     pub fn pubsub(&self) -> Arc<dyn PubSubInterface<Error = GuardianError> + Send + Sync> {
         self.pubsub.clone()
     }
 
-    /// Retorna o ID da store
+    /// Returns the store ID.
     pub fn id(&self) -> &str {
         &self.id
     }
 
-    /// Retorna uma referência compartilhada ao span. Usado para permitir
-    /// que múltiplas partes do código compartilhem o mesmo contexto de tracing.
+    /// Returns a shared reference to the span. Used to allow
+    /// multiple parts of the code to share the same tracing context.
     pub fn span(&self) -> &Span {
         &self.span
     }
 
-    /// Retorna uma referência compartilhada ao tracer do OpenTelemetry.
+    /// Returns a shared reference to the OpenTelemetry tracer.
     pub fn tracer(&self) -> Arc<TracerWrapper> {
         self.tracer.clone()
     }
 
-    /// Retorna uma referência ao observador de sincronização reativa.
+    /// Returns a reference to the reactive synchronization observer.
     ///
-    /// Permite que componentes externos observem o progresso de operações
-    /// de sincronização e replicação em tempo real.
+    /// Allows external components to observe the progress of synchronization
+    /// and replication operations in real time.
     pub fn sync_observer(&self) -> Arc<crate::reactive_synchronizer::SyncObserver> {
         self.sync_observer.clone()
     }
 
-    /// Retorna as métricas de retry para monitoramento de P2P communication.
+    /// Returns the retry metrics for monitoring P2P communication.
     ///
-    /// Permite acesso às estatísticas de retry incluindo tentativas de conexão,
-    /// envios de dados, sucessos e falhas após todas as tentativas.
+    /// Provides access to retry statistics including connection attempts,
+    /// data sends, successes, and failures after all attempts.
     pub fn retry_metrics(&self) -> RetryMetrics {
         self.retry_metrics.lock().clone()
     }
 
-    /// Loga as métricas de retry atuais para monitoramento.
+    /// Logs the current retry metrics for monitoring.
     ///
-    /// Inclui métricas detalhadas de peer exchange e P2P communication.
+    /// Includes detailed peer exchange and P2P communication metrics.
     pub fn log_retry_metrics(&self) {
         if let Some(metrics) = self.retry_metrics.try_lock() {
             debug!(
@@ -787,36 +785,36 @@ impl BaseStore {
         }
     }
 
-    /// Retorna referência ao EmitterInterface para compatibilidade com Store trait
+    /// Returns a reference to the EmitterInterface for compatibility with the Store trait.
     pub fn events(&self) -> &dyn EmitterInterface {
         self.emitter_interface.as_ref()
     }
 
-    /// Método drop/close equivalente
+    /// Equivalent of a drop/close method.
     pub fn drop(&self) -> Result<()> {
         self.cancellation_token.cancel();
         Ok(())
     }
 
-    /// Retorna uma referência compartilhada para o barramento de eventos,
-    /// permitindo que diferentes partes do sistema se inscrevam e emitam eventos.
+    /// Returns a shared reference to the event bus,
+    /// allowing different parts of the system to subscribe to and emit events.
     pub fn event_bus(&self) -> Arc<EventBus> {
         self.event_bus.clone()
     }
 
-    /// Retorna uma referência ao endereço da store.
+    /// Returns a reference to the store's address.
     pub fn address(&self) -> Arc<dyn Address + Send + Sync> {
         self.address.clone()
     }
 
-    /// Retorna acesso ao índice ativo da store
+    /// Returns access to the store's active index.
     pub fn store_index(
         &self,
     ) -> Arc<RwLock<Option<Box<dyn StoreIndex<Error = GuardianError> + Send + Sync>>>> {
         self.log_and_index.active_index.clone()
     }
 
-    /// Executa uma operação com o índice ativo se disponível
+    /// Runs an operation with the active index if available.
     pub fn with_index<F, R>(&self, f: F) -> Option<R>
     where
         F: FnOnce(&dyn StoreIndex<Error = GuardianError>) -> R,
@@ -824,7 +822,7 @@ impl BaseStore {
         self.log_and_index.with_index(f)
     }
 
-    /// Executa uma operação mutável com o índice ativo se disponível
+    /// Runs a mutable operation with the active index if available.
     pub fn with_index_mut<F, R>(&self, f: F) -> Result<Option<R>>
     where
         F: FnOnce(&mut dyn StoreIndex<Error = GuardianError>) -> Result<R>,
@@ -832,61 +830,23 @@ impl BaseStore {
         self.log_and_index.with_index_mut(f)
     }
 
-    /// Método auxiliar para verificar se há um índice ativo
+    /// Helper method to check whether there is an active index.
     pub fn has_active_index(&self) -> bool {
         self.log_and_index.has_active_index()
     }
 
-    /// ***Retorna um tipo de string estático (`&'static str`).
+    /// ***Returns a static string type (`&'static str`).
     pub fn store_type(&self) -> &'static str {
         "store"
     }
 
-    /// Retorna uma referência thread-safe ao estado da replicação.
-    pub fn replication_status(&self) -> ReplicationInfo {
-        // Como ReplicationInfo não é clonável diretamente, vamos criar uma nova instância
-        // e sincronizar os dados via métodos async em contexto separado
-        ReplicationInfo::new()
-    }
-
-    /// Atualiza o status de replicação de forma thread-safe
-    #[allow(clippy::await_holding_lock)]
-    pub async fn update_replication_status<F>(&self, f: F)
-    where
-        F: FnOnce(usize, usize) -> (usize, usize),
-    {
-        // Primeira fase: obter valores atuais sem manter o lock durante await
-        let current_progress = {
-            let guard = self.replication_status.lock();
-            guard.get_progress().await
-        };
-
-        let current_max = {
-            let guard = self.replication_status.lock();
-            guard.get_max().await
-        };
-
-        let (new_progress, new_max) = f(current_progress, current_max);
-
-        // Segunda fase: atualizar valores sem manter o lock durante await
-        {
-            let mut guard = self.replication_status.lock();
-            guard.set_progress(new_progress).await;
-        }
-
-        {
-            let mut guard = self.replication_status.lock();
-            guard.set_max(new_max).await;
-        }
-    }
-
-    /// Verifica se o token de cancelamento foi ativado. É uma operação
-    /// thread-safe e sem bloqueio.
+    /// Checks whether the cancellation token has been activated. This is a
+    /// thread-safe, non-blocking operation.
     pub fn is_closed(&self) -> bool {
         self.cancellation_token.is_cancelled()
     }
 
-    /// Realiza a limpeza completa dos recursos da store.
+    /// Performs the complete cleanup of the store's resources.
     #[instrument(level = "debug", skip(self))]
     pub async fn close(&self) -> Result<()> {
         if self.is_closed() {
@@ -896,62 +856,53 @@ impl BaseStore {
 
         debug!("Starting BaseStore close operation");
 
-        // Ativa o token para sinalizar o fechamento para todas as partes do sistema
+        // Activate the token to signal the shutdown to all parts of the system.
         self.cancellation_token.cancel();
         debug!("Cancellation token activated - signaling shutdown to all components");
 
-        // Aborta todas as tarefas em background e espera que terminem
+        // Abort all background tasks and wait for them to finish.
         debug!("Shutting down background tasks");
         {
             let mut joinset_guard = self.tasks.lock();
-            joinset_guard.abort_all(); // Aborta todas as tarefas imediatamente
+            joinset_guard.abort_all(); // Abort all tasks immediately.
         }
 
-        // Espera um tempo razoável para as tarefas terminarem
+        // Wait a reasonable amount of time for the tasks to finish.
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
         debug!("Background tasks shutdown completed");
 
-        // Fecha todos os emissores de eventos de forma adequada
+        // Properly close all event emitters.
         debug!("Closing event emitters");
 
-        // Para fechar emissores corretamente, precisamos usar os métodos apropriados
-        // Os emissores são parte do event_bus, então vamos desconectar os listeners
+        // To close emitters correctly, we need to use the appropriate methods.
+        // The emitters are part of the event_bus, so we disconnect the listeners.
 
-        // Para EventWrite emitter - fecha subscription se existir
+        // For the EventWrite emitter - close the subscription if it exists.
         if let Err(e) = self.emitters.evt_write.close().await {
             warn!("Failed to close EventWrite emitter: {}", e);
         } else {
             debug!("EventWrite emitter closed successfully");
         }
 
-        // Para EventReady emitter
+        // For the EventReady emitter.
         if let Err(e) = self.emitters.evt_ready.close().await {
             warn!("Failed to close EventReady emitter: {}", e);
         } else {
             debug!("EventReady emitter closed successfully");
         }
 
-        // Para EventReplicated emitter
+        // For the EventReplicated emitter.
         if let Err(e) = self.emitters.evt_replicated.close().await {
             warn!("Failed to close EventReplicated emitter: {}", e);
         } else {
             debug!("EventReplicated emitter closed successfully");
         }
 
-        // Reset completo do status de replicação
-        debug!("Resetting replication status");
-        {
-            let mut status = self.replication_status.lock();
-            // Como ReplicationInfo methods são async, vamos criar uma nova instância
-            *status = ReplicationInfo::default();
-        }
-        debug!("Replication status reset completed");
-
-        // Fecha o cache adequadamente se for um tipo que suporte fechamento
+        // Close the cache properly if it is a type that supports closing.
         debug!("Closing cache");
 
-        // Para caches RedbDatastore, chama o método flush() para compact e cleanup
+        // For RedbDatastore caches, call the flush() method to compact and clean up.
         if let Some(redb_cache) = self
             .cache()
             .as_any()
@@ -976,24 +927,24 @@ impl BaseStore {
             debug!("Cache type doesn't require explicit closing - relying on Arc drop");
         }
 
-        // Fecha conexões de rede se necessário
+        // Close network connections if needed.
         debug!("Closing network connections");
 
-        // Fecha o direct channel se existir
+        // Close the direct channel if it exists.
         {
             let _channel_guard = self.direct_channel.lock().await;
-            // Como Arc<dyn DirectChannel> não permite mutabilidade,
-            // vamos apenas fazer log da tentativa de fechamento
+            // Since Arc<dyn DirectChannel> does not allow mutability,
+            // we just log the close attempt.
             debug!("Direct channel cleanup initiated - relying on Drop trait");
         }
 
-        // Notifica outros componentes sobre o fechamento
+        // Notify other components about the closing.
         debug!("Emitting store close event");
 
-        // Emite evento de fechamento para que outros componentes possam reagir
+        // Emit a close event so that other components can react.
         let close_event = crate::stores::events::EventReady::new(
             self.address.clone(),
-            vec![], // Heads vazias indicando fechamento
+            vec![], // Empty heads indicating closing.
         );
 
         if let Err(e) = self.emitters.evt_ready.emit(close_event) {
@@ -1002,31 +953,31 @@ impl BaseStore {
             debug!("Store close event emitted successfully");
         }
 
-        // Limpeza final de recursos
+        // Final resource cleanup.
         debug!("Performing final resource cleanup");
 
-        // Força a liberação de quaisquer locks restantes
-        // Isso é feito implicitamente quando os Arc são dropados, mas podemos ser explícitos
+        // Force the release of any remaining locks.
+        // This happens implicitly when the Arcs are dropped, but we can be explicit.
 
         debug!("BaseStore close operation completed successfully");
 
         Ok(())
     }
 
-    /// Reseta a store para seu estado inicial, limpando o log, o índice e o cache.
+    /// Resets the store to its initial state, clearing the log, the index and the cache.
     #[instrument(level = "debug", skip(self))]
     pub async fn reset(&mut self) -> Result<()> {
         debug!("Starting BaseStore reset operation");
 
-        // Primeiro fecha a store para parar todas as operações
+        // First close the store to stop all operations.
         self.close()
             .await
             .map_err(|e| GuardianError::Store(format!("unable to close store: {}", e)))?;
 
-        // Limpa o oplog criando um novo log vazio
+        // Clear the oplog by creating a new empty log.
         debug!("Clearing oplog - creating new empty log");
 
-        // Cria um novo log vazio usando as mesmas configurações da store
+        // Create a new empty log using the same store settings.
         use crate::log::{AdHocAccess, LogOptions};
 
         let adhoc_access = AdHocAccess;
@@ -1039,26 +990,26 @@ impl BaseStore {
             sort_fn: Some(Box::new(self.sort_fn)),
         };
 
-        // Usa o Client da store para criar o log vazio
+        // Use the store's Client to create the empty log.
         let new_empty_log = Log::new(self.client.clone(), (*self.identity).clone(), log_options);
 
-        // Substitui o log atual pelo log vazio usando o método thread-safe
+        // Replace the current log with the empty log using the thread-safe method.
         let _old_length = self.log_and_index.with_oplog_mut(|oplog| {
-            // Para resetar completamente o log, substituímos sua estrutura interna
-            // Isso efetivamente limpa todas as entradas, heads e estado do log
+            // To fully reset the log, we replace its internal structure.
+            // This effectively clears all entries, heads and log state.
             let old_length = oplog.len();
-            *oplog = new_empty_log; // Usa o log vazio criado
+            *oplog = new_empty_log; // Use the created empty log.
             debug!("Log reset from {} entries to 0", old_length);
             old_length
         });
 
         debug!("Oplog successfully cleared");
 
-        // Limpa o índice se existir usando o método clear() da trait
+        // Clear the index if it exists using the trait's clear() method.
         match self.log_and_index.with_index_mut(|index| {
             debug!("Clearing store index");
 
-            // Chama o método clear() da trait StoreIndex
+            // Call the StoreIndex trait's clear() method.
             match index.clear() {
                 Ok(()) => {
                     debug!("Index successfully cleared");
@@ -1086,12 +1037,12 @@ impl BaseStore {
             }
         }
 
-        // Limpa o cache completamente
+        // Clear the cache completely.
         debug!("Clearing all cache data");
 
         let cache = self.cache();
 
-        // Lista de todas as chaves conhecidas do cache que devem ser limpas
+        // List of all known cache keys that should be cleared.
         let cache_keys = [
             "_localHeads",
             "_remoteHeads",
@@ -1119,7 +1070,7 @@ impl BaseStore {
             }
         }
 
-        // Para caches que suportam flush completo, força a persistência
+        // For caches that support a full flush, force persistence.
         if let Some(redb_cache) = cache.as_any().downcast_ref::<crate::cache::RedbDatastore>() {
             if let Err(e) = redb_cache.flush() {
                 warn!("Failed to flush cache during reset: {}", e);
@@ -1143,17 +1094,7 @@ impl BaseStore {
             cache_errors.len()
         );
 
-        // Reseta completamente o status de replicação
-        debug!("Resetting replication status");
-
-        {
-            let mut status = self.replication_status.lock();
-            *status = ReplicationInfo::default();
-        }
-
-        debug!("Replication status reset");
-
-        // Reseta métricas de retry
+        // Reset the retry metrics.
         {
             let mut metrics = self.retry_metrics.lock();
             *metrics = crate::stores::base_store::RetryMetrics::new();
@@ -1161,7 +1102,7 @@ impl BaseStore {
 
         debug!("Retry metrics reset");
 
-        // Emite evento de reset
+        // Emit a reset event.
         let reset_event = crate::stores::events::EventReset {
             address: self.address.clone(),
             timestamp: std::time::SystemTime::now()
@@ -1170,7 +1111,7 @@ impl BaseStore {
                 .as_secs(),
         };
 
-        // Log do evento de reset para debugging
+        // Log the reset event for debugging.
         debug!(
             "Reset event created for address: {} at timestamp: {}",
             reset_event.address.to_string(),
@@ -1182,7 +1123,7 @@ impl BaseStore {
             .evt_ready
             .emit(crate::stores::events::EventReady::new(
                 self.address.clone(),
-                Vec::new(), // heads vazias após reset
+                Vec::new(), // Empty heads after reset.
             ))
         {
             warn!("Failed to emit reset completion event: {}", e);
@@ -1190,7 +1131,7 @@ impl BaseStore {
             debug!("Reset completion event emitted successfully");
         }
 
-        // Se houve erros de cache mas o reset foi bem-sucedido no geral, log como warning
+        // If there were cache errors but the reset succeeded overall, log a warning.
         if !cache_errors.is_empty() {
             warn!(
                 "BaseStore reset completed with cache warnings: {:?}",
@@ -1203,9 +1144,9 @@ impl BaseStore {
         Ok(())
     }
 
-    /// Este construtor é `async` porque precisa interagir com a rede (para obter o NodeId)
-    /// e inicia tarefas em background. Ele retorna um `Arc<Self>` para permitir o
-    /// compartilhamento seguro da `store` com as tarefas que ela mesma cria.
+    /// This constructor is `async` because it needs to interact with the network (to obtain the NodeId)
+    /// and starts background tasks. It returns an `Arc<Self>` to allow safe sharing
+    /// of the `store` with the tasks it creates itself.
     #[instrument(level = "debug", skip(client, identity, address, options))]
     pub async fn new(
         client: Arc<IrohClient>,
@@ -1229,14 +1170,16 @@ impl BaseStore {
             tracer: None,
             pubsub: None,
             message_marshaler: None,
-            node_id: iroh::SecretKey::generate(rand_core::OsRng).public(),
+            node_id: iroh::SecretKey::generate().public(),
             direct_channel: None,
             close_func: None,
             store_specific_opts: None,
+            doc_ticket: None,
+            read_only: None,
         });
         let cancellation_token = CancellationToken::new();
 
-        // --- 1. Definição de Padrões (Defaults) ---
+        // --- 1. Defining Defaults ---
         let span = tracing::info_span!("base_store", address = %address.to_string());
         let event_bus = opts
             .event_bus
@@ -1245,7 +1188,7 @@ impl BaseStore {
         let _access_controller = match opts.access_controller.take() {
             Some(ac) => ac,
             None => {
-                // Se não foi fornecido um access controller, cria um SimpleAccessController padrão
+                // If no access controller was provided, create a default SimpleAccessController.
                 use std::collections::HashMap;
 
                 let mut default_access = HashMap::new();
@@ -1256,15 +1199,15 @@ impl BaseStore {
             }
         };
 
-        // Cria um IdentityProvider baseado na identidade da store
+        // Create an IdentityProvider based on the store's identity.
         let identity_provider =
             Arc::new(GuardianDBIdentityProvider::new()) as Arc<dyn IdentityProvider>;
 
-        // --- 2. Criação dos Componentes ---
+        // --- 2. Creating the Components ---
         let id = address.to_string().to_string();
         let db_name = address.get_path().to_string();
 
-        // Define 'directory' a partir das opções ou de um padrão.
+        // Set 'directory' from the options or from a default.
         let directory = if opts.directory.is_empty() {
             Path::new("./GuardianDB")
                 .join(&id)
@@ -1275,15 +1218,15 @@ impl BaseStore {
             opts.directory.clone()
         };
 
-        // Define 'tracer' a partir das opções ou de um tracer no-op.
+        // Set 'tracer' from the options or from a no-op tracer.
         let tracer = opts.tracer.take().unwrap_or_else(|| {
             Arc::new(TracerWrapper::Noop(
                 NoopTracerProvider::new().tracer("berty.guardian-db"),
             ))
         });
 
-        // Define 'cache' e 'cache_destroy' usando a função do módulo `cache`.
-        // Esta é a chamada correta com base na estrutura do seu projeto.
+        // Set 'cache' and 'cache_destroy' using the function from the `cache` module.
+        // This is the correct call based on the project's structure.
         let (cache, _cache_destroy) = if let Some(cache) = opts.cache.take() {
             let _destroy = opts
                 .cache_destroy
@@ -1291,7 +1234,7 @@ impl BaseStore {
                 .unwrap_or_else(|| Box::new(|| std::result::Result::<(), Box<dyn std::error::Error + Send + Sync + 'static>>::Ok(())));
             (cache, _destroy)
         } else {
-            // Usar implementação de cache baseada em sled com diretório isolado
+            // Use the sled-based cache implementation with an isolated directory.
             let cache_dir = Path::new(&directory).join("cache");
             let cache_dir_str = cache_dir.to_str().unwrap_or("./cache");
             let cache_impl = Self::create_cache(address.as_ref(), cache_dir_str)?;
@@ -1317,9 +1260,9 @@ impl BaseStore {
             .take()
             .ok_or_else(|| GuardianError::Store("Index builder is required".to_string()))?;
 
-        // Criar o log com as configurações apropriadas usando AdHocAccess
+        // Create the log with the appropriate settings using AdHocAccess.
         use crate::log::AdHocAccess;
-        let adhoc_access = AdHocAccess; // É um struct unit, não precisa de construtor
+        let adhoc_access = AdHocAccess; // It is a unit struct, no constructor needed.
 
         let log_options = LogOptions {
             id: Some(&id),
@@ -1330,45 +1273,45 @@ impl BaseStore {
             clock: None,
         };
 
-        // Usar o Client fornecido
+        // Use the provided Client.
         let oplog = Log::new(client.clone(), identity.as_ref().clone(), log_options);
 
-        // Criar um índice inicial usando o index_builder fornecido
+        // Create an initial index using the provided index_builder.
         let public_key_bytes = if let Some(pk) = identity.public_key() {
             pk.to_bytes().to_vec()
         } else {
-            // Se não conseguir obter a chave pública, usa a string como bytes
+            // If the public key cannot be obtained, use the string as bytes.
             identity.pub_key().as_bytes().to_vec()
         };
         let initial_index = _index_builder(&public_key_bytes);
         let log_and_index = LogAndIndex::new(oplog, Some(initial_index));
 
-        // Emitters precisam ser criados a partir do event_bus
+        // Emitters need to be created from the event_bus.
         let emitters = generate_emitters(&event_bus).await?;
 
-        // EventEmitter para compatibilidade com Store trait
+        // EventEmitter for compatibility with the Store trait.
         let emitter_interface =
             Arc::new(EventEmitter::default()) as Arc<dyn EmitterInterface + Send + Sync>;
 
-        // --- 3. Construção da Store  ---
+        // --- 3. Building the Store ---
 
-        // Deriva o NodeId a partir da identidade - implementação simplificada
+        // Derive the NodeId from the identity - simplified implementation.
         let node_id = if let Some(public_key) = identity.public_key() {
-            // Usa hash Blake3 da chave pública para derivar NodeId determinístico (consistente com Iroh)
+            // Use the Blake3 hash of the public key to derive a deterministic NodeId (consistent with Iroh).
             let key_hash = blake3::hash(&public_key.to_bytes());
 
-            // Cria um NodeId determinístico baseado no hash
-            // NodeId requer exatamente 32 bytes
+            // Create a deterministic NodeId based on the hash.
+            // NodeId requires exactly 32 bytes.
             let mut node_id_bytes = [0u8; 32];
             node_id_bytes.copy_from_slice(key_hash.as_bytes());
 
-            // NodeId::from_bytes não falha com 32 bytes válidos
+            // NodeId::from_bytes does not fail with 32 valid bytes.
             NodeId::from_bytes(&node_id_bytes).unwrap_or_else(|_| {
                 warn!("Failed to create deterministic NodeId, using generated");
-                iroh::SecretKey::generate(rand_core::OsRng).public()
+                iroh::SecretKey::generate().public()
             })
         } else {
-            // Se não há chave pública, usa hash Blake3 da string da identidade (consistente com Iroh)
+            // If there is no public key, use the Blake3 hash of the identity string (consistent with Iroh).
             let id_hash = blake3::hash(identity.pub_key().as_bytes());
 
             let mut node_id_bytes = [0u8; 32];
@@ -1376,7 +1319,7 @@ impl BaseStore {
 
             NodeId::from_bytes(&node_id_bytes).unwrap_or_else(|_| {
                 warn!("Failed to create NodeId from identity string, using generated");
-                iroh::SecretKey::generate(rand_core::OsRng).public()
+                iroh::SecretKey::generate().public()
             })
         };
 
@@ -1394,7 +1337,6 @@ impl BaseStore {
             identity_provider,
             cache,
             log_and_index,
-            replication_status: Arc::new(Mutex::new(ReplicationInfo::default())),
             pubsub: opts
                 .pubsub
                 .clone()
@@ -1423,25 +1365,22 @@ impl BaseStore {
             tasks: Mutex::new(JoinSet::new()),
         });
 
-        // --- 4. Início da Tarefa de Eventos ---
-        // Inicia a tarefa em background.
+        // --- 4. Starting the Events Task ---
+        // Start the background task.
         let store_weak = Arc::downgrade(&store);
         store.tasks.lock().spawn(async move {
-            // A tarefa só continua enquanto a store existir.
+            // The task only continues while the store exists.
             while let Some(store) = store_weak.upgrade() {
                 select! {
-                    // Aguarda cancelamento
+                    // Wait for cancellation.
                     _ = store.cancellation_token.cancelled() => {
                         debug!("Background task cancelled");
                         break;
                     }
 
-                    // Processa eventos periodicamente
+                    // Process events periodically.
                     _ = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
-                        // Recalcula status de replicação periodicamente
-                        store.recalculate_replication_max(1000); // Máximo padrão de 1000 entradas
-
-                        // Verifica se há cache que precisa ser persistido e força flush
+                        // Check whether there is a cache that needs to be persisted and force a flush.
                         if let Some(redb_cache) = store.cache().as_any().downcast_ref::<crate::cache::RedbDatastore>() {
                             if let Err(e) = redb_cache.flush() {
                                 warn!("Failed to flush cache during periodic maintenance: {}", e);
@@ -1458,7 +1397,7 @@ impl BaseStore {
                             debug!("Cache type doesn't support direct flushing");
                         }
 
-                        // Atualiza estatísticas do índice se necessário
+                        // Update the index statistics if needed.
                         if store.has_active_index()
                             && let Err(e) = store.update_index() {
                                 warn!("Failed to update index in background: {}", e);
@@ -1468,15 +1407,15 @@ impl BaseStore {
             }
         });
 
-        // --- 5. Finalização ---
+        // --- 5. Finalization ---
         if opts.replicate.unwrap_or(true) {
-            // Inicia a lógica de replicação
+            // Start the replication logic.
             debug!("Initiating store replication");
 
-            // Clone o store para usar na replicação
+            // Clone the store to use in replication.
             let store_for_replication = store.clone();
 
-            // Spawna a replicação em uma task separada para não bloquear a criação da store
+            // Spawn replication in a separate task so as not to block store creation.
             tokio::spawn(async move {
                 if let Err(e) = store_for_replication.replicate().await {
                     error!("Failed to start replication: {:?}", e);
@@ -1491,196 +1430,17 @@ impl BaseStore {
         Ok(store)
     }
 
-    // Funções auxiliares chamadas pela tarefa em background
-    fn recalculate_replication_max(&self, max_total: usize) {
-        let current_length = self.log_and_index.with_oplog(|oplog| oplog.len());
-
-        // Atualiza o status de replicação
-        if let Some(status_guard) = self.replication_status.try_lock() {
-            // Usa método eficiente para atualizar ambos valores em uma única operação
-            let mut status_clone = status_guard.clone();
-
-            tokio::spawn(async move {
-                // Atualiza tanto o progresso atual quanto o máximo
-                status_clone
-                    .set_progress_and_max(current_length, max_total)
-                    .await;
-
-                // Log informativo após a atualização
-                let percentage = status_clone.progress_percentage().await;
-                tracing::debug!(
-                    "Replication status updated: {}/{} ({}%)",
-                    current_length,
-                    max_total,
-                    percentage
-                );
-            });
-
-            debug!(
-                "Replication max updated: {}/{} (progress: {})",
-                current_length,
-                max_total,
-                if max_total > 0 {
-                    format!("{:.1}%", (current_length as f64 / max_total as f64) * 100.0)
-                } else {
-                    "N/A".to_string()
-                }
-            );
-        } else {
-            warn!("Unable to update replication status - lock contention");
-        }
-    }
-
-    #[allow(dead_code)]
-    fn recalculate_replication_status_internal(&self, max_total: usize) {
-        let current_length = self.log_and_index.with_oplog(|oplog| oplog.len());
-        let heads_count = self.log_and_index.with_oplog(|oplog| oplog.heads().len());
-
-        // Atualiza o status de replicação
-        if let Some(status_guard) = self.replication_status.try_lock() {
-            // Usa os métodos síncronos para atualizar o status
-            // Como ReplicationInfo::set_progress e set_max são async, vamos usar spawn
-            let mut status_clone = status_guard.clone();
-
-            tokio::spawn(async move {
-                status_clone.set_progress(current_length).await;
-                status_clone.set_max(max_total).await;
-            });
-        }
-
-        debug!(
-            "Replication status updated: buffered={}, heads={}, max={}",
-            current_length, heads_count, max_total
-        );
-    }
-
-    #[allow(dead_code)]
-    async fn replication_load_complete(&self, logs: Vec<Log>) -> Result<()> {
-        let mut total_entries_added = 0;
-
-        // Processa cada log usando a arquitetura refatorada
-        for log in logs {
-            let entries_added = self.log_and_index.with_oplog_mut(|oplog| {
-                let entries_before = oplog.len();
-                match oplog.join(&log, None) {
-                    Some(_) => {
-                        let entries_after = oplog.len();
-                        Ok(entries_after - entries_before)
-                    }
-                    None => Err(GuardianError::Store("Failed to join log".to_string())),
-                }
-            })?;
-
-            total_entries_added += entries_added;
-        }
-
-        // Atualiza o índice usando a nova arquitetura thread-safe
-        let updated_entries = self.update_index()?;
-        debug!(
-            "Updated index with {} entries after replication",
-            updated_entries
-        );
-
-        // Salva os heads atualizados no cache
-        let heads = self.with_oplog(|oplog| {
-            oplog
-                .heads()
-                .iter()
-                .map(|arc_entry| (**arc_entry).clone())
-                .collect::<Vec<Entry>>()
-        });
-
-        let heads_bytes = crate::guardian::serializer::serialize(&heads).map_err(|e| {
-            GuardianError::Store(format!(
-                "Failed to serialize replicated heads for caching: {}",
-                e
-            ))
-        })?;
-
-        let cache = self.cache();
-        cache.put("_remoteHeads".as_bytes(), &heads_bytes).await?;
-
-        // Salva TODAS as entradas do oplog no cache para persistência completa
-        let all_entries = self.with_oplog(|oplog| {
-            oplog
-                .values()
-                .iter()
-                .map(|arc_entry| (**arc_entry).clone())
-                .collect::<Vec<Entry>>()
-        });
-        if let Ok(all_entries_bytes) = crate::guardian::serializer::serialize(&all_entries)
-            && let Err(e) = cache
-                .put("_allEntries".as_bytes(), &all_entries_bytes)
-                .await
-        {
-            warn!("Failed to cache all entries after replication: {}", e);
-        }
-
-        let log_length = self.with_oplog(|oplog| oplog.len());
-
-        // Emite evento de replicação concluída
-        let replicated_event = EventReplicated {
-            address: self.address.clone(),
-            entries: heads,
-            log_length,
-        };
-
-        if let Err(e) = self.emitters.evt_replicated.emit(replicated_event) {
-            warn!("Failed to emit EventReplicated: {}", e);
-        } else {
-            debug!(
-                "Replication completed: added {} entries, total length: {}",
-                total_entries_added, log_length
-            );
-        }
-
-        Ok(())
-    }
-
-    /// Calcula e atualiza o progresso da replicação.
-    fn recalculate_replication_progress(&self) {
-        let current_length = self.log_and_index.with_oplog(|oplog| oplog.len());
-        let heads_count = self.log_and_index.with_oplog(|oplog| oplog.heads().len());
-
-        // Atualiza o progresso baseado no estado atual do log
-        if let Some(status_guard) = self.replication_status.try_lock() {
-            let mut status_clone = status_guard.clone();
-
-            tokio::spawn(async move {
-                let current_max = status_clone.get_max().await;
-                let progress = if current_max > 0 {
-                    ((current_length as f64 / current_max as f64) * 100.0) as usize
-                } else {
-                    100 // Se não há máximo definido, considera 100%
-                };
-
-                status_clone.set_progress(progress).await;
-            });
-        }
-
-        debug!(
-            "Replication progress recalculated: current={}, heads={}",
-            current_length, heads_count
-        );
-    }
-
-    /// Função de conveniência que recalcula tanto o máximo quanto o progresso.
-    pub fn recalculate_replication_status(&self, max_total: usize) {
-        self.recalculate_replication_max(max_total);
-        self.recalculate_replication_progress();
-    }
-
-    /// Retorna o ponteiro para a função de ordenação usada pelo OpLog.
+    /// Returns the pointer to the sorting function used by the OpLog.
     pub fn sort_fn(&self) -> SortFn {
         self.sort_fn
     }
 
-    /// Atualiza o índice da store com base no estado atual do OpLog.
+    /// Updates the store's index based on the current OpLog state.
     pub fn update_index(&self) -> Result<usize> {
-        // Cria um span para rastreamento de performance
+        // Create a span for performance tracking.
         let _span = self.tracer.start_span("update-index");
 
-        // Usa o método thread-safe da nova arquitetura
+        // Use the thread-safe method of the new architecture.
         match self.log_and_index.update_index_safe() {
             Ok(count) => {
                 if count > 0 {
@@ -1697,8 +1457,7 @@ impl BaseStore {
         }
     }
 
-    /// Carrega entradas adicionais no store, delegando para o replicador quando disponível
-    /// ou processando diretamente quando necessário.
+    /// Loads additional entries into the store, processing them directly into the OpLog.
     pub fn load_more_from(&self, entries: Vec<Entry>) -> Result<usize> {
         if entries.is_empty() {
             return Ok(0);
@@ -1706,22 +1465,22 @@ impl BaseStore {
 
         debug!("Loading {} additional entries", entries.len());
 
-        // Processa as entradas diretamente (sem replicator)
+        // Process the entries directly into the OpLog.
         let added_count = self.log_and_index.with_oplog_mut(|oplog| {
             let mut count = 0;
             for (i, entry) in entries.iter().enumerate() {
-                // Verifica se a entrada já existe
+                // Check whether the entry already exists.
                 if !oplog.has(entry.hash()) {
-                    // Para entradas existentes, fazemos join ao invés de append
-                    // Cria um log temporário com a entrada e faz join
+                    // For existing entries, we join instead of append.
+                    // Create a temporary log with the entry and join it.
                     match self.create_temporary_log_with_entry(entry) {
                         Ok(temp_log) => {
                             if oplog.join(&temp_log, None).is_some() {
                                 count += 1;
                                 debug!("Successfully joined entry {}", entry.hash());
 
-                                // Emite progresso via SyncObserver de forma síncrona
-                                // (usando block_on já que estamos em contexto síncrono)
+                                // Emit progress via SyncObserver synchronously
+                                // (using block_on since we are in a synchronous context).
                                 tokio::task::block_in_place(|| {
                                     tokio::runtime::Handle::current().block_on(async {
                                         self.sync_observer
@@ -1751,13 +1510,13 @@ impl BaseStore {
             count
         });
 
-        // Atualiza o índice se entradas foram adicionadas
+        // Update the index if entries were added.
         if added_count > 0 {
             self.update_index()?;
 
-            // Emite eventos de replicação
+            // Emit replication events.
             for entry in &entries {
-                // Emite via SyncObserver
+                // Emit via SyncObserver.
                 tokio::task::block_in_place(|| {
                     tokio::runtime::Handle::current().block_on(async {
                         self.sync_observer.emit_replicated(*entry.hash()).await;
@@ -1765,7 +1524,7 @@ impl BaseStore {
                 });
             }
 
-            // Emite evento de replicação legado para entradas carregadas
+            // Emit the legacy replication event for loaded entries.
             let log_length = self.log_and_index.with_oplog(|oplog| oplog.len());
             let event = EventReplicated {
                 address: self.address.clone(),
@@ -1782,30 +1541,30 @@ impl BaseStore {
         Ok(added_count)
     }
 
-    /// Helper method para criar um log temporário com uma entrada específica
+    /// Helper method to create a temporary log with a specific entry.
     fn create_temporary_log_with_entry(&self, entry: &Entry) -> Result<Log> {
-        // Cria um log temporário contendo apenas a entrada especificada
+        // Create a temporary log containing only the specified entry.
         debug!("Creating temporary log with entry hash: {}", entry.hash());
 
-        // Converte a entrada para Arc<Entry> conforme esperado pelo LogOptions
+        // Convert the entry into Arc<Entry> as expected by LogOptions.
         let arc_entry = Arc::new(entry.clone());
         let entries_slice = std::slice::from_ref(&arc_entry);
 
-        // Usa o mesmo ID da store para que oplog.join() aceite a fusão
-        // (Log::join retorna None quando self.id != other.id)
+        // Use the same store ID so that oplog.join() accepts the merge.
+        // (Log::join returns None when self.id != other.id)
         let log_options = LogOptions::new()
             .id(&self.id)
             .entries(entries_slice)
-            .heads(entries_slice) // A entrada também é um head neste log temporário
-            .sort_fn(self.sort_fn); // Usa a mesma função de ordenação da store
+            .heads(entries_slice) // The entry is also a head in this temporary log.
+            .sort_fn(self.sort_fn); // Use the same sorting function as the store.
 
-        // Usa o Client da store para logs temporários
+        // Use the store's Client for temporary logs.
         let client = self.client.clone();
 
-        // Cria o log temporário usando a identidade da store
+        // Create the temporary log using the store's identity.
         let temp_log = Log::new(
             client,
-            (*self.identity).clone(), // Desreferencia o Arc<Identity>
+            (*self.identity).clone(), // Dereference the Arc<Identity>.
             log_options,
         );
 
@@ -1818,9 +1577,9 @@ impl BaseStore {
         Ok(temp_log)
     }
 
-    /// Processa uma lista de "heads" recebidas de outros peers, validando o
-    /// acesso e persistindo-as no Iroh antes de enfileirá-las para carregamento.
-    /// A função é `async` devido à chamada de escrita no Iroh via `Entry`.
+    /// Processes a list of "heads" received from other peers, validating
+    /// access and persisting them to Iroh before queueing them for loading.
+    /// The function is `async` due to the write call to Iroh via `Entry`.
     #[instrument(level = "debug", skip(self, heads))]
     pub async fn sync(&self, heads: Vec<Entry>) -> Result<()> {
         if heads.is_empty() {
@@ -1831,24 +1590,24 @@ impl BaseStore {
 
         debug!("Sync: Processing {} heads", heads.len());
 
-        // Emite evento de início via SyncObserver
+        // Emit a start event via SyncObserver.
         self.sync_observer.emit_started(heads.len()).await;
 
         for head in heads {
-            // Validação básica: verifica se o head não está vazio
+            // Basic validation: check that the head is not empty.
             let empty_hash = Hash::from([0u8; 32]);
             if head.hash() == &empty_hash || head.payload().is_empty() {
                 debug!("Sync: head discarded (invalid data)");
                 continue;
             }
 
-            // Cria um novo contexto para cada iteração para evitar problemas de borrow
+            // Create a new context for each iteration to avoid borrow issues.
             let head_ac_context = self.create_append_context();
 
-            // Usa o IdentityProvider da store para validação de acesso
+            // Use the store's IdentityProvider for access validation.
             let identity_provider = &self.identity_provider;
 
-            // Validação de acesso usando o access_controller
+            // Access validation using the access_controller.
             if let Err(e) = self
                 .access_controller
                 .can_append(&head, identity_provider.as_ref(), &head_ac_context)
@@ -1858,17 +1617,17 @@ impl BaseStore {
                 continue;
             }
 
-            // Verifica se a entrada já está no Iroh ou precisa ser armazenada
+            // Check whether the entry is already in Iroh or needs to be stored.
             let hash = head.hash();
 
-            // Validação de integridade do hash - por enquanto, apenas verificamos se não está vazio
+            // Hash integrity validation - for now, we just check that it is not empty.
             let empty_hash = Hash::from([0u8; 32]);
             if hash == &empty_hash {
                 debug!("Sync: head discarded (empty hash)");
                 continue;
             }
 
-            // Verifica se já temos esta entrada no oplog
+            // Check whether we already have this entry in the oplog.
             let already_exists = self.log_and_index.with_oplog(|oplog| oplog.has(hash));
 
             if already_exists {
@@ -1881,21 +1640,21 @@ impl BaseStore {
 
         if verified_heads.is_empty() {
             debug!("Sync: no new heads to process");
-            // Emite ready mesmo sem processamento
+            // Emit ready even without processing.
             self.sync_observer.emit_ready(Vec::new()).await;
             return Ok(());
         }
 
-        // Processa as `heads` verificadas diretamente (sem replicator)
+        // Process the verified `heads` directly into the OpLog.
         debug!("Processing {} heads directly", verified_heads.len());
 
-        // Adiciona as entradas ao oplog usando add_entry (preserva hash original)
-        // Coleta informações de progresso para emissão FORA do lock
+        // Add the entries to the oplog using add_entry (preserves the original hash).
+        // Collect progress information for emission OUTSIDE the lock.
         let (added_count, progress_info) = self.log_and_index.with_oplog_mut(|oplog| {
             let mut count = 0;
             let mut progress = Vec::new();
             for (i, head) in verified_heads.iter().enumerate() {
-                // Usa add_entry para preservar o hash original da entrada
+                // Use add_entry to preserve the entry's original hash.
                 if oplog.add_entry(head.clone()) {
                     count += 1;
                     debug!("Sync: added entry with hash {:?}", head.hash());
@@ -1908,28 +1667,28 @@ impl BaseStore {
             (count, progress)
         });
 
-        // Emite progresso FORA do lock do oplog para evitar block_in_place dentro de lock
+        // Emit progress OUTSIDE the oplog lock to avoid block_in_place inside a lock.
         for (hash, head, current, total) in progress_info {
             self.sync_observer
                 .emit_progress(hash, head, current, total)
                 .await;
         }
 
-        // Atualiza o índice se entradas foram adicionadas
+        // Update the index if entries were added.
         if added_count > 0 {
             if let Err(e) = self.update_index() {
                 warn!("Failed to update index after sync: {}", e);
-                // Emite erro via SyncObserver
+                // Emit an error via SyncObserver.
                 self.sync_observer
                     .emit_error(format!("Failed to update index: {}", e))
                     .await;
             } else {
                 debug!("Sync completed: processed {} new heads", added_count);
-                // Emite ready com as heads processadas
+                // Emit ready with the processed heads.
                 self.sync_observer.emit_ready(verified_heads.clone()).await;
             }
 
-            // Persiste todas as entradas do oplog no cache após sync
+            // Persist all oplog entries to the cache after sync.
             let all_entries = self.with_oplog(|oplog| {
                 oplog
                     .values()
@@ -1951,8 +1710,8 @@ impl BaseStore {
         Ok(())
     }
 
-    /// O método principal para adicionar dados à store. Ele serializa a operação,
-    /// anexa ao OpLog, atualiza o índice e o cache, e emite um evento.
+    /// The main method for adding data to the store. It serializes the operation,
+    /// appends it to the OpLog, updates the index and the cache, and emits an event.
     #[instrument(level = "debug", skip(self, op, on_progress))]
     pub async fn add_operation(
         &self,
@@ -1963,8 +1722,8 @@ impl BaseStore {
             .marshal()
             .map_err(|e| GuardianError::Store(format!("Unable to marshal operation: {}", e)))?;
 
-        // Usa a nova arquitetura thread-safe para adicionar entrada
-        // IMPORTANTE: Usa base64 para preservar dados binários ao armazenar como string
+        // Use the new thread-safe architecture to add the entry.
+        // IMPORTANT: Use base64 to preserve binary data when storing as a string.
         let new_entry = self.log_and_index.with_oplog_mut(|oplog| {
             use base64::{Engine as _, engine::general_purpose};
             let data_str = general_purpose::STANDARD.encode(&data);
@@ -1977,17 +1736,17 @@ impl BaseStore {
             entry
         });
 
-        // Atualiza o índice usando a nova arquitetura
+        // Update the index using the new architecture.
         self.update_index()
             .map_err(|e| GuardianError::Store(format!("Unable to update index: {}", e)))?;
 
-        // Salva os heads locais no cache usando acesso thread-safe
+        // Save the local heads to the cache using thread-safe access.
         let heads = self.with_oplog(|oplog| {
             let heads_vec = oplog
                 .heads()
                 .into_iter()
                 .map(|arc_entry| {
-                    // Como oplog.heads() retorna Vec<Arc<Entry>>, fazemos clone do Arc
+                    // Since oplog.heads() returns Vec<Arc<Entry>>, we clone the Arc.
                     (*arc_entry).clone()
                 })
                 .collect::<Vec<Entry>>();
@@ -2011,7 +1770,7 @@ impl BaseStore {
             .await
             .map_err(|e| GuardianError::Store(format!("Failed to cache local heads: {}", e)))?;
 
-        // Salva TODAS as entradas do oplog no cache para persistência completa
+        // Save ALL oplog entries to the cache for full persistence.
         let all_entries = self.with_oplog(|oplog| {
             oplog
                 .values()
@@ -2031,7 +1790,7 @@ impl BaseStore {
             .await
             .map_err(|e| GuardianError::Store(format!("Failed to cache all entries: {}", e)))?;
 
-        // Emite evento de escrita
+        // Emit a write event.
         let write_event = EventWrite {
             address: self.address.clone(),
             entry: new_entry.clone(),
@@ -2052,29 +1811,29 @@ impl BaseStore {
         Ok(new_entry)
     }
 
-    /// Inicia a lógica de replicação, subscrevendo ao tópico do pubsub e
-    /// inicializando os listeners de eventos internos e externos.
+    /// Starts the replication logic, subscribing to the pubsub topic and
+    /// initializing the internal and external event listeners.
     pub async fn replicate(self: &Arc<Self>) -> Result<()> {
         debug!("Starting replication for store: {}", self.id);
 
-        // --- 1. CRIAR O TÓPICO DE PUBSUB ---
-        // **IMPORTANTE**: Usa apenas o nome do log (sem hash do DB) para que
-        // diferentes nodes possam compartilhar o mesmo tópico de replicação
+        // --- 1. CREATE THE PUBSUB TOPIC ---
+        // **IMPORTANT**: Use only the log name (without the DB hash) so that
+        // different nodes can share the same replication topic.
         let shared_topic_name = self.extract_log_name();
         debug!(
             "Creating pubsub topic for store replication: {} (from full id: {})",
             shared_topic_name, self.id
         );
 
-        // **Como PubSubInterface::topic_subscribe requer &mut self, mas temos Arc<dyn PubSubInterface>,
-        // vamos usar uma abordagem baseada no tipo concreto quando disponível
+        // **Since PubSubInterface::topic_subscribe requires &mut self, but we have Arc<dyn PubSubInterface>,
+        // we use a concrete-type-based approach when available.
         let topic = if let Some(core_api_pubsub) = self
             .pubsub
             .as_ref()
             .as_any()
             .downcast_ref::<std::sync::Arc<crate::p2p::messaging::CoreApiPubSub>>()
         {
-            // Usa o método interno que funciona com &self
+            // Use the internal method that works with &self.
             debug!("Using CoreApiPubSub for topic subscription");
             core_api_pubsub
                 .topic_subscribe_internal(&shared_topic_name)
@@ -2085,7 +1844,7 @@ impl BaseStore {
                 .as_any()
                 .downcast_ref::<crate::p2p::network::core::gossip::EpidemicPubSub>()
         {
-            // Usa EpidemicPubSub diretamente para replicação
+            // Use EpidemicPubSub directly for replication.
             debug!("Using EpidemicPubSub for topic subscription");
             epidemic_pubsub.topic_subscribe(&shared_topic_name).await?
         } else {
@@ -2099,10 +1858,10 @@ impl BaseStore {
             topic.topic()
         );
 
-        // Armazena o topic no campo da struct para uso posterior
+        // Store the topic in the struct field for later use.
         *self.topic.lock().await = Some(topic.clone());
 
-        // --- 2. CONFIGURAR LISTENERS PARA EVENTOS DE ESCRITA ---
+        // --- 2. SET UP LISTENERS FOR WRITE EVENTS ---
         debug!("Setting up store write event listener");
         if let Err(e) = self.store_listener(topic.clone()) {
             error!("Failed to start store listener: {:?}", e);
@@ -2112,7 +1871,7 @@ impl BaseStore {
             )));
         }
 
-        // --- 3. CONFIGURAR LISTENERS PARA EVENTOS DE PEERS ---
+        // --- 3. SET UP LISTENERS FOR PEER EVENTS ---
         debug!("Setting up pubsub peer event listener");
         if let Err(e) = self.pubsub_chan_listener(topic.clone()) {
             error!("Failed to start pubsub listener: {:?}", e);
@@ -2122,7 +1881,7 @@ impl BaseStore {
             )));
         }
 
-        // --- 4. CONFIGURAR LISTENER PARA MENSAGENS GOSSIP RECEBIDAS ---
+        // --- 4. SET UP LISTENER FOR INCOMING GOSSIP MESSAGES ---
         debug!("Setting up pubsub message listener");
         if let Err(e) = self.pubsub_message_listener(topic.clone()) {
             error!("Failed to start message listener: {:?}", e);
@@ -2132,10 +1891,10 @@ impl BaseStore {
             )));
         }
 
-        // --- 5. INICIAR SINCRONIZAÇÃO COM PEERS EXISTENTES ---
+        // --- 5. START SYNCHRONIZATION WITH EXISTING PEERS ---
         debug!("Starting synchronization with existing peers");
 
-        // Obtém peers já conectados ao tópico
+        // Get peers already connected to the topic.
         match topic.peers().await {
             Ok(existing_peers) => {
                 debug!(
@@ -2144,14 +1903,14 @@ impl BaseStore {
                     existing_peers
                 );
 
-                // Inicia exchange de heads com cada peer existente
+                // Start a head exchange with each existing peer.
                 for peer in existing_peers {
                     if peer != self.node_id {
                         debug!("Initiating head exchange with existing peer: {:?}", peer);
 
                         let store_clone = self.clone();
 
-                        // Spawn task para exchange assíncrono
+                        // Spawn a task for the asynchronous exchange.
                         tokio::spawn(async move {
                             match store_clone.on_new_peer_joined(peer).await {
                                 Ok(()) => {
@@ -2176,19 +1935,19 @@ impl BaseStore {
             }
         }
 
-        // --- 5. CONFIGURAR MÉTRICAS E MONITORAMENTO ---
+        // --- 5. CONFIGURE METRICS AND MONITORING ---
         debug!("Configuring replication metrics");
 
-        // Registra que a replicação foi iniciada
+        // Record that replication has started.
         if let Some(_metrics) = self.retry_metrics.try_lock() {
-            // Pode adicionar métricas específicas de replicação aqui
+            // Replication-specific metrics can be added here.
             debug!("Replication metrics initialized");
         }
 
-        // --- 6. FINALIZAÇÃO ---
+        // --- 6. FINALIZATION ---
         debug!("Replication started successfully for store: {}", self.id);
 
-        // Emite evento de que a replicação está pronta
+        // Emit an event indicating that replication is ready.
         let current_heads = self.with_oplog(|oplog| {
             oplog
                 .heads()
@@ -2209,9 +1968,9 @@ impl BaseStore {
         Ok(())
     }
 
-    /// Inicia uma tarefa em background que escuta por eventos de escrita (`EventWrite`)
-    /// no barramento de eventos interno. Para cada evento, outra tarefa é iniciada
-    /// para propagar a atualização para a rede via pubsub.
+    /// Starts a background task that listens for write events (`EventWrite`)
+    /// on the internal event bus. For each event, another task is started
+    /// to propagate the update to the network via pubsub.
     fn store_listener(
         self: &Arc<Self>,
         topic: Arc<dyn PubSubTopic<Error = GuardianError> + Send + Sync>,
@@ -2221,33 +1980,33 @@ impl BaseStore {
         let event_bus = self.event_bus.clone();
 
         tokio::spawn(async move {
-            // Criar o subscriber dentro da task async
+            // Create the subscriber inside the async task.
             let mut sub = match event_bus.subscribe::<EventWrite>().await {
                 Ok(sub) => sub,
                 Err(e) => {
-                    // Log error if possible
+                    // Log error if possible.
                     eprintln!("Failed to subscribe to EventWrite: {:?}", e);
                     return;
                 }
             };
 
             loop {
-                // `select!` aguarda ou um novo evento ou o cancelamento da store.
+                // `select!` waits for either a new event or the store's cancellation.
                 select! {
                     _ = cancellation_token.cancelled() => break,
                     Ok(event) = sub.recv() => {
-                        // Tenta "promover" a referência fraca para uma forte.
+                        // Try to "promote" the weak reference to a strong one.
                         if let Some(store) = store_weak.upgrade() {
                             let topic_clone = topic.clone();
-                            let store_clone = store.clone(); // Clone o Arc para mover para a task
-                            // Inicia a tarefa dentro do JoinSet da store para um gerenciamento adequado.
+                            let store_clone = store.clone(); // Clone the Arc to move into the task.
+                            // Start the task inside the store's JoinSet for proper management.
                             store.tasks.lock().spawn(async move {
                                 if let Err(_e) = store_clone.handle_event_write(event, topic_clone).await {
                                     warn!("unable to handle EventWrite");
                                 }
                             });
                         } else {
-                            // A store foi dropada, então a tarefa deve terminar.
+                            // The store was dropped, so the task should end.
                             break;
                         }
                     }
@@ -2267,13 +2026,13 @@ impl BaseStore {
         let cancellation_token = self.cancellation_token.clone();
 
         tokio::spawn(async move {
-            // Usa watch_peers() do PubSubTopic para eventos
+            // Use the PubSubTopic's watch_peers() for events.
             debug!(
                 "Starting pubsub peer events listener for topic: {}",
                 topic.topic()
             );
 
-            // Obtém stream de eventos de peers do tópico
+            // Get the topic's peer events stream.
             let peer_events_stream = match topic.watch_peers().await {
                 Ok(stream) => stream,
                 Err(e) => {
@@ -2291,11 +2050,11 @@ impl BaseStore {
                         debug!("Pubsub peer listener cancelled");
                         break;
                     }
-                    // Processa eventos de peers
+                    // Process peer events.
                     peer_event = peer_events.next() => {
                         match peer_event {
                             Some(event) => {
-                                // Converte o Arc<dyn Any> para EventPubSub
+                                // Convert the Arc<dyn Any> into an EventPubSub.
                                 if let Some(pubsub_event) = event.downcast_ref::<crate::traits::EventPubSub>() {
                                     if let Some(store_arc) = store_weak.upgrade() {
                                         debug!(
@@ -2328,9 +2087,9 @@ impl BaseStore {
         });
         Ok(())
     }
-    /// Função auxiliar de 'pubsub_chan_listener'
+    /// Helper function for 'pubsub_chan_listener'.
     /// Handles a single peer join or leave event.
-    /// Processa eventos com retry e tratamento robusto de erros.
+    /// Processes events with retry and robust error handling.
     async fn handle_peer_event(self: Arc<Self>, event: crate::traits::EventPubSub) {
         match event {
             crate::traits::EventPubSub::Join {
@@ -2342,10 +2101,10 @@ impl BaseStore {
                     node_id, self.id
                 );
 
-                // **CORREÇÃO CRÍTICA**: Quando recebemos Join de um peer, devemos também
-                // chamar join_peers() para garantir conexão BIDIRECIONAL.
-                // Sem isso, o Node A pode enviar para Node B, mas Node B não consegue
-                // receber porque não estabeleceu a conexão na sua ponta.
+                // **CRITICAL FIX**: When we receive a Join from a peer, we must also
+                // call join_peers() to ensure a BIDIRECTIONAL connection.
+                // Without this, Node A can send to Node B, but Node B cannot
+                // receive because it has not established the connection on its end.
                 let topic_name = self.extract_log_name();
                 debug!(
                     "[BIDIRECTIONAL_MESH] Establishing bidirectional connection with peer {:?} for topic {}",
@@ -2395,10 +2154,10 @@ impl BaseStore {
                     }
                 }
 
-                // Aguarda um pouco para o mesh se estabilizar bidirecionalmente
+                // Wait a bit for the mesh to stabilize bidirectionally.
                 tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
-                // Emite evento NewPeer para o sistema usando o tipo correto
+                // Emit a NewPeer event to the system using the correct type.
                 let new_peer_event = crate::stores::events::EventNewPeer::new(node_id);
                 match self
                     .event_bus
@@ -2417,13 +2176,13 @@ impl BaseStore {
                     }
                 }
 
-                // Inicia troca de heads com retry robusto
-                let store_clone = self.clone(); // Clona o Arc<Self>
+                // Start a head exchange with robust retry.
+                let store_clone = self.clone(); // Clone the Arc<Self>.
 
                 tokio::spawn(async move {
                     debug!("Starting head exchange with peer: {:?}", node_id);
 
-                    // Chama o método de troca de heads com retry implementado
+                    // Call the implemented head-exchange-with-retry method.
                     match store_clone.on_new_peer_joined(node_id).await {
                         Ok(()) => {
                             debug!(
@@ -2449,13 +2208,13 @@ impl BaseStore {
                     node_id, self.id
                 );
 
-                // Processa saída de peer
-                // Registra métricas de peers disconnected
+                // Process the peer leaving.
+                // Record disconnected-peer metrics.
                 if let Some(mut metrics) = self.retry_metrics.try_lock() {
                     metrics.record_peer_disconnection();
                 }
 
-                // Emite evento PeerDisconnected usando o tipo disponível
+                // Emit a PeerDisconnected event using the available type.
                 let peer_disconnect_event = crate::guardian::core::EventPeerDisconnected {
                     node_id: node_id.to_string(),
                     address: self.id.clone(),
@@ -2486,7 +2245,7 @@ impl BaseStore {
                 topic.topic()
             );
 
-            // Obtém stream de mensagens do tópico
+            // Get the topic's message stream.
             let message_stream = match topic.watch_messages().await {
                 Ok(stream) => {
                     debug!("[✅ Message stream created successfully]");
@@ -2509,33 +2268,33 @@ impl BaseStore {
                         debug!("Pubsub message listener cancelled");
                         break;
                     }
-                    // Processa mensagens recebidas
+                    // Process incoming messages.
                     message_event = messages.next() => {
                         match message_event {
                             Some(event) => {
                                 debug!("[📬 Loop iteration - received event from gossip]");
                                 if let Some(store_arc) = store_weak.upgrade() {
                                     debug!(
-                                        "[📨 Recebida mensagem gossip] {} bytes no tópico {}",
+                                        "[📨 Gossip message received] {} bytes on topic {}",
                                         event.content.len(),
                                         store_arc.id
                                     );
 
-                                    // Desserializa MessageExchangeHeads
+                                    // Deserialize MessageExchangeHeads.
                                     match store_arc.message_marshaler.unmarshal(&event.content) {
                                         Ok(msg) => {
                                             debug!(
-                                                "[🔄 Sincronizando] Recebidos {} heads do address: {} (esperado: {})",
+                                                "[🔄 Synchronizing] Received {} heads from address: {} (expected: {})",
                                                 msg.heads.len(),
                                                 msg.address,
                                                 store_arc.id
                                             );
 
-                                            // Processa os heads recebidos
+                                            // Process the received heads.
                                             if let Err(e) = store_arc.sync(msg.heads).await {
                                                 error!("Failed to sync received heads: {}", e);
                                             } else {
-                                                debug!("[✅ Sync concluído] Heads processados com sucesso");
+                                                debug!("[✅ Sync complete] Heads processed successfully");
                                             }
                                         }
                                         Err(e) => {
@@ -2559,8 +2318,8 @@ impl BaseStore {
         Ok(())
     }
 
-    /// Publica os "heads" mais recentes de uma escrita local para todos os
-    /// peers conectados no tópico do pubsub.
+    /// Publishes the most recent "heads" from a local write to all
+    /// peers connected to the pubsub topic.
     pub async fn handle_event_write(
         &self,
         event: EventWrite,
@@ -2609,20 +2368,20 @@ impl BaseStore {
         Ok(())
     }
 
-    /// Inicia a troca de "heads" com um peer recém-conectado.
-    /// Inclui estratégias de retry, timeout e cancelamento.
+    /// Starts the "heads" exchange with a newly connected peer.
+    /// Includes retry, timeout and cancellation strategies.
     pub async fn on_new_peer_joined(&self, peer: NodeId) -> Result<()> {
         debug!(
             "{:?}: New peer '{:?}' connected to {}",
             self.node_id, peer, self.id
         );
 
-        // **CORREÇÃO CRÍTICA**: Usa o nome simplificado do log (sem hash) para garantir
-        // que todos os peers usem o MESMO TopicId para o mesmo log
+        // **CRITICAL FIX**: Use the simplified log name (without hash) to ensure
+        // that all peers use the SAME TopicId for the same log.
         let shared_topic_name = self.extract_log_name();
 
-        // **SOLUÇÃO CRÍTICA**: Adiciona o peer ao gossip mesh re-subscrevendo com ele como bootstrap
-        // Isso permite que o iroh-gossip forme um mesh entre os peers
+        // **CRITICAL SOLUTION**: Add the peer to the gossip mesh by re-subscribing with it as bootstrap.
+        // This allows iroh-gossip to form a mesh between the peers.
         debug!(
             "[GOSSIP_MESH] Adding peer {:?} to gossip mesh for topic {}",
             peer, shared_topic_name
@@ -2634,15 +2393,15 @@ impl BaseStore {
             .as_any()
             .downcast_ref::<std::sync::Arc<crate::p2p::messaging::CoreApiPubSub>>()
         {
-            // Re-subscreve com o peer como bootstrap para formar mesh
-            // CORREÇÃO: Usa shared_topic_name ao invés de self.id para garantir mesmo TopicId
+            // Re-subscribe with the peer as bootstrap to form a mesh.
+            // FIX: Use shared_topic_name instead of self.id to ensure the same TopicId.
             if let Err(e) = core_api_pubsub
                 .epidemic_pubsub
                 .get_or_create_topic_with_peers(&shared_topic_name, vec![peer])
                 .await
             {
                 warn!("[GOSSIP_MESH] Failed to add peer to gossip mesh: {}", e);
-                // Não falha - continua com exchange_heads mesmo sem mesh
+                // Does not fail - continues with exchange_heads even without a mesh.
             } else {
                 debug!(
                     "[GOSSIP_MESH] Successfully added peer {:?} to gossip mesh",
@@ -2655,7 +2414,7 @@ impl BaseStore {
                 .as_any()
                 .downcast_ref::<crate::p2p::network::core::gossip::EpidemicPubSub>()
         {
-            // CORREÇÃO: Usa shared_topic_name ao invés de self.id para garantir mesmo TopicId
+            // FIX: Use shared_topic_name instead of self.id to ensure the same TopicId.
             if let Err(e) = epidemic_pubsub
                 .get_or_create_topic_with_peers(&shared_topic_name, vec![peer])
                 .await
@@ -2672,10 +2431,10 @@ impl BaseStore {
             }
         }
 
-        // Pequeno delay para permitir que o mesh se forme
+        // Small delay to allow the mesh to form.
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-        // Estratégias robustas de retry e tratamento de erros
+        // Robust retry and error-handling strategies.
         const MAX_PEER_EXCHANGE_RETRIES: u32 = 3;
         const PEER_EXCHANGE_TIMEOUT_SECS: u64 = 30;
         const PEER_EXCHANGE_BASE_DELAY_MS: u64 = 200;
@@ -2686,7 +2445,7 @@ impl BaseStore {
         while retry_attempt <= MAX_PEER_EXCHANGE_RETRIES {
             retry_attempt += 1;
 
-            // Cria timeout para a operação
+            // Create a timeout for the operation.
             let exchange_future = self.exchange_heads(peer);
             let timeout_duration = std::time::Duration::from_secs(PEER_EXCHANGE_TIMEOUT_SECS);
 
@@ -2697,7 +2456,7 @@ impl BaseStore {
                         peer, retry_attempt
                     );
 
-                    // Registra métricas de sucesso
+                    // Record success metrics.
                     if let Some(mut metrics) = self.retry_metrics.try_lock() {
                         metrics.record_peer_exchange_success();
                     }
@@ -2705,12 +2464,12 @@ impl BaseStore {
                     return Ok(());
                 }
                 Ok(Err(e)) => {
-                    // Erro de aplicação - analisa tipo de erro para decidir retry
+                    // Application error - analyze the error type to decide on a retry.
                     last_error = Some(e.clone());
 
                     match &e {
                         GuardianError::Store(msg) if msg.contains("cancelled") => {
-                            // Erro de cancelamento - não faz retry
+                            // Cancellation error - do not retry.
                             warn!(
                                 "Peer exchange with {:?} was cancelled, not retrying: {}",
                                 peer, msg
@@ -2718,26 +2477,26 @@ impl BaseStore {
                             return Err(e);
                         }
                         GuardianError::Store(msg) if msg.contains("timeout") => {
-                            // Erro de timeout - pode ser temporário, faz retry
+                            // Timeout error - may be temporary, retry.
                             warn!(
                                 "Peer exchange with {:?} timed out (attempt {}): {}",
                                 peer, retry_attempt, msg
                             );
                         }
                         GuardianError::Store(msg) if msg.contains("connection") => {
-                            // Erro de conexão - pode ser temporário, faz retry
+                            // Connection error - may be temporary, retry.
                             warn!(
                                 "Connection error with peer {:?} (attempt {}): {}",
                                 peer, retry_attempt, msg
                             );
                         }
                         GuardianError::Store(msg) if msg.contains("marshal") => {
-                            // Erro de serialização - permanente, não faz retry
+                            // Serialization error - permanent, do not retry.
                             error!("Marshal error with peer {:?}, not retrying: {}", peer, msg);
                             return Err(e);
                         }
                         _ => {
-                            // Outros erros - tenta retry limitado
+                            // Other errors - try a limited retry.
                             warn!(
                                 "Generic error with peer {:?} (attempt {}): {:?}",
                                 peer, retry_attempt, e
@@ -2746,7 +2505,7 @@ impl BaseStore {
                     }
                 }
                 Err(_) => {
-                    // Timeout da operação inteira
+                    // Timeout of the entire operation.
                     let timeout_error = GuardianError::Store(format!(
                         "Peer exchange with {:?} timed out after {} seconds",
                         peer, PEER_EXCHANGE_TIMEOUT_SECS
@@ -2762,16 +2521,16 @@ impl BaseStore {
                 }
             }
 
-            // Registra métricas de falha
+            // Record failure metrics.
             if let Some(mut metrics) = self.retry_metrics.try_lock() {
                 metrics.record_peer_exchange_failure();
             }
 
-            // Se não é a última tentativa, espera antes do retry
+            // If this is not the last attempt, wait before retrying.
             if retry_attempt <= MAX_PEER_EXCHANGE_RETRIES {
-                // Backoff exponencial com jitter para evitar thundering herd
+                // Exponential backoff with jitter to avoid a thundering herd.
                 let delay_ms = PEER_EXCHANGE_BASE_DELAY_MS * (1 << (retry_attempt - 1));
-                let jitter = fastrand::u64(0..=delay_ms / 4); // Até 25% de jitter
+                let jitter = fastrand::u64(0..=delay_ms / 4); // Up to 25% jitter.
                 let total_delay = delay_ms + jitter;
 
                 debug!(
@@ -2782,7 +2541,7 @@ impl BaseStore {
                     MAX_PEER_EXCHANGE_RETRIES + 1
                 );
 
-                // Verifica se a store foi cancelada durante o delay
+                // Check whether the store was cancelled during the delay.
                 select! {
                     _ = self.cancellation_token.cancelled() => {
                         warn!(
@@ -2793,13 +2552,13 @@ impl BaseStore {
                         return Err(GuardianError::Store("Store cancelled during retry".to_string()));
                     }
                     _ = tokio::time::sleep(std::time::Duration::from_millis(total_delay)) => {
-                        // Continua para próxima tentativa
+                        // Continue to the next attempt.
                     }
                 }
             }
         }
 
-        // Todas as tentativas falharam
+        // All attempts failed.
         let final_error = last_error.unwrap_or_else(|| {
             GuardianError::Store("Unknown error during peer exchange".to_string())
         });
@@ -2811,7 +2570,7 @@ impl BaseStore {
             final_error
         );
 
-        // Registra métricas finais de falha
+        // Record final failure metrics.
         if let Some(mut metrics) = self.retry_metrics.try_lock() {
             metrics.record_peer_exchange_final_failure();
         }
@@ -2819,16 +2578,16 @@ impl BaseStore {
         Err(final_error)
     }
 
-    /// Conecta-se a um peer via canal direto, carrega os "heads" locais
-    /// do cache e os envia para o peer.
+    /// Connects to a peer via a direct channel, loads the local "heads"
+    /// from the cache and sends them to the peer.
     pub async fn exchange_heads(&self, peer: NodeId) -> Result<()> {
         debug!("[EXCHANGE_HEADS] Starting exchange with peer: {:?}", peer);
 
-        // **CORREÇÃO CRÍTICA**: Para sincronização completa, enviamos TODAS as entradas
-        // do oplog, não apenas os heads (tips). Os heads são apenas os nós folha,
-        // mas o receptor precisa de toda a cadeia de entradas.
+        // **CRITICAL FIX**: For full synchronization, we send ALL oplog entries,
+        // not just the heads (tips). The heads are only the leaf nodes,
+        // but the receiver needs the entire chain of entries.
         let all_entries: Vec<Entry> = self.log_and_index.with_oplog(|oplog| {
-            // values() retorna todas as entradas do log, não apenas os heads
+            // values() returns all log entries, not just the heads.
             let entries_vec = oplog
                 .values()
                 .iter()
@@ -2848,12 +2607,12 @@ impl BaseStore {
             peer
         );
 
-        // USA APENAS O NOME DO LOG, não o address completo, para permitir
-        // que diferentes peers (com DBNames diferentes) sincronizem o mesmo log
+        // USE ONLY THE LOG NAME, not the full address, to allow
+        // different peers (with different DBNames) to synchronize the same log.
         let log_name = self.extract_log_name();
         let msg = MessageExchangeHeads {
             address: log_name.clone(),
-            heads: all_entries, // Envia todas as entradas, não apenas heads
+            heads: all_entries, // Send all entries, not just heads.
         };
 
         let payload = self
@@ -2867,17 +2626,17 @@ impl BaseStore {
             payload.len()
         );
 
-        // Obtém o tópico gossip compartilhado
+        // Get the shared gossip topic.
         let topic_option = self.topic.lock().await;
         let topic = topic_option
             .as_ref()
             .ok_or_else(|| GuardianError::Store("Gossip topic not initialized".to_string()))?;
 
-        // Usa o PubSub API para publicar a mensagem
+        // Use the PubSub API to publish the message.
         let topic_name = topic.topic();
 
-        // **CORREÇÃO CRÍTICA**: Antes de publicar, garante que o peer destino esteja no mesh
-        // Re-subscrevendo com o peer como bootstrap garante que iroh-gossip forme conexão
+        // **CRITICAL FIX**: Before publishing, ensure the target peer is in the mesh.
+        // Re-subscribing with the peer as bootstrap ensures iroh-gossip forms a connection.
         if let Some(epidemic_pubsub) =
             self.pubsub
                 .as_ref()
@@ -2889,7 +2648,7 @@ impl BaseStore {
                 peer
             );
 
-            // Adiciona o peer ao mesh via subscribe_with_peers
+            // Add the peer to the mesh via subscribe_with_peers.
             epidemic_pubsub
                 .subscribe_with_peers(topic_name, vec![peer])
                 .await
@@ -2900,14 +2659,14 @@ impl BaseStore {
                     );
                     GuardianError::Store(format!("Failed to add peer to mesh: {}", e))
                 })
-                .ok(); // Não falha se não conseguir adicionar, tenta publicar mesmo assim
+                .ok(); // Does not fail if it cannot add; tries to publish anyway.
 
-            // **CORREÇÃO CRÍTICA**: Verifica se o peer está realmente conectado antes de publicar
-            // Isso evita enviar mensagens quando o mesh ainda não está formado bilateralmente
+            // **CRITICAL FIX**: Check that the peer is actually connected before publishing.
+            // This avoids sending messages when the mesh is not yet formed bilaterally.
             let iroh_topic = epidemic_pubsub.get_topic(topic_name).await;
             if let Some(iroh_topic) = iroh_topic {
                 let mut attempts = 0;
-                const MAX_WAIT_ATTEMPTS: u32 = 30; // 30 * 100ms = 3 segundos max
+                const MAX_WAIT_ATTEMPTS: u32 = 30; // 30 * 100ms = 3 seconds max.
 
                 loop {
                     let peers = iroh_topic.list_peers().await;
@@ -2928,7 +2687,7 @@ impl BaseStore {
                             peer,
                             attempts * 100
                         );
-                        // Continua mesmo assim - pode funcionar
+                        // Continue anyway - it may work.
                         break;
                     }
 
@@ -2956,7 +2715,7 @@ impl BaseStore {
                 .as_any()
                 .downcast_ref::<crate::p2p::messaging::CoreApiPubSub>()
         {
-            // Para CoreApiPubSub, usa o método interno
+            // For CoreApiPubSub, use the internal method.
             debug!(
                 "[EXCHANGE_HEADS] Adding peer {:?} to gossip mesh before publishing (CoreApiPubSub)",
                 peer
@@ -2975,11 +2734,11 @@ impl BaseStore {
                 })
                 .ok();
 
-            // **CORREÇÃO CRÍTICA**: Verifica se o peer está realmente conectado antes de publicar
+            // **CRITICAL FIX**: Check that the peer is actually connected before publishing.
             let iroh_topic = core_api_pubsub.epidemic_pubsub.get_topic(topic_name).await;
             if let Some(iroh_topic) = iroh_topic {
                 let mut attempts = 0;
-                const MAX_WAIT_ATTEMPTS: u32 = 30; // 30 * 100ms = 3 segundos max
+                const MAX_WAIT_ATTEMPTS: u32 = 30; // 30 * 100ms = 3 seconds max.
 
                 loop {
                     let peers = iroh_topic.list_peers().await;
@@ -3036,11 +2795,11 @@ impl BaseStore {
         Ok(())
     }
 
-    /// Extrai o nome do log do endereço completo da store
-    /// Exemplo: /GuardianDB/HASH/global-chat -> global-chat
+    /// Extracts the log name from the store's full address.
+    /// Example: /GuardianDB/HASH/global-chat -> global-chat
     pub fn extract_log_name(&self) -> String {
-        // O ID tem formato: /GuardianDB/HASH/NOME_DO_LOG
-        // Queremos apenas o NOME_DO_LOG para usar como tópico compartilhado
+        // The ID has the format: /GuardianDB/HASH/LOG_NAME
+        // We want only the LOG_NAME to use as a shared topic.
         self.id
             .split('/')
             .next_back()
@@ -3048,31 +2807,31 @@ impl BaseStore {
             .to_string()
     }
 
-    /// Carrega o estado da store a partir dos heads salvos no cache. Ele processa
-    /// cada head concorrentemente, reporta o progresso e junta os resultados.
+    /// Loads the store's state from the heads saved in the cache. It processes
+    /// each head concurrently, reports progress and joins the results.
     pub async fn load(&self, amount: Option<isize>) -> Result<()> {
-        let _default_amount = amount.unwrap_or(-1); // -1 para "todos"
+        let _default_amount = amount.unwrap_or(-1); // -1 for "all".
 
-        // Carrega heads do cache
+        // Load heads from the cache.
         let mut heads = Vec::new();
         let cache = self.cache();
 
         BaseStore::load_heads_from_cache_key(&cache, "_localHeads", &mut heads).await?;
         BaseStore::load_heads_from_cache_key(&cache, "_remoteHeads", &mut heads).await?;
 
-        // Emite evento de início via SyncObserver
+        // Emit a start event via SyncObserver.
         self.sync_observer.emit_started(heads.len()).await;
 
-        // Emite evento de início do carregamento (evento legado)
+        // Emit a load-start event (legacy event).
         let load_event = EventLoad {
             address: self.address.clone(),
-            heads: Vec::new(), // Inicialmente vazio
+            heads: Vec::new(), // Initially empty.
         };
         if let Err(e) = self.emitters.evt_load.emit(load_event) {
             warn!("Failed to emit EventLoad: {}", e);
         }
 
-        // Tenta carregar todas as entradas do cache (persistência completa)
+        // Try to load all entries from the cache (full persistence).
         let mut all_entries: Vec<Entry> = Vec::new();
         match cache.get("_allEntries".as_bytes()).await {
             Ok(Some(bytes)) => {
@@ -3091,12 +2850,12 @@ impl BaseStore {
             }
         }
 
-        // Se não há entradas completas nem heads, a store está vazia
+        // If there are no full entries or heads, the store is empty.
         if heads.is_empty() && all_entries.is_empty() {
-            // Emite evento Ready via SyncObserver
+            // Emit a Ready event via SyncObserver.
             self.sync_observer.emit_ready(Vec::new()).await;
 
-            // Emite evento indicando que o carregamento terminou (sem dados)
+            // Emit an event indicating that loading finished (with no data).
             let ready_event = EventReady {
                 address: self.address.clone(),
                 heads: Vec::new(),
@@ -3107,7 +2866,7 @@ impl BaseStore {
             return Ok(());
         }
 
-        // Usa todas as entradas se disponíveis, caso contrário usa os heads
+        // Use all entries if available, otherwise use the heads.
         let entries_to_load = if !all_entries.is_empty() {
             all_entries
         } else {
@@ -3116,10 +2875,10 @@ impl BaseStore {
 
         debug!("Loading {} entries into oplog", entries_to_load.len());
 
-        // Insere as entradas no oplog para que list() possa retorná-las
-        // Usa add_entry() ao invés de join() para aceitar entradas de outros peers.
-        // O método join() usa diff() que verifica entry.id() == oplog.id, o que
-        // exclui entradas de outros peers (que têm IDs diferentes).
+        // Insert the entries into the oplog so that list() can return them.
+        // Use add_entry() instead of join() to accept entries from other peers.
+        // The join() method uses diff(), which checks entry.id() == oplog.id, which
+        // excludes entries from other peers (which have different IDs).
         let loaded_count = self.log_and_index.with_oplog_mut(|oplog| {
             let mut count = 0;
             for entry in &entries_to_load {
@@ -3127,21 +2886,21 @@ impl BaseStore {
                     count += 1;
                 }
             }
-            // Atualiza o relógio Lamport para o tempo máximo das heads carregadas
+            // Update the Lamport clock to the maximum time of the loaded heads.
             oplog.sync_clock_from_heads();
             count
         });
 
         debug!("Loaded {} new entries into oplog", loaded_count);
 
-        // Emite evento de progresso para cada entry carregada
+        // Emit a progress event for each loaded entry.
         for (i, entry) in entries_to_load.iter().enumerate() {
-            // Emite progresso via SyncObserver
+            // Emit progress via SyncObserver.
             self.sync_observer
                 .emit_progress(*entry.hash(), entry.clone(), i + 1, entries_to_load.len())
                 .await;
 
-            // Emite progresso legado
+            // Emit legacy progress.
             let load_progress_event = EventLoadProgress {
                 address: self.address.clone(),
                 hash: *entry.hash(),
@@ -3156,10 +2915,10 @@ impl BaseStore {
 
         self.update_index()?;
 
-        // Emite evento Ready via SyncObserver
+        // Emit a Ready event via SyncObserver.
         self.sync_observer.emit_ready(heads.clone()).await;
 
-        // Emite evento indicando que a store está pronta
+        // Emit an event indicating that the store is ready.
         let ready_event = EventReady {
             address: self.address.clone(),
             heads: heads.clone(),
@@ -3173,8 +2932,8 @@ impl BaseStore {
         Ok(())
     }
 
-    /// Função auxiliar de 'load'
-    /// Carrega e desserializa uma lista de `Entry` a partir de uma chave do cache.
+    /// Helper function for 'load'.
+    /// Loads and deserializes a list of `Entry` from a cache key.
     async fn load_heads_from_cache_key(
         cache: &Arc<dyn Datastore>,
         key: &str,
@@ -3196,7 +2955,7 @@ impl BaseStore {
     pub async fn load_from_snapshot(&self) -> Result<()> {
         debug!("Loading from snapshot");
 
-        // Processa a fila de sync pendente primeiro
+        // Process the pending sync queue first.
         if let Ok(Some(queue_bytes)) = self.cache().get("queue".as_bytes()).await {
             match crate::guardian::serializer::deserialize::<Vec<Entry>>(&queue_bytes) {
                 Ok(queue) => {
@@ -3209,7 +2968,7 @@ impl BaseStore {
             }
         }
 
-        // Obtém o caminho do snapshot do cache
+        // Get the snapshot path from the cache.
         let snapshot_path_result = self.cache().get("snapshot".as_bytes()).await;
         let snapshot_path_bytes = match snapshot_path_result {
             Ok(Some(bytes)) => bytes,
@@ -3230,10 +2989,10 @@ impl BaseStore {
 
         debug!("Loading snapshot from path: {}", snapshot_path);
 
-        // Carrega o snapshot do Iroh usando cat_bytes
+        // Load the snapshot from Iroh using cat_bytes.
         match self.client.cat_bytes(&snapshot_path).await {
             Ok(snapshot_data) => {
-                // Processa os dados do snapshot
+                // Process the snapshot data.
                 match self.process_snapshot_data(snapshot_data).await {
                     Ok(entries_loaded) => {
                         debug!(
@@ -3241,7 +3000,7 @@ impl BaseStore {
                             entries_loaded
                         );
 
-                        // Emite evento de load usando log simples por enquanto
+                        // Emit a load event using a simple log for now.
                         debug!("Snapshot load completed with {} entries", entries_loaded);
                     }
                     Err(e) => {
@@ -3252,7 +3011,7 @@ impl BaseStore {
             }
             Err(e) => {
                 warn!("Failed to load snapshot from Iroh: {}", e);
-                // Continua sem erro, apenas logs a falha
+                // Continue without error, just log the failure.
             }
         }
 
@@ -3260,7 +3019,7 @@ impl BaseStore {
         Ok(())
     }
 
-    /// Processa os dados de um snapshot carregado do Client
+    /// Processes the data of a snapshot loaded from the Client.
     async fn process_snapshot_data(&self, data: Vec<u8>) -> Result<usize> {
         use std::io::Cursor;
         use tokio::io::AsyncReadExt;
@@ -3268,31 +3027,31 @@ impl BaseStore {
         let mut cursor = Cursor::new(data);
         let mut entries_loaded = 0;
 
-        // Lê os dados do snapshot
+        // Read the snapshot data.
         while cursor.position() < cursor.get_ref().len() as u64 {
-            // Lê o tamanho da entrada (4 bytes, big-endian)
+            // Read the entry size (4 bytes, big-endian).
             let mut size_bytes = [0u8; 4];
             if cursor.read_exact(&mut size_bytes).await.is_err() {
-                break; // End of data
+                break; // End of data.
             }
             let entry_size = u32::from_be_bytes(size_bytes) as usize;
 
-            // Lê os dados da entrada
+            // Read the entry data.
             let mut entry_data = vec![0u8; entry_size];
             if cursor.read_exact(&mut entry_data).await.is_err() {
-                break; // Corrupted data
+                break; // Corrupted data.
             }
 
-            // Desserializa a entrada
+            // Deserialize the entry.
             match crate::guardian::serializer::deserialize::<Entry>(&entry_data) {
                 Ok(entry) => {
-                    // Adiciona a entrada ao oplog usando métodos apropriados
+                    // Add the entry to the oplog using the appropriate methods.
                     let entry_hash = entry.hash();
                     if let Err(e) = self.log_and_index.with_oplog_mut(|oplog| {
-                        // Verifica se a entrada já existe usando has()
+                        // Check whether the entry already exists using has().
                         if !oplog.has(entry_hash) {
-                            // Adiciona a entrada usando append()
-                            // Entry.payload agora é Vec<u8>, convertemos para string lossy
+                            // Add the entry using append().
+                            // Entry.payload is now Vec<u8>, we convert to a lossy string.
                             let payload_str = String::from_utf8_lossy(&entry.payload).to_string();
                             oplog.append(&payload_str, None);
                         }
@@ -3313,9 +3072,9 @@ impl BaseStore {
         Ok(entries_loaded)
     }
 
-    /// Função auxiliar de 'load_from_snapshot'
-    /// Lê um prefixo de tamanho u16 (big-endian) de um stream, lê o número
-    /// correspondente de bytes e os desserializa para um tipo T usando postcard.
+    /// Helper function for 'load_from_snapshot'.
+    /// Reads a u16 (big-endian) length prefix from a stream, reads the
+    /// corresponding number of bytes and deserializes them into a type T using postcard.
     #[allow(dead_code)]
     async fn read_prefixed_json<T, R>(reader: &mut R) -> Result<T>
     where
@@ -3323,26 +3082,23 @@ impl BaseStore {
         R: AsyncRead + Unpin,
     {
         let len = reader.read_u16().await.map_err(|e| {
-            GuardianError::Store(format!(
-                "Falha ao ler o prefixo de tamanho do snapshot: {}",
-                e
-            ))
+            GuardianError::Store(format!("Failed to read the snapshot size prefix: {}", e))
         })?;
 
         let mut buf = vec![0; len as usize];
         reader.read_exact(&mut buf).await.map_err(|e| {
-            GuardianError::Store(format!("Falha ao ler o bloco de dados do snapshot: {}", e))
+            GuardianError::Store(format!("Failed to read the snapshot data block: {}", e))
         })?;
 
         crate::guardian::serializer::deserialize(&buf).map_err(|e| {
-            GuardianError::Store(format!("Falha ao desserializar dados do snapshot: {}", e))
+            GuardianError::Store(format!("Failed to deserialize snapshot data: {}", e))
         })
     }
 }
 
-/// Esta função foi extraída como uma função livre (não um método de `BaseStore`)
-/// para ser usada durante a construção da `store`, mantendo a lógica de
-/// inicialização dos emissores separada.
+/// This function was extracted as a free function (not a `BaseStore` method)
+/// to be used during the construction of the `store`, keeping the emitter
+/// initialization logic separate.
 async fn generate_emitters(bus: &EventBus) -> Result<Emitters> {
     Ok(Emitters {
         evt_write: bus.emitter::<EventWrite>().await.map_err(|e| {
@@ -3372,10 +3128,10 @@ async fn generate_emitters(bus: &EventBus) -> Result<Emitters> {
     })
 }
 
-/// Implementação do trait Store para BaseStore
+/// Store trait implementation for BaseStore.
 ///
-/// Esta implementação torna BaseStore compatível com a interface Store,
-/// permitindo que seja usada em qualquer contexto que espere uma Store.
+/// This implementation makes BaseStore compatible with the Store interface,
+/// allowing it to be used in any context that expects a Store.
 #[async_trait::async_trait]
 impl Store for BaseStore {
     type Error = GuardianError;
@@ -3386,7 +3142,7 @@ impl Store for BaseStore {
     }
 
     async fn close(&self) -> std::result::Result<(), Self::Error> {
-        // Chama o método público close(&self) que já está implementado corretamente
+        // Call the public close(&self) method, which is already implemented correctly.
         self.close().await
     }
 
@@ -3395,8 +3151,8 @@ impl Store for BaseStore {
     }
 
     fn index(&self) -> Box<dyn StoreIndex<Error = Self::Error> + Send + Sync> {
-        // Cria um wrapper que mantenha uma referência ao log_and_index da store
-        // e delegue todas as operações para o índice ativo quando disponível
+        // Create a wrapper that holds a reference to the store's log_and_index
+        // and delegates all operations to the active index when available.
         struct IndexWrapper {
             log_and_index: Arc<LogAndIndex>,
         }
@@ -3405,54 +3161,54 @@ impl Store for BaseStore {
             type Error = GuardianError;
 
             fn contains_key(&self, key: &str) -> std::result::Result<bool, Self::Error> {
-                // Delega para o índice ativo se disponível
+                // Delegate to the active index if available.
                 if let Some(result) = self
                     .log_and_index
                     .with_index(|index| index.contains_key(key))
                 {
                     result
                 } else {
-                    // Se não há índice ativo, a chave não existe
+                    // If there is no active index, the key does not exist.
                     Ok(false)
                 }
             }
 
             fn get_bytes(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, Self::Error> {
-                // Delega para o índice ativo se disponível
+                // Delegate to the active index if available.
                 if let Some(result) = self.log_and_index.with_index(|index| index.get_bytes(key)) {
                     result
                 } else {
-                    // Se não há índice ativo, retorna None
+                    // If there is no active index, return None.
                     Ok(None)
                 }
             }
 
             fn keys(&self) -> std::result::Result<Vec<String>, Self::Error> {
-                // Delega para o índice ativo se disponível
+                // Delegate to the active index if available.
                 if let Some(result) = self.log_and_index.with_index(|index| index.keys()) {
                     result
                 } else {
-                    // Se não há índice ativo, retorna lista vazia
+                    // If there is no active index, return an empty list.
                     Ok(Vec::new())
                 }
             }
 
             fn len(&self) -> std::result::Result<usize, Self::Error> {
-                // Delega para o índice ativo se disponível
+                // Delegate to the active index if available.
                 if let Some(result) = self.log_and_index.with_index(|index| index.len()) {
                     result
                 } else {
-                    // Se não há índice ativo, comprimento é zero
+                    // If there is no active index, the length is zero.
                     Ok(0)
                 }
             }
 
             fn is_empty(&self) -> std::result::Result<bool, Self::Error> {
-                // Delega para o índice ativo se disponível
+                // Delegate to the active index if available.
                 if let Some(result) = self.log_and_index.with_index(|index| index.is_empty()) {
                     result
                 } else {
-                    // Se não há índice ativo, consideramos vazio
+                    // If there is no active index, we consider it empty.
                     Ok(true)
                 }
             }
@@ -3462,25 +3218,25 @@ impl Store for BaseStore {
                 log: &crate::log::Log,
                 entries: &[crate::log::entry::Entry],
             ) -> std::result::Result<(), Self::Error> {
-                // Delega para o índice ativo se disponível
+                // Delegate to the active index if available.
                 let mut guard = self.log_and_index.active_index.write();
                 match guard.as_mut() {
                     Some(index) => index.update_index(log, entries),
-                    None => Ok(()), // Se não há índice ativo, não faz nada
+                    None => Ok(()), // If there is no active index, do nothing.
                 }
             }
 
             fn clear(&mut self) -> std::result::Result<(), Self::Error> {
-                // Delega para o índice ativo se disponível
+                // Delegate to the active index if available.
                 let mut guard = self.log_and_index.active_index.write();
                 match guard.as_mut() {
                     Some(index) => index.clear(),
-                    None => Ok(()), // Se não há índice ativo, não faz nada
+                    None => Ok(()), // If there is no active index, do nothing.
                 }
             }
         }
 
-        // Retorna o wrapper com uma referência ao log_and_index
+        // Return the wrapper with a reference to the log_and_index.
         Box::new(IndexWrapper {
             log_and_index: Arc::new(LogAndIndex {
                 oplog: self.log_and_index.oplog.clone(),
@@ -3492,23 +3248,18 @@ impl Store for BaseStore {
         "base"
     }
 
-    fn replication_status(&self) -> ReplicationInfo {
-        // Retorna o status de replicação atual (sem Arc)
-        ReplicationInfo::default()
-    }
-
     async fn drop(&self) -> std::result::Result<(), Self::Error> {
-        // Versão mutable do drop
+        // Mutable version of drop.
         Ok(())
     }
 
-    // Métodos específicos delegados para as implementações existentes
+    // Specific methods delegated to the existing implementations.
     fn cache(&self) -> Arc<dyn Datastore> {
         Self::cache(self)
     }
 
     async fn load(&self, amount: usize) -> std::result::Result<(), Self::Error> {
-        // Usa o método existente, mas convertendo o tipo
+        // Use the existing method, but converting the type.
         Self::load(self, Some(amount as isize)).await
     }
 
@@ -3517,7 +3268,7 @@ impl Store for BaseStore {
     }
 
     async fn load_more_from(&self, _amount: u64, entries: Vec<Entry>) {
-        // Ignora o amount por enquanto e usa o método existente
+        // Ignore the amount for now and use the existing method.
         let _ = Self::load_more_from(self, entries);
     }
 

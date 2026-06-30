@@ -2,6 +2,8 @@ use crate::odm::error::{OdmError, Result};
 use serde_json::{Map, Value};
 use std::cmp::Ordering;
 
+/// Resolves a dotted field path (e.g. `"a.b.c"`) within a JSON document,
+/// returning a reference to the nested value if every segment exists.
 pub(crate) fn value_at_path<'a>(document: &'a Value, path: &str) -> Option<&'a Value> {
     let mut current = document;
     for segment in path.split('.') {
@@ -10,6 +12,9 @@ pub(crate) fn value_at_path<'a>(document: &'a Value, path: &str) -> Option<&'a V
     Some(current)
 }
 
+/// Evaluates a MongoDB-style query object against a document, returning whether
+/// the document matches. Supports logical operators (`$and`/`$or`/`$nor`) and
+/// per-field operators (`$eq`, `$gt`, `$in`, `$exists`, ...).
 pub(crate) fn matches_query(document: &Value, query: &Value) -> Result<bool> {
     let query = query
         .as_object()
@@ -133,6 +138,8 @@ fn matches_condition(actual: Option<&Value>, condition: &Value) -> Result<bool> 
     Ok(actual.is_some_and(|value| values_equal(value, condition)))
 }
 
+/// Equality used by query operators: a direct match, or — when the actual value
+/// is an array — a match against any of its elements (array containment).
 fn values_equal(actual: &Value, expected: &Value) -> bool {
     if actual == expected {
         return true;
@@ -142,6 +149,8 @@ fn values_equal(actual: &Value, expected: &Value) -> bool {
         .is_some_and(|items| items.iter().any(|item| item == expected))
 }
 
+/// Compares the actual and expected values (numbers or strings) and applies
+/// `predicate` to the resulting ordering; returns `false` when uncomparable.
 fn compare(
     actual: Option<&Value>,
     expected: &Value,

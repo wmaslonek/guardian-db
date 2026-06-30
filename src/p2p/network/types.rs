@@ -1,27 +1,27 @@
-// Definições de tipos e estruturas de dados
+// Type and data structure definitions.
 //
-// Centraliza todos os tipos de dados usados pela API Iroh nativa.
-// Usa iroh-blobs para armazenamento e iroh-gossip para pubsub.
+// Centralizes all data types used by the native Iroh API.
+// Uses iroh-blobs for storage and iroh-gossip for pubsub.
 
 use crate::guardian::error::Result;
 use futures::stream::Stream;
-use iroh::NodeId;
+use iroh::EndpointId as NodeId;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 
-/// Resposta da operação add do Iroh (iroh-blobs)
+/// Response of the Iroh add operation (iroh-blobs).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AddResponse {
-    /// Hash do blob adicionado (formato hex string)
+    /// Hash of the added blob (hex string format).
     pub hash: String,
-    /// Nome do arquivo (opcional)
+    /// File name (optional).
     pub name: String,
-    /// Tamanho em bytes como string
+    /// Size in bytes as a string.
     pub size: String,
 }
 
 impl AddResponse {
-    /// Cria uma nova resposta de add
+    /// Creates a new add response.
     pub fn new(hash: String, size: usize) -> Self {
         Self {
             hash,
@@ -30,7 +30,7 @@ impl AddResponse {
         }
     }
 
-    /// Cria resposta com nome do arquivo
+    /// Creates a response with a file name.
     pub fn with_name(hash: String, name: String, size: usize) -> Self {
         Self {
             hash,
@@ -39,7 +39,7 @@ impl AddResponse {
         }
     }
 
-    /// Retorna o tamanho como número
+    /// Returns the size as a number.
     pub fn size_bytes(&self) -> Result<usize> {
         self.size.parse().map_err(|e| {
             crate::guardian::error::GuardianError::Other(format!("Invalid size format: {}", e))
@@ -47,23 +47,23 @@ impl AddResponse {
     }
 }
 
-/// Informações sobre o nó Iroh local (Endpoint)
+/// Information about the local Iroh node (Endpoint).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NodeInfo {
-    /// ID único do nó (Iroh NodeId = PublicKey)
+    /// Unique node ID (Iroh NodeId = PublicKey).
     pub id: NodeId,
-    /// Chave pública em formato hex
+    /// Public key in hex format.
     pub public_key: String,
-    /// Endereços do endpoint Iroh
+    /// Iroh endpoint addresses.
     pub addresses: Vec<String>,
-    /// Versão do Guardian DB
+    /// Guardian DB version.
     pub agent_version: String,
-    /// Versão do protocolo Iroh
+    /// Iroh protocol version.
     pub protocol_version: String,
 }
 
 impl NodeInfo {
-    /// Cria informações básicas de nó para desenvolvimento/mock
+    /// Creates basic node information for development/mock use.
     pub fn mock(id: NodeId) -> Self {
         Self {
             id,
@@ -74,29 +74,29 @@ impl NodeInfo {
         }
     }
 
-    /// Verifica se é um nó mock/desenvolvimento
+    /// Returns whether this is a mock/development node.
     pub fn is_mock(&self) -> bool {
         self.public_key == "mock_public_key"
     }
 }
 
-/// Mensagem do sistema gossip (iroh-gossip)
+/// Message from the gossip system (iroh-gossip).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PubsubMessage {
-    /// NodeId que enviou a mensagem
+    /// NodeId that sent the message.
     pub from: NodeId,
-    /// Dados da mensagem
+    /// Message data.
     pub data: Vec<u8>,
-    /// Número de sequência (opcional)
+    /// Sequence number (optional).
     pub sequence_number: Option<u64>,
-    /// Tópico ao qual a mensagem pertence
+    /// Topic the message belongs to.
     pub topic: String,
-    /// Timestamp UNIX da mensagem
+    /// UNIX timestamp of the message.
     pub timestamp: u64,
 }
 
 impl PubsubMessage {
-    /// Cria uma nova mensagem pubsub
+    /// Creates a new pubsub message.
     pub fn new(from: NodeId, topic: String, data: Vec<u8>) -> Self {
         Self {
             from,
@@ -110,42 +110,42 @@ impl PubsubMessage {
         }
     }
 
-    /// Retorna o tamanho dos dados em bytes
+    /// Returns the data size in bytes.
     pub fn data_size(&self) -> usize {
         self.data.len()
     }
 
-    /// Converte dados para string UTF-8 (se possível)
+    /// Converts the data into a UTF-8 string (if possible).
     pub fn data_as_string(&self) -> Result<String> {
         String::from_utf8(self.data.clone()).map_err(|e| {
             crate::guardian::error::GuardianError::Other(format!("Invalid UTF-8 data: {}", e))
         })
     }
 
-    /// Verifica se a mensagem é de um tópico específico
+    /// Returns whether the message belongs to a specific topic.
     pub fn is_from_topic(&self, topic: &str) -> bool {
         self.topic == topic
     }
 }
 
-/// Stream de mensagens do gossip (iroh-gossip)
+/// Stream of gossip messages (iroh-gossip).
 pub type PubsubStream = Pin<Box<dyn Stream<Item = Result<PubsubMessage>> + Send>>;
 
-/// Informações sobre um peer conectado (via Iroh Endpoint)
+/// Information about a connected peer (via an Iroh Endpoint).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PeerInfo {
-    /// NodeId do peer
+    /// The peer's NodeId.
     pub id: NodeId,
-    /// Endereços conhecidos do peer
+    /// Known addresses of the peer.
     pub addresses: Vec<String>,
-    /// Protocolos suportados pelo peer
+    /// Protocols supported by the peer.
     pub protocols: Vec<String>,
-    /// Status de conexão
+    /// Connection status.
     pub connected: bool,
 }
 
 impl PeerInfo {
-    /// Cria informações básicas de peer
+    /// Creates basic peer information.
     pub fn new(id: NodeId) -> Self {
         Self {
             id,
@@ -155,7 +155,7 @@ impl PeerInfo {
         }
     }
 
-    /// Cria peer mock/simulado
+    /// Creates a mock/simulated peer.
     pub fn mock(id: NodeId, connected: bool) -> Self {
         Self {
             id,
@@ -168,43 +168,43 @@ impl PeerInfo {
         }
     }
 
-    /// Adiciona um endereço ao peer
+    /// Adds an address to the peer.
     pub fn add_address(&mut self, addr: String) {
         if !self.addresses.contains(&addr) {
             self.addresses.push(addr);
         }
     }
 
-    /// Adiciona um protocolo suportado
+    /// Adds a supported protocol.
     pub fn add_protocol(&mut self, protocol: String) {
         if !self.protocols.contains(&protocol) {
             self.protocols.push(protocol);
         }
     }
 
-    /// Marca peer como conectado/desconectado
+    /// Marks the peer as connected/disconnected.
     pub fn set_connected(&mut self, connected: bool) {
         self.connected = connected;
     }
 }
 
-/// Resultado de operação de pin (Tag no Iroh)
+/// Result of a pin operation (Tag in Iroh).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PinResponse {
-    /// Hash do blob fixado (com Tag permanente)
+    /// Hash of the pinned blob (with a permanent Tag).
     pub hash: String,
-    /// Tipo de pin
+    /// Pin type.
     pub pin_type: PinType,
 }
 
-/// Tipos de pin suportados pelo Iroh
+/// Pin types supported by Iroh.
 ///
-/// Nota: Iroh usa Tags para proteger blobs do garbage collector.
+/// Note: Iroh uses Tags to protect blobs from the garbage collector.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum PinType {
-    /// Pin direto (Tag direta no blob)
+    /// Direct pin (Tag directly on the blob).
     Direct,
-    /// Pin recursivo (Tag + todos os blobs referenciados)
+    /// Recursive pin (Tag + all referenced blobs).
     Recursive,
 }
 
@@ -217,16 +217,16 @@ impl std::fmt::Display for PinType {
     }
 }
 
-/// Estatísticas do store Iroh (iroh-blobs)
+/// Iroh store statistics (iroh-blobs).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RepoStats {
-    /// Número de blobs no store
+    /// Number of blobs in the store.
     pub num_objects: u64,
-    /// Tamanho total em bytes
+    /// Total size in bytes.
     pub repo_size: u64,
-    /// Caminho do data store Iroh
+    /// Path of the Iroh data store.
     pub repo_path: String,
-    /// Versão do Guardian DB
+    /// Guardian DB version.
     pub version: String,
 }
 
@@ -241,29 +241,29 @@ impl Default for RepoStats {
     }
 }
 
-/// Informações de bandwidth/largura de banda
+/// Bandwidth information.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct BandwidthStats {
-    /// Bytes enviados
+    /// Bytes sent.
     pub total_out: u64,
-    /// Bytes recebidos
+    /// Bytes received.
     pub total_in: u64,
-    /// Taxa de envio (bytes/sec)
+    /// Send rate (bytes/sec).
     pub rate_out: f64,
-    /// Taxa de recebimento (bytes/sec)
+    /// Receive rate (bytes/sec).
     pub rate_in: f64,
 }
 
-/// Informações de versão do Guardian DB (usando Iroh)
+/// Guardian DB version information (using Iroh).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct VersionInfo {
-    /// Versão do Guardian DB
+    /// Guardian DB version.
     pub version: String,
-    /// Commit hash do build
+    /// Build commit hash.
     pub commit: String,
-    /// Versão do repositório
+    /// Repository version.
     pub repo: String,
-    /// Sistema operacional
+    /// Operating system.
     pub system: String,
 }
 
@@ -284,7 +284,7 @@ mod tests {
 
     #[test]
     fn test_add_response() {
-        // Hash exemplo (formato hex)
+        // Example hash (hex format).
         let response = AddResponse::new("abc123def456".to_string(), 1024);
         assert_eq!(response.hash, "abc123def456");
         assert_eq!(response.size_bytes().unwrap(), 1024);
@@ -298,8 +298,7 @@ mod tests {
     #[test]
     fn test_node_info() {
         use iroh::SecretKey;
-        use rand_core::OsRng;
-        let secret = SecretKey::generate(OsRng);
+        let secret = SecretKey::generate();
         let node_id = secret.public();
         let info = NodeInfo::mock(node_id);
 
@@ -311,8 +310,7 @@ mod tests {
     #[test]
     fn test_pubsub_message() {
         use iroh::SecretKey;
-        use rand_core::OsRng;
-        let secret = SecretKey::generate(OsRng);
+        let secret = SecretKey::generate();
         let node_id = secret.public();
         let topic = "test-topic".to_string();
         let data = b"Hello, PubSub!".to_vec();
@@ -331,8 +329,7 @@ mod tests {
     #[test]
     fn test_peer_info() {
         use iroh::SecretKey;
-        use rand_core::OsRng;
-        let secret = SecretKey::generate(OsRng);
+        let secret = SecretKey::generate();
         let node_id = secret.public();
         let mut info = PeerInfo::new(node_id);
 

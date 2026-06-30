@@ -1,47 +1,47 @@
 use crate::guardian::error::Result as DbResult;
 use std::fmt::{Display, Formatter, Result as FmtResult};
 
-/// Trait principal para operações de datastore
+/// Main trait for datastore operations.
 ///
-/// Fornece uma interface assíncrona para operações CRUD básicas
-/// e queries com filtros avançados.
+/// Provides an asynchronous interface for basic CRUD operations
+/// and queries with advanced filters.
 #[async_trait::async_trait]
 pub trait Datastore: Send + Sync + std::any::Any {
-    /// Recupera um valor associado à chave
+    /// Retrieves the value associated with the key.
     async fn get(&self, key: &[u8]) -> DbResult<Option<Vec<u8>>>;
 
-    /// Armazena um valor com a chave especificada
+    /// Stores a value with the specified key.
     async fn put(&self, key: &[u8], value: &[u8]) -> DbResult<()>;
 
-    /// Verifica se uma chave existe no datastore
+    /// Checks whether a key exists in the datastore.
     async fn has(&self, key: &[u8]) -> DbResult<bool>;
 
-    /// Remove uma chave e seu valor do datastore
+    /// Removes a key and its value from the datastore.
     async fn delete(&self, key: &[u8]) -> DbResult<()>;
 
-    /// Executa uma query com filtros e retorna resultados paginados
+    /// Runs a query with filters and returns paginated results.
     async fn query(&self, query: &Query) -> DbResult<Results>;
 
-    /// Retorna todas as chaves com um determinado prefixo
+    /// Returns all keys with a given prefix.
     async fn list_keys(&self, prefix: &[u8]) -> DbResult<Vec<Key>>;
 
-    /// Método auxiliar para downcast
+    /// Helper method for downcasting.
     fn as_any(&self) -> &dyn std::any::Any;
 }
 
-/// Representa uma chave hierárquica no datastore
+/// Represents a hierarchical key in the datastore.
 ///
-/// Permite navegar por uma estrutura de diretórios com operações
-/// de pai/filho e conversões para diferentes formatos.
+/// Allows navigating a directory-like structure with parent/child
+/// operations and conversions to different formats.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Key {
     segments: Vec<String>,
 }
 
 impl Key {
-    /// Cria uma nova chave a partir de um caminho
+    /// Creates a new key from a path.
     ///
-    /// # Exemplos
+    /// # Examples
     /// ```ignore
     /// use guardian_db::data_store::Key;
     ///
@@ -54,18 +54,18 @@ impl Key {
             .split('/')
             .filter(|p| !p.is_empty())
             .map(|p| p.trim().to_string())
-            .filter(|p| !p.is_empty()) // Remove segmentos vazios após trim
+            .filter(|p| !p.is_empty()) // Remove empty segments after trimming.
             .collect();
         Self { segments }
     }
 
-    /// Cria uma chave raiz vazia
+    /// Creates an empty root key.
     #[allow(dead_code)]
     pub fn root() -> Self {
         Self { segments: vec![] }
     }
 
-    /// Cria uma chave filha adicionando um segmento
+    /// Creates a child key by adding a segment.
     pub fn child<S: Into<String>>(&self, name: S) -> Self {
         let child_name = name.into().trim().to_string();
         if child_name.is_empty() {
@@ -77,7 +77,7 @@ impl Key {
         Self { segments: segs }
     }
 
-    /// Retorna a chave pai, se existir
+    /// Returns the parent key, if it exists.
     #[allow(dead_code)]
     pub fn parent(&self) -> Option<Self> {
         if self.segments.is_empty() {
@@ -89,27 +89,27 @@ impl Key {
         }
     }
 
-    /// Verifica se a chave está vazia (raiz)
+    /// Checks whether the key is empty (root).
     pub fn is_empty(&self) -> bool {
         self.segments.is_empty()
     }
 
-    /// Retorna o último segmento da chave
+    /// Returns the last segment of the key.
     pub fn name(&self) -> Option<&str> {
         self.segments.last().map(|s| s.as_str())
     }
 
-    /// Retorna todos os segmentos da chave
+    /// Returns all segments of the key.
     pub fn segments(&self) -> &[String] {
         &self.segments
     }
 
-    /// Retorna a profundidade da chave (número de segmentos)
+    /// Returns the depth of the key (number of segments).
     pub fn depth(&self) -> usize {
         self.segments.len()
     }
 
-    /// Verifica se esta chave é descendente de outra
+    /// Checks whether this key is a descendant of another.
     pub fn is_descendant_of(&self, other: &Key) -> bool {
         if other.segments.len() >= self.segments.len() {
             return false;
@@ -118,7 +118,7 @@ impl Key {
         self.segments[..other.segments.len()] == other.segments
     }
 
-    /// Converte para string com formato de caminho
+    /// Converts to a string in path format.
     pub fn as_str(&self) -> String {
         if self.segments.is_empty() {
             "/".to_string()
@@ -127,7 +127,7 @@ impl Key {
         }
     }
 
-    /// Converte para bytes UTF-8
+    /// Converts to UTF-8 bytes.
     #[allow(dead_code)]
     pub fn as_bytes(&self) -> Vec<u8> {
         self.as_str().into_bytes()
@@ -152,7 +152,7 @@ impl From<String> for Key {
     }
 }
 
-/// Ordem de classificação para queries
+/// Sort order for queries.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Order {
     #[default]
@@ -160,28 +160,28 @@ pub enum Order {
     Desc,
 }
 
-/// Configuração de query para busca no datastore
+/// Query configuration for searching the datastore.
 ///
-/// Permite filtrar por prefixo, limitar resultados e definir ordenação.
+/// Allows filtering by prefix, limiting results and defining ordering.
 #[derive(Clone, Debug, Default)]
 pub struct Query {
-    /// Prefixo para filtrar chaves (None = todas as chaves)
+    /// Prefix to filter keys (None = all keys).
     pub prefix: Option<Key>,
-    /// Número máximo de resultados (None = sem limite)
+    /// Maximum number of results (None = no limit).
     pub limit: Option<usize>,
-    /// Ordem de classificação
+    /// Sort order.
     pub order: Order,
-    /// Offset para paginação
+    /// Offset for pagination.
     pub offset: Option<usize>,
 }
 
 impl Query {
-    /// Cria um builder para construir queries complexas
+    /// Creates a builder for constructing complex queries.
     pub fn builder() -> QueryBuilder {
         QueryBuilder::default()
     }
 
-    /// Cria uma query simples com apenas um prefixo
+    /// Creates a simple query with only a prefix.
     pub fn with_prefix<K: Into<Key>>(prefix: K) -> Self {
         Self {
             prefix: Some(prefix.into()),
@@ -191,14 +191,14 @@ impl Query {
         }
     }
 
-    /// Cria uma query que retorna todos os itens
+    /// Creates a query that returns all items.
     #[allow(dead_code)]
     pub fn all() -> Self {
         Self::default()
     }
 }
 
-/// Builder para construir queries de forma fluente
+/// Builder for constructing queries fluently.
 #[derive(Default)]
 pub struct QueryBuilder {
     prefix: Option<Key>,
@@ -208,32 +208,32 @@ pub struct QueryBuilder {
 }
 
 impl QueryBuilder {
-    /// Define o prefixo para filtrar chaves
+    /// Sets the prefix to filter keys.
     pub fn prefix<K: Into<Key>>(mut self, prefix: K) -> Self {
         self.prefix = Some(prefix.into());
         self
     }
 
-    /// Define o número máximo de resultados
+    /// Sets the maximum number of results.
     pub fn limit(mut self, n: usize) -> Self {
         self.limit = Some(n);
         self
     }
 
-    /// Define a ordem de classificação
+    /// Sets the sort order.
     #[allow(dead_code)]
     pub fn order(mut self, o: Order) -> Self {
         self.order = o;
         self
     }
 
-    /// Define o offset para paginação
+    /// Sets the offset for pagination.
     pub fn offset(mut self, n: usize) -> Self {
         self.offset = Some(n);
         self
     }
 
-    /// Constrói a query final
+    /// Builds the final query.
     pub fn build(self) -> Query {
         Query {
             prefix: self.prefix,
@@ -244,9 +244,9 @@ impl QueryBuilder {
     }
 }
 
-/// Item de resultado de uma query
+/// Result item of a query.
 ///
-/// Contém uma chave e seu valor associado.
+/// Contains a key and its associated value.
 #[derive(Clone, Debug)]
 pub struct ResultItem {
     pub key: Key,
@@ -254,39 +254,39 @@ pub struct ResultItem {
 }
 
 impl ResultItem {
-    /// Cria um novo item de resultado
+    /// Creates a new result item.
     pub fn new(key: Key, value: Vec<u8>) -> Self {
         Self { key, value }
     }
 
-    /// Converte o valor para string UTF-8, se possível
+    /// Converts the value to a UTF-8 string, if possible.
     pub fn value_as_string(&self) -> std::result::Result<String, std::string::FromUtf8Error> {
         String::from_utf8(self.value.clone())
     }
 
-    /// Verifica se o valor está vazio
+    /// Checks whether the value is empty.
     pub fn is_empty(&self) -> bool {
         self.value.is_empty()
     }
 
-    /// Retorna o tamanho do valor em bytes
+    /// Returns the value size in bytes.
     pub fn size(&self) -> usize {
         self.value.len()
     }
 }
 
-/// Coleção de resultados de uma query
+/// Collection of results from a query.
 pub type Results = Vec<ResultItem>;
 
-/// Extensões úteis para trabalhar com Results
+/// Useful extensions for working with Results.
 pub trait ResultsExt {
-    /// Filtra resultados por tamanho mínimo do valor
+    /// Filters results by the minimum value size.
     fn filter_by_min_size(&self, min_size: usize) -> Results;
 
-    /// Retorna apenas as chaves dos resultados
+    /// Returns only the keys of the results.
     fn keys(&self) -> Vec<Key>;
 
-    /// Retorna o número total de bytes de todos os valores
+    /// Returns the total number of bytes across all values.
     fn total_size(&self) -> usize;
 }
 

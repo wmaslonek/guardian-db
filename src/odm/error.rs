@@ -35,4 +35,5 @@ pub enum OdmError {
     Serialization(#[from] serde_json::Error),
 }
 
+/// Convenience `Result` alias for ODM operations.
 pub type Result<T> = std::result::Result<T, OdmError>;

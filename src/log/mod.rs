@@ -7,8 +7,8 @@ use iroh_blobs::Hash;
 use serde_json::json;
 use std::cmp::Ordering;
 use std::cmp::max;
-use std::collections::BTreeMap; // Para Log.entries (determinismo em snapshots)
-use std::collections::HashMap; // Para métodos auxiliares internos (não serializados)
+use std::collections::BTreeMap; // For Log.entries (determinism in snapshots).
+use std::collections::HashMap; // For internal helper methods (not serialized).
 use std::collections::HashSet;
 use std::fmt::{Display, Formatter, Result};
 use std::sync::Arc;
@@ -21,14 +21,14 @@ pub mod identity_provider;
 pub mod lamport_clock;
 pub mod traits;
 
-// Type aliases para reduzir complexidade de tipos
+// Type aliases to reduce type complexity.
 type EntrySortFn = Box<dyn Fn(&Entry, &Entry) -> Ordering + Send + Sync>;
 
 /// An immutable, operation-based conflict-free replicated data type ([CRDT]).
 ///
-/// **IMPORTANTE:** Usa `BTreeMap` ao invés de `HashMap` para garantir ordem
-/// determinística ao serializar snapshots. Isso é crítico para que o BLAKE3
-/// hash do iroh-blobs seja consistente entre execuções.
+/// **IMPORTANT:** Uses `BTreeMap` instead of `HashMap` to guarantee a
+/// deterministic order when serializing snapshots. This is critical so the
+/// iroh-blobs BLAKE3 hash is consistent across runs.
 ///
 /// [CRDT]: https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type
 pub struct Log {
@@ -36,7 +36,7 @@ pub struct Log {
     id: String,
     identity: Identity,
     access: AdHocAccess,
-    entries: BTreeMap<Hash, Arc<Entry>>, // BTreeMap para determinismo
+    entries: BTreeMap<Hash, Arc<Entry>>, // BTreeMap for determinism.
     length: usize,
     heads: Vec<Arc<Entry>>,
     nexts: HashSet<Hash>,
@@ -174,7 +174,7 @@ impl Log {
             }
         }
 
-        let mut entry_set = BTreeMap::new(); // BTreeMap para determinismo
+        let mut entry_set = BTreeMap::new(); // BTreeMap for determinism.
         for e in entries {
             entry_set.insert(*e.hash(), e.clone());
         }
@@ -277,7 +277,7 @@ impl Log {
             Some(self.clock.clone()),
         );
 
-        // Usa thread separada com novo Runtime para evitar "cannot start runtime from within a runtime"
+        // Use a separate thread with a new Runtime to avoid "cannot start runtime from within a runtime".
         let client_clone = self.client.clone();
         let entry_clone = entry.clone();
         let hash_result = std::thread::spawn(move || {
@@ -672,13 +672,13 @@ impl Log {
         .to_string()
     }
 
-    /// Retorna uma representação snapshot do log usando postcard para serialização consistente.
-    /// Usado principalmente para testes e comparação de estados.
+    /// Returns a snapshot representation of the log using postcard for consistent serialization.
+    /// Used mainly for testing and state comparison.
     pub fn snapshot(&self) -> String {
         let hs = self.heads.to_owned();
         let vs = self.values().to_owned();
 
-        // Usa postcard para serialização consistente dos Entry
+        // Use postcard for consistent serialization of the Entry values.
         let heads_serialized: Vec<String> = hs
             .into_iter()
             .map(|x| {

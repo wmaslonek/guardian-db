@@ -48,10 +48,10 @@ async fn main() -> Result<()> {
 
     // === FASE 2: SIMULAÇÃO DE CONEXÕES ===
     println!("=== FASE 2: SIMULAÇÃO DE CONEXÕES ===");
-    println!("O connection pool é populado automaticamente quando connect() é chamado");
-    println!("Cada conexão bem-sucedida adiciona o peer ao pool\n");
+    println!("O connection pool é populado conforme os peers são resolvidos e usados");
+    println!("Cada operação bem-sucedida mantém o peer no pool\n");
 
-    // Demonstra tentativa de conexão (falhará se não houver peer, mas mostra o fluxo)
+    // Demonstra o fluxo de discovery/resolução (vazio se não houver peer disponível).
     println!("Tentando descobrir peers via discovery...");
     match backend.discover_peers_active(Duration::from_secs(3)).await {
         Ok(discovered) => {
@@ -60,27 +60,28 @@ async fn main() -> Result<()> {
             // Tenta conectar aos primeiros peers descobertos
             for (i, node_addr) in discovered.iter().take(3).enumerate() {
                 println!(
-                    "\nConectando ao peer {} ({})...",
+                    "\nResolvendo o peer {} ({})...",
                     i + 1,
-                    node_addr.node_id.fmt_short()
+                    node_addr.id.fmt_short()
                 );
-                match backend.connect(&node_addr.node_id).await {
-                    Ok(_) => {
-                        println!("   ✓ Conexão estabelecida - peer adicionado ao pool!");
+                // Iroh 1.0: a resolução de endereço é pull-based (resolve por NodeId).
+                match backend.discover_peer_integrated(node_addr.id).await {
+                    Ok(addrs) => {
+                        println!("   ✓ Peer resolvido ({} endereço(s))", addrs.len());
 
-                        // Simula atualização de latência
+                        // Demonstra a atualização de latência caso o peer esteja no pool.
                         let latency = 50.0 + (i as f64 * 10.0);
                         if let Err(e) = backend
-                            .update_connection_latency(&node_addr.node_id, latency)
+                            .update_connection_latency(&node_addr.id, latency)
                             .await
                         {
-                            println!("   ⚠ Erro ao atualizar latência: {}", e);
+                            println!("   ⚠ Latência não registrada: {}", e);
                         } else {
                             println!("   Latência registrada: {:.2}ms", latency);
                         }
                     }
                     Err(e) => {
-                        println!("   ✗ Falha na conexão: {}", e);
+                        println!("   ✗ Falha ao resolver: {}", e);
                     }
                 }
 

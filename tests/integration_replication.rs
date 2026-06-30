@@ -33,7 +33,7 @@ async fn test_two_nodes_basic_replication() {
     tracing::info!("Preparing network addresses...");
 
     // Obter informação de endereço de cada nó
-    use iroh::NodeAddr;
+    use iroh::{EndpointAddr as NodeAddr, TransportAddr};
     use std::net::SocketAddr;
 
     let node1_info = node1.iroh.id().await.expect("Failed to get node1 info");
@@ -50,8 +50,8 @@ async fn test_two_nodes_basic_replication() {
         .filter_map(|addr| addr.parse().ok())
         .collect();
 
-    let node1_addr = NodeAddr::from_parts(peer1_id, None, node1_addrs);
-    let node2_addr = NodeAddr::from_parts(peer2_id, None, node2_addrs);
+    let node1_addr = NodeAddr::from_parts(peer1_id, node1_addrs.into_iter().map(TransportAddr::Ip));
+    let node2_addr = NodeAddr::from_parts(peer2_id, node2_addrs.into_iter().map(TransportAddr::Ip));
 
     // Adicionar NodeAddr aos endpoints
     node1
@@ -613,6 +613,10 @@ async fn test_keyvalue_replication() {
         .key_value("shared-kv", None)
         .await
         .expect("Failed to create kv1");
+
+    // Sem troca manual de ticket: node2 abre o mesmo store e obtém o DocTicket automaticamente
+    // do node1 via protocolo seguro sobre QUIC (gate pelo AccessController), entrando no mesmo
+    // namespace iroh-docs.
     let kv2 = node2
         .db
         .key_value("shared-kv", None)
@@ -725,6 +729,8 @@ async fn test_document_store_replication() {
         .docs("shared-docs", None)
         .await
         .expect("Failed to create docs1");
+
+    // Sem troca manual: node2 obtém o DocTicket automaticamente do node1 (gate pelo AccessController).
     let docs2 = node2
         .db
         .docs("shared-docs", None)

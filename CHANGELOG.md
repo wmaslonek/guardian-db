@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-06-29
+
+### Added
+- **Read-only replication with a cryptographic write guarantee** for iroh-docs-backed stores (KeyValue/Document), enabling a "one/two writers, many readers" topology where a reader cannot write — even if its software is compromised — because it never receives the namespace write secret.
+  - **Per-role ticket capability:** the ticket exchange now hands out a ticket matching the requester's authenticated role — a **read ticket** (`NamespaceId` only, no write secret) to readers and a **write ticket** (namespace secret) to write-authorized peers. The `TicketProvider` holds both pre-generated tickets and authorization returns the granted mode (`GrantedMode::Read`/`Write`), with `write` taking precedence over `read`.
+  - **`CreateDBOptions.read_only`:** opening a store read-only refuses local `put`/`delete` (fail-fast on the public `add_operation` write path and the inherent methods) and never creates a namespace (fail-closed when no ticket or cached namespace is available), so a reader cannot mint its own write secret.
+  - **Writability tracking:** each store records whether it holds the namespace secret (created locally, imported via a write vs read `DocTicket`, or reopened from a persisted flag); effective writability is `holds_secret && !read_only`.
+  - **`CreateAccessControllerOptions::read_only_replication(writers)`** helper to build the recommended ACL (`write: [writers]`, `read: ["*"]`).
+  - **Namespace rotation** support to truly revoke a provisioned writer (the namespace secret is symmetric and cannot be retracted via ACL edits): new `guardian_db::rotation::copy_key_value_state` helper to migrate state into a fresh namespace, plus a `docs/NAMESPACE_ROTATION.md` runbook.
+  - **Documentation:** `docs/READ_ONLY_REPLICATION.md` explaining the guarantee, the iroh-docs namespace-secret model, the enforcement layers, and usage.
+  - **Tests:** ticket-exchange per-role authorization (read-only peer never receives write, write precedence, no write-ticket leak), read-only fail-fast and no-create unit tests, rotation helper tests, and a two real-node integration test (`tests/integration_readonly.rs`) proving a reader replicates the writer's data but cannot write while the writer's state stays intact.
+
+### Changed
+- `IrohBackend::register_ticket_provider` now takes both a read and a write ticket (was a single write-capable ticket); KV/Document stores register via a new internal `share_tickets()` that generates both. `share_ticket()` is retained for compatibility and still returns a write-capable ticket.
+
+## [0.17.0] - 2026-06-24
+
 ### Added
 - **PostgreSQL compatibility layer** — standard PostgreSQL clients (`psql`,
   node-postgres, **TypeORM** with `type: "postgres"`, DBeaver) connect to
@@ -52,8 +69,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **ODM documentation and tests**, including `docs/odm.md`, Rust ODM integration tests, and TypeScript SDK tests covering the issue #17 usage flow, uniqueness rollback, update operators, collection listing, and version-conflict behavior.
 
 ### Changed
+- **Upgraded to Iroh 1.0.** Bumped `iroh` 0.92 → **1.0.0**, `iroh-blobs` → **0.103**, `iroh-gossip` → **0.101**, `iroh-docs` → **0.101**, `iroh-io` → 0.6.1, and added **`iroh-mdns-address-lookup` 0.4** for LAN discovery (these crates remain separately versioned in 1.0).
+  - Migrated the API surface: `NodeId`→`EndpointId`, `NodeAddr`→`EndpointAddr` (with unified `TransportAddr`), `discovery()`→`address_lookup()` using the `N0` preset + mDNS, async `remote_info()`, `endpoint.id()`, `connection.remote_id()`, and the new `BlobsProtocol`/`Endpoint::builder(preset)` signatures.
+- **Unified randomness on a single `rand` crate.** Removed the direct `rand_core` 0.6.4 pin (no longer needed now that `SecretKey::generate()` takes no RNG), updated `rand` → **0.10**, and set `ed25519-dalek` → 2.2 with the `serde` feature.
 - `DocumentStore` opening is now idempotent for ODM collection initialization so repeated collection setup can reuse the underlying replicated document store safely.
 - Root README now documents the optional ODM layer, Rust model derive usage, TypeScript collection API shape, build/test commands, and the local-vs-replicated consistency boundary.
+
+### Removed
+- **Legacy `replicator` module and `ReplicationInfo` type** (OrbitDB lineage). Replication is handled natively by Iroh, so the vestigial progress-tracking surface was removed: the `Store::replication_status()` trait method and all implementations, the `BaseStore` replication field, and the dead `update/recalculate_replication_*` and `replication_load_complete` helpers.
+
+### Fixed
+- **ODM `$inc` now preserves integer types** (e.g. `1024 + 1` yields `1025`, not `1025.0`); it only falls back to floating-point arithmetic for fractional operands or i64 overflow. Fixes a failing ODM reliability test.
 
 ## [0.16.0] - 2026-03-01
 

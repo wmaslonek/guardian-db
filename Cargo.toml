@@ -1,10 +1,10 @@
 [package]
 name = "guardian-db"
-version = "0.16.0"
+version = "0.17.1"
 authors = ["William Maslonek <wmaslonek@icloud.com>"]
 license = "MIT OR Apache-2.0"
 edition = "2024"
-rust-version = "1.90.0"
+rust-version = "1.95.0"
 description = "High-performance, local-first decentralized database built on Rust and Iroh"
 repository = "https://github.com/wmaslonek/guardian-db/"
 readme = "README.md"
@@ -30,31 +30,31 @@ byteorder = "1.5.0"
 chrono = { version = "0.4", features = ["serde"] }
 fastrand = "2.3"
 futures = "0.3.31"
-opentelemetry = "0.31.0"
+opentelemetry = "0.32.0"
 parking_lot = "0.12.4"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_cbor = "0.11.2"
 serde_json = "1.0.143"
 tempfile = "3.21.0"
-thiserror = "2.0.16"
+thiserror = "2.0.18"
 tokio = { version = "1.47.1", features = ["full"] }
 tokio-stream = "0.1.17"
 tokio-util = "0.7.16"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
-rand = "0.9.2"
-rand_core = "0.6.4" # Iroh 0.92.0 uses rand_core 0.6.4 internally
+rand = "0.10"
 hex = "0.4.3"
-iroh = { version = "0.92.0", features = ["default", "discovery-local-network"] } #We will update it again when version 1.0 is released
-iroh-io = "0.6.0"
-iroh-blobs = "0.94.0" #We will update it again when version 1.0 is released
-iroh-gossip = "0.92.0" #We will update it again when version 1.0 is released
-iroh-docs = "0.92.0" #We will update it again when version 1.0 is released
+iroh = "1.0.0"
+iroh-io = "0.6.1"
+iroh-blobs = "0.103.0"
+iroh-gossip = "0.101.0"
+iroh-docs = "0.101.0"
+iroh-mdns-address-lookup = "0.4.0"
 bytes = "1.11.1"
-ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+ed25519-dalek = { version = "2.2", features = ["serde"] }
 uuid = { version = "1.18.1", features = ["serde"] }
 blake3 = "1.8.2"
-lru = "0.16.3"
+lru = "0.18.0"
 zstd = "0.13.3"
 futures-lite = "2.6.1"
 postcard = { version = "1.1.3", features = ["use-std"] }
@@ -104,6 +104,10 @@ required-features = ["sql"]
 name = "pgwire_wire"
 path = "tests/pgwire_wire.rs"
 required-features = ["pgwire"]
+
+[[bin]]
+name = "guardian-admin"
+path = "src/bin/guardian_administration_panel.rs"
 
 [[bench]]
 name = "iroh_gossipsub_performance"

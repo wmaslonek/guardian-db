@@ -1,9 +1,10 @@
 use crate::address::Address;
 use crate::log::entry::Entry;
-use iroh::NodeId;
+use iroh::EndpointId as NodeId;
 use iroh_blobs::Hash;
 use std::sync::Arc;
 
+/// Store lifecycle events emitted through the store's event bus.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     Write(EventWrite),
@@ -17,6 +18,7 @@ pub enum Event {
     Reset(EventReset),
 }
 
+/// An event emitted when replication of an entry starts.
 #[derive(Clone)]
 pub struct EventReplicate {
     pub address: Arc<dyn Address + Send + Sync>,
@@ -44,7 +46,7 @@ impl PartialEq for EventReplicate {
     }
 }
 
-/// Um evento contendo o progresso atual da replicação.
+/// An event containing the current replication progress.
 #[derive(Clone)]
 pub struct EventReplicateProgress {
     pub max: i32,
@@ -94,7 +96,7 @@ impl EventReplicateProgress {
     }
 }
 
-/// Um evento enviado quando os dados foram replicados.
+/// An event sent when data has been replicated.
 #[derive(Clone)]
 pub struct EventReplicated {
     pub address: Arc<dyn Address + Send + Sync>,
@@ -134,7 +136,7 @@ impl EventReplicated {
     }
 }
 
-/// Um evento enviado quando os dados foram carregados.
+/// An event sent when data has been loaded.
 #[derive(Clone)]
 pub struct EventLoad {
     pub address: Arc<dyn Address + Send + Sync>,
@@ -165,6 +167,7 @@ impl EventLoad {
     }
 }
 
+/// An event containing the current load progress.
 #[derive(Clone)]
 pub struct EventLoadProgress {
     pub address: Arc<dyn Address + Send + Sync>,
@@ -214,7 +217,7 @@ impl EventLoadProgress {
     }
 }
 
-/// Um evento enviado quando a store está pronta.
+/// An event sent when the store is ready.
 #[derive(Clone)]
 pub struct EventReady {
     pub address: Arc<dyn Address + Send + Sync>,
@@ -245,7 +248,7 @@ impl EventReady {
     }
 }
 
-/// Um evento enviado quando algo foi escrito.
+/// An event sent when something has been written.
 #[derive(Clone)]
 pub struct EventWrite {
     pub address: Arc<dyn Address + Send + Sync>,
@@ -281,7 +284,7 @@ impl EventWrite {
     }
 }
 
-/// Um evento enviado quando um novo peer é descoberto no canal pubsub.
+/// An event sent when a new peer is discovered on the pubsub channel.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EventNewPeer {
     pub peer: NodeId,
@@ -293,7 +296,7 @@ impl EventNewPeer {
     }
 }
 
-/// Um evento enviado quando a store é resetada.
+/// An event sent when the store is reset.
 #[derive(Debug, Clone)]
 pub struct EventReset {
     pub address: Arc<dyn Address + Send + Sync>,
@@ -309,5 +312,72 @@ impl PartialEq for EventReset {
 impl EventReset {
     pub fn new(address: Arc<dyn Address + Send + Sync>, timestamp: u64) -> Self {
         Self { address, timestamp }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::address::SimpleAddress;
+
+    fn addr(path: &str) -> Arc<dyn Address + Send + Sync> {
+        Arc::new(SimpleAddress::new(path)) as Arc<dyn Address + Send + Sync>
+    }
+
+    fn node_id() -> NodeId {
+        iroh::SecretKey::generate().public()
+    }
+
+    #[test]
+    fn event_replicate_holds_address_and_hash() {
+        let h = Hash::new(b"some-content");
+        let ev = EventReplicate::new(addr("/db/store"), h);
+        assert_eq!(ev.hash, h);
+        assert!(ev.address.equals(addr("/db/store").as_ref()));
+        // Debug must not panic.
+        let _ = format!("{:?}", ev);
+    }
+
+    #[test]
+    fn event_replicate_partial_eq() {
+        let h = Hash::new(b"x");
+        let a = EventReplicate::new(addr("/db/s"), h);
+        let b = EventReplicate::new(addr("/db/s"), h);
+        let c = EventReplicate::new(addr("/db/outro"), h);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn event_new_peer_roundtrip() {
+        let id = node_id();
+        let ev = EventNewPeer::new(id);
+        assert_eq!(ev.peer, id);
+        let _ = format!("{:?}", EventNewPeer::new(id));
+    }
+
+    #[test]
+    fn event_reset_partial_eq_considers_address_and_timestamp() {
+        let a = EventReset::new(addr("/db/s"), 100);
+        let same = EventReset::new(addr("/db/s"), 100);
+        let diff_ts = EventReset::new(addr("/db/s"), 200);
+        let diff_addr = EventReset::new(addr("/db/other"), 100);
+        assert_eq!(a, same);
+        assert_ne!(a, diff_ts);
+        assert_ne!(a, diff_addr);
+    }
+
+    #[test]
+    fn event_enum_wraps_variants() {
+        let ev = Event::Replicate(EventReplicate::new(addr("/db/s"), Hash::new(b"h")));
+        assert!(matches!(ev, Event::Replicate(_)));
+
+        let peer_ev = Event::NewPeer(EventNewPeer::new(node_id()));
+        assert!(matches!(peer_ev, Event::NewPeer(_)));
+
+        // PartialEq derived for the enum.
+        let r1 = Event::Reset(EventReset::new(addr("/db/s"), 1));
+        let r2 = Event::Reset(EventReset::new(addr("/db/s"), 1));
+        assert_eq!(r1, r2);
     }
 }

@@ -4,34 +4,36 @@ use crate::log::access_control;
 use crate::log::identity_provider::IdentityProvider;
 use async_trait::async_trait;
 
+/// Convenience alias for a log entry trait object.
 pub type LogEntry = dyn access_control::LogEntry;
+/// Convenience alias for the additional context passed to `can_append`.
 pub type CanAppendAdditionalContext = dyn access_control::CanAppendAdditionalContext;
 
-/// A trait que todos os controladores de acesso do GuardianDB devem implementar.
+/// The trait that every GuardianDB access controller must implement.
 #[async_trait]
 pub trait AccessController: Send + Sync {
-    /// Retorna o tipo do controlador de acesso como uma string.
+    /// Returns the access controller type as a string.
     fn get_type(&self) -> &str;
 
-    /// Retorna a lista de chaves autorizadas para uma dada permissão ("role").
+    /// Returns the list of keys authorized for a given permission ("role").
     async fn get_authorized_by_role(&self, role: &str) -> Result<Vec<String>>;
 
-    /// Concede a uma nova chave uma determinada permissão.
+    /// Grants a given permission to a new key.
     async fn grant(&self, capability: &str, key_id: &str) -> Result<()>;
 
-    /// Remove a permissão de uma chave para realizar uma ação.
+    /// Removes a key's permission to perform an action.
     async fn revoke(&self, capability: &str, key_id: &str) -> Result<()>;
 
-    /// Carrega a configuração do controlador de acesso a partir de um endereço.
+    /// Loads the access controller configuration from an address.
     async fn load(&self, address: &str) -> Result<()>;
 
-    /// Salva/persiste a configuração do controlador (seu manifesto).
+    /// Saves/persists the controller configuration (its manifest).
     async fn save(&self) -> Result<Box<dyn ManifestParams>>;
 
-    /// Fecha o controlador e libera quaisquer recursos.
+    /// Closes the controller and releases any resources.
     async fn close(&self) -> Result<()>;
 
-    /// Verifica se uma entrada pode ser adicionada ao log.
+    /// Checks whether an entry may be appended to the log.
     async fn can_append(
         &self,
         entry: &dyn access_control::LogEntry,
@@ -40,4 +42,6 @@ pub trait AccessController: Send + Sync {
     ) -> Result<()>;
 }
 
+/// A configuration callback that mutates an access controller in place,
+/// used as a builder-style option when constructing controllers.
 pub type Option = Box<dyn FnOnce(&mut dyn AccessController)>;

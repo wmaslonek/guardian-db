@@ -1,7 +1,7 @@
-/// Sistema de Processamento em Batch para Backend Iroh
+/// Batch processing system for the Iroh backend.
 ///
-/// Processamento inteligente em lotes para otimizar throughput
-/// de operações Iroh, reduzindo overhead e melhorando eficiência de I/O.
+/// Intelligent batch processing to optimize the throughput of Iroh operations,
+/// reducing overhead and improving I/O efficiency.
 use crate::guardian::error::{GuardianError, Result};
 use crate::p2p::network::types::AddResponse;
 use bytes::Bytes;
@@ -13,242 +13,242 @@ use tokio::sync::{Mutex, RwLock, Semaphore, mpsc, oneshot};
 use tracing::{debug, info, instrument, warn};
 use uuid::Uuid;
 
-/// Processador de operações em batch
+/// Batch operation processor.
 pub struct BatchProcessor {
-    /// Fila de operações pendentes
+    /// Queue of pending operations.
     pending_operations: Arc<Mutex<VecDeque<BatchOperation>>>,
-    /// Operações por tipo para otimização
+    /// Operations grouped by type for optimization.
     typed_queues: Arc<RwLock<TypedQueues>>,
-    /// Configuração do processador
+    /// Processor configuration.
     batch_config: BatchConfig,
-    /// Estatísticas de performance
+    /// Performance statistics.
     stats: Arc<RwLock<BatchStats>>,
-    /// Canal para controle de processamento
+    /// Channel for processing control.
     #[allow(dead_code)]
     control_sender: mpsc::Sender<BatchControl>,
-    /// Semáforo para controle de concorrência
+    /// Semaphore for concurrency control.
     processing_semaphore: Arc<Semaphore>,
-    /// Histórico de operações para otimização
+    /// Operation history for optimization.
     operation_history: Arc<RwLock<OperationHistory>>,
-    /// Backend Iroh para operações iroh
+    /// Iroh backend for iroh operations.
     backend: Arc<crate::p2p::network::core::IrohBackend>,
 }
 
-/// Operação em batch
+/// A batched operation.
 #[derive(Debug)]
 pub struct BatchOperation {
-    /// ID único da operação
+    /// Unique operation ID.
     pub id: String,
-    /// Tipo da operação
+    /// Operation type.
     pub operation_type: OperationType,
-    /// Dados da operação
+    /// Operation data.
     pub data: OperationData,
-    /// Timestamp de criação
+    /// Creation timestamp.
     pub created_at: Instant,
-    /// Prioridade (0-10)
+    /// Priority (0-10).
     pub priority: u8,
-    /// Canal para retorno do resultado
+    /// Channel for returning the result.
     pub result_sender: oneshot::Sender<Result<OperationResult>>,
-    /// Estimativa de recursos necessários
+    /// Estimate of the required resources.
     pub resource_estimate: ResourceEstimate,
 }
 
-/// Tipos de operação suportadas pelo Iroh
+/// Operation types supported by Iroh.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum OperationType {
-    /// Adicionar dados ao Iroh
+    /// Add data to Iroh.
     Add,
-    /// Recuperar dados do Iroh
+    /// Retrieve data from Iroh.
     Get,
-    /// Fixar conteúdo (permanente via Tags)
+    /// Pin content (permanent via Tags).
     Pin,
-    /// Desfixar conteúdo (remove Tag)
+    /// Unpin content (removes the Tag).
     Unpin,
-    /// Publicar no PubSub (iroh-gossip)
+    /// Publish to PubSub (iroh-gossip).
     PubSubPublish,
 }
 
-/// Dados da operação Iroh
+/// Iroh operation data.
 #[derive(Debug)]
 pub enum OperationData {
-    /// Dados para adicionar ao Iroh
+    /// Data to add to Iroh.
     AddData { data: Bytes, options: AddOptions },
-    /// Hash para recuperar do Iroh
+    /// Hash to retrieve from Iroh.
     GetHash { hash: String, options: GetOptions },
-    /// Hash para fixar (criar Tag permanente)
+    /// Hash to pin (create a permanent Tag).
     PinHash { hash: String, options: PinOptions },
-    /// Hash para desfixar (remover Tag)
+    /// Hash to unpin (remove the Tag).
     UnpinHash { hash: String },
-    /// Dados para publicar via iroh-gossip
+    /// Data to publish via iroh-gossip.
     PubSubData { topic: String, data: Bytes },
 }
 
-/// Resultado de operação Iroh
+/// Iroh operation result.
 #[derive(Debug)]
 pub enum OperationResult {
-    /// Resultado de Add (Hash do blob adicionado)
+    /// Add result (hash of the added blob).
     AddResult(AddResponse),
-    /// Resultado de Get (dados recuperados)
+    /// Get result (retrieved data).
     GetResult(Bytes),
-    /// Resultado de Pin (sucesso/falha)
+    /// Pin result (success/failure).
     PinResult(bool),
-    /// Resultado de Unpin (sucesso/falha)
+    /// Unpin result (success/failure).
     UnpinResult(bool),
-    /// Resultado de PubSub (sucesso/falha)
+    /// PubSub result (success/failure).
     PubSubResult(bool),
 }
 
-/// Filas organizadas por tipo de operação Iroh
+/// Queues organized by Iroh operation type.
 #[derive(Debug, Default)]
 pub struct TypedQueues {
-    /// Operações de adição de blobs
+    /// Blob add operations.
     add_queue: VecDeque<BatchOperation>,
-    /// Operações de recuperação de blobs
+    /// Blob retrieval operations.
     get_queue: VecDeque<BatchOperation>,
-    /// Operações de pin (gerenciamento de Tags)
+    /// Pin operations (Tag management).
     pin_queue: VecDeque<BatchOperation>,
-    /// Operações PubSub (iroh-gossip)
+    /// PubSub operations (iroh-gossip).
     pubsub_queue: VecDeque<BatchOperation>,
 }
 
-/// Opções para operação Add
+/// Options for the Add operation.
 #[derive(Debug, Clone, Default)]
 pub struct AddOptions {
-    /// Pin automaticamente
+    /// Pin automatically.
     pub pin: bool,
-    /// Wrap in directory
+    /// Wrap in directory.
     pub wrap_with_directory: bool,
-    /// Chunker a usar
+    /// Chunker to use.
     pub chunker: Option<String>,
 }
 
-/// Opções para operação Get
+/// Options for the Get operation.
 #[derive(Debug, Clone, Default)]
 pub struct GetOptions {
-    /// Timeout para operação
+    /// Timeout for the operation.
     pub timeout: Option<Duration>,
-    /// Tentar peers específicos
+    /// Try specific peers.
     pub preferred_peers: Vec<String>,
 }
 
-/// Opções para operação Pin
+/// Options for the Pin operation.
 #[derive(Debug, Clone, Default)]
 pub struct PinOptions {
-    /// Tipo de pin (direto ou recursivo)
+    /// Pin type (direct or recursive).
     pub recursive: bool,
-    /// Progresso callback
+    /// Progress callback.
     pub progress: bool,
 }
 
-/// Estimativa de recursos para operação
+/// Resource estimate for an operation.
 #[derive(Debug, Clone)]
 pub struct ResourceEstimate {
-    /// CPU estimado (0.0-1.0)
+    /// Estimated CPU (0.0-1.0).
     pub cpu_usage: f64,
-    /// Memória estimada (bytes)
+    /// Estimated memory (bytes).
     pub memory_bytes: u64,
-    /// I/O estimado (bytes)
+    /// Estimated I/O (bytes).
     pub io_bytes: u64,
-    /// Largura de banda estimada (bytes)
+    /// Estimated bandwidth (bytes).
     pub bandwidth_bytes: u64,
-    /// Tempo estimado (ms)
+    /// Estimated time (ms).
     pub estimated_time_ms: u64,
 }
 
-/// Configuração do processador de batch
+/// Batch processor configuration.
 #[derive(Debug, Clone)]
 pub struct BatchConfig {
-    /// Tamanho máximo do batch
+    /// Maximum batch size.
     pub max_batch_size: usize,
-    /// Timeout máximo para formar batch (ms)
+    /// Maximum wait time to form a batch (ms).
     pub max_batch_wait_ms: u64,
-    /// Número máximo de threads de processamento
+    /// Maximum number of processing threads.
     pub max_processing_threads: usize,
-    /// Threshold de memória para flush (bytes)
+    /// Memory threshold for flushing (bytes).
     pub memory_flush_threshold: u64,
-    /// Habilitar otimizações inteligentes
+    /// Enable intelligent optimizations.
     pub enable_smart_batching: bool,
-    /// Habilitar compressão de batch
+    /// Enable batch compression.
     pub enable_batch_compression: bool,
-    /// Tamanho mínimo para compressão (bytes)
+    /// Minimum size for compression (bytes).
     pub compression_threshold: usize,
 }
 
-/// Estatísticas de batch
+/// Batch statistics.
 #[derive(Debug, Clone, Default)]
 pub struct BatchStats {
-    /// Total de operações processadas
+    /// Total operations processed.
     pub total_operations: u64,
-    /// Operações processadas em batch
+    /// Operations processed in a batch.
     pub batched_operations: u64,
-    /// Operações processadas individualmente
+    /// Operations processed individually.
     pub individual_operations: u64,
-    /// Tamanho médio de batch
+    /// Average batch size.
     pub avg_batch_size: f64,
-    /// Tempo médio de processamento de batch (ms)
+    /// Average batch processing time (ms).
     pub avg_batch_processing_time_ms: f64,
-    /// Throughput (operações/segundo)
+    /// Throughput (operations/second).
     pub operations_per_second: f64,
-    /// Eficiência de batch (0.0-1.0)
+    /// Batch efficiency (0.0-1.0).
     pub batch_efficiency: f64,
-    /// Bytes processados
+    /// Bytes processed.
     pub total_bytes_processed: u64,
-    /// Economia de recursos (0.0-1.0)
+    /// Resource savings (0.0-1.0).
     pub resource_savings: f64,
 }
 
-/// Controles de processamento
+/// Processing controls.
 #[derive(Debug)]
 pub enum BatchControl {
-    /// Forçar processamento imediato
+    /// Force immediate processing.
     FlushNow,
-    /// Pausar processamento
+    /// Pause processing.
     Pause,
-    /// Resumir processamento
+    /// Resume processing.
     Resume,
-    /// Parar processador
+    /// Stop the processor.
     Stop,
-    /// Ajustar configuração
+    /// Adjust the configuration.
     UpdateConfig(BatchConfig),
 }
 
-/// Histórico de operações para otimização
+/// Operation history for optimization.
 #[derive(Debug, Default)]
 pub struct OperationHistory {
-    /// Padrões de operação por tipo
+    /// Operation patterns per type.
     operation_patterns: HashMap<OperationType, OperationPattern>,
-    /// Correlações entre operações
+    /// Correlations between operations.
     #[allow(dead_code)]
     operation_correlations: HashMap<String, Vec<OperationType>>,
-    /// Timing histórico
+    /// Timing history.
     timing_history: VecDeque<TimingEntry>,
 }
 
-/// Padrão de operação identificado
+/// An identified operation pattern.
 #[derive(Debug, Clone)]
 pub struct OperationPattern {
-    /// Frequência média
+    /// Average frequency.
     pub avg_frequency: f64,
-    /// Tamanho médio de dados
+    /// Average data size.
     pub avg_data_size: u64,
-    /// Tempo médio de processamento
+    /// Average processing time.
     pub avg_processing_time_ms: f64,
-    /// Horários de pico
+    /// Peak hours.
     pub peak_hours: Vec<u8>,
-    /// Correlação com outras operações
+    /// Correlation with other operations.
     pub correlated_operations: Vec<OperationType>,
 }
 
-/// Entrada de timing
+/// A timing entry.
 #[derive(Debug, Clone)]
 pub struct TimingEntry {
-    /// Tipo de operação
+    /// Operation type.
     pub operation_type: OperationType,
-    /// Timestamp
+    /// Timestamp.
     pub timestamp: Instant,
-    /// Duração (ms)
+    /// Duration (ms).
     pub duration_ms: f64,
-    /// Tamanho dos dados
+    /// Data size.
     pub data_size: u64,
 }
 
@@ -258,16 +258,16 @@ impl Default for BatchConfig {
             max_batch_size: 100,
             max_batch_wait_ms: 50,
             max_processing_threads: 8,
-            memory_flush_threshold: 64 * 1024 * 1024, // 64MB
+            memory_flush_threshold: 64 * 1024 * 1024, // 64 MB
             enable_smart_batching: true,
             enable_batch_compression: true,
-            compression_threshold: 1024, // 1KB
+            compression_threshold: 1024, // 1 KB
         }
     }
 }
 
 impl BatchProcessor {
-    /// Cria novo processador de batch com IrohBackend
+    /// Creates a new batch processor with an IrohBackend.
     pub fn new(
         batch_config: BatchConfig,
         backend: Arc<crate::p2p::network::core::IrohBackend>,
@@ -286,7 +286,7 @@ impl BatchProcessor {
         }
     }
 
-    /// Adiciona operação para processamento em batch
+    /// Adds an operation for batch processing.
     #[instrument(skip(self, data))]
     pub async fn add_batch_operation(
         &self,
@@ -306,7 +306,7 @@ impl BatchProcessor {
             resource_estimate: self.estimate_resources(&operation_type).await,
         };
 
-        // Adiciona à fila apropriada baseada no tipo
+        // Add it to the appropriate queue based on the type.
         if self.batch_config.enable_smart_batching {
             self.add_to_typed_queue(operation).await?;
         } else {
@@ -314,16 +314,16 @@ impl BatchProcessor {
             pending.push_back(operation);
         }
 
-        // Verifica se deve processar imediatamente
+        // Check whether it should be processed immediately.
         self.check_immediate_processing().await?;
 
-        // Aguarda resultado
+        // Wait for the result.
         result_receiver
             .await
-            .map_err(|e| GuardianError::Other(format!("Falha ao receber resultado: {}", e)))?
+            .map_err(|e| GuardianError::Other(format!("Failed to receive result: {}", e)))?
     }
 
-    /// Adiciona operação à fila tipada apropriada
+    /// Adds an operation to the appropriate typed queue.
     async fn add_to_typed_queue(&self, operation: BatchOperation) -> Result<()> {
         let mut queues = self.typed_queues.write().await;
 
@@ -337,13 +337,13 @@ impl BatchProcessor {
         }
 
         debug!(
-            "Operação adicionada à fila tipada: {:?}",
+            "Operation added to the typed queue: {:?}",
             operation_type_debug
         );
         Ok(())
     }
 
-    /// Verifica se deve processar imediatamente
+    /// Checks whether it should be processed immediately.
     async fn check_immediate_processing(&self) -> Result<()> {
         if self.batch_config.enable_smart_batching {
             self.check_smart_processing().await
@@ -352,11 +352,11 @@ impl BatchProcessor {
         }
     }
 
-    /// Verificação inteligente para processamento
+    /// Intelligent processing check.
     async fn check_smart_processing(&self) -> Result<()> {
         let queues = self.typed_queues.read().await;
 
-        // Verifica cada tipo de fila
+        // Check each queue type.
         let add_ready = queues.add_queue.len() >= self.batch_config.max_batch_size / 4;
         let get_ready = queues.get_queue.len() >= self.batch_config.max_batch_size / 2;
         let pin_ready = queues.pin_queue.len() >= self.batch_config.max_batch_size / 3;
@@ -369,7 +369,7 @@ impl BatchProcessor {
         Ok(())
     }
 
-    /// Verificação simples para processamento
+    /// Simple processing check.
     async fn check_simple_processing(&self) -> Result<()> {
         let pending_count = self.pending_operations.lock().await.len();
 
@@ -380,21 +380,21 @@ impl BatchProcessor {
         Ok(())
     }
 
-    /// Processa batches prontos de forma inteligente
+    /// Processes ready batches intelligently.
     async fn process_ready_batches(&self) -> Result<()> {
         let _permit = self
             .processing_semaphore
             .acquire()
             .await
-            .map_err(|e| GuardianError::Other(format!("Falha ao adquirir semáforo: {}", e)))?;
+            .map_err(|e| GuardianError::Other(format!("Failed to acquire semaphore: {}", e)))?;
 
         let mut batches_to_process = Vec::new();
 
-        // Coleta batches prontos de cada tipo
+        // Collect ready batches of each type.
         {
             let mut queues = self.typed_queues.write().await;
 
-            // Processa operações Add
+            // Process Add operations.
             if queues.add_queue.len() >= self.batch_config.max_batch_size / 4 {
                 let batch =
                     self.extract_batch(&mut queues.add_queue, self.batch_config.max_batch_size / 4);
@@ -403,7 +403,7 @@ impl BatchProcessor {
                 }
             }
 
-            // Processa operações Get
+            // Process Get operations.
             if queues.get_queue.len() >= self.batch_config.max_batch_size / 2 {
                 let batch =
                     self.extract_batch(&mut queues.get_queue, self.batch_config.max_batch_size / 2);
@@ -412,10 +412,10 @@ impl BatchProcessor {
                 }
             }
 
-            // Similar para outros tipos...
+            // Similar for other types...
         }
 
-        // Processa cada batch
+        // Process each batch.
         for (batch_type, batch) in batches_to_process {
             self.process_typed_batch(batch_type, batch).await?;
         }
@@ -423,7 +423,7 @@ impl BatchProcessor {
         Ok(())
     }
 
-    /// Extrai batch de uma fila
+    /// Extracts a batch from a queue.
     fn extract_batch(
         &self,
         queue: &mut VecDeque<BatchOperation>,
@@ -431,11 +431,11 @@ impl BatchProcessor {
     ) -> Vec<BatchOperation> {
         let mut batch = Vec::with_capacity(max_size);
 
-        // Ordena por prioridade
+        // Sort by priority.
         let mut temp_vec: Vec<_> = queue.drain(..).collect();
         temp_vec.sort_by_key(|operation| std::cmp::Reverse(operation.priority));
 
-        // Pega os primeiros max_size
+        // Take the first max_size.
         for operation in temp_vec.into_iter().take(max_size) {
             batch.push(operation);
         }
@@ -443,7 +443,7 @@ impl BatchProcessor {
         batch
     }
 
-    /// Processa batch de um tipo específico
+    /// Processes a batch of a specific type.
     async fn process_typed_batch(
         &self,
         batch_type: OperationType,
@@ -453,7 +453,7 @@ impl BatchProcessor {
         let start_time = Instant::now();
 
         debug!(
-            "Processando batch de {} operações do tipo {:?}",
+            "Processing batch of {} operations of type {:?}",
             batch_size, batch_type
         );
 
@@ -463,14 +463,14 @@ impl BatchProcessor {
             OperationType::Pin => self.process_pin_batch(batch).await?,
             OperationType::PubSubPublish => self.process_pubsub_batch(batch).await?,
             _ => {
-                // Processamento individual para tipos não otimizados
+                // Individual processing for non-optimized types.
                 for operation in batch {
                     self.process_individual_operation(operation).await?;
                 }
             }
         }
 
-        // Atualiza estatísticas
+        // Update statistics.
         let processing_time = start_time.elapsed();
         let mut stats = self.stats.write().await;
         stats.batched_operations += batch_size as u64;
@@ -479,7 +479,7 @@ impl BatchProcessor {
             (stats.avg_batch_processing_time_ms + processing_time.as_millis() as f64) / 2.0;
 
         info!(
-            "Batch de {} operações {:?} processado em {:.2}ms",
+            "Batch of {} {:?} operations processed in {:.2}ms",
             batch_size,
             batch_type,
             processing_time.as_millis()
@@ -488,9 +488,9 @@ impl BatchProcessor {
         Ok(())
     }
 
-    /// Processa batch de operações Add
+    /// Processes a batch of Add operations.
     async fn process_add_batch(&self, batch: Vec<BatchOperation>) -> Result<()> {
-        // Otimização: agrupa dados pequenos em um único blob
+        // Optimization: group small data into a single blob.
         let mut combined_data = Vec::new();
         let mut data_map = HashMap::new();
 
@@ -507,16 +507,16 @@ impl BatchProcessor {
             }
         }
 
-        // Se temos dados suficientes, processa como blob único
+        // If we have enough data, process it as a single blob.
         if combined_data.len() > self.batch_config.compression_threshold && batch.len() > 1 {
-            // Processa como blob combinado
+            // Process it as a combined blob.
             let combined_blob = Bytes::from(combined_data);
             let combined_result = self.add_operation(combined_blob).await?;
 
-            // Distribui resultados
+            // Distribute the results.
             for operation in batch {
                 if let Some((start, end, _original_data)) = data_map.get(&operation.id) {
-                    // Cria resposta individual baseada no resultado combinado
+                    // Create an individual response based on the combined result.
                     let individual_result = AddResponse {
                         name: format!("{}_{}", combined_result.name, operation.id),
                         hash: format!("{}_{}", combined_result.hash, start),
@@ -529,7 +529,7 @@ impl BatchProcessor {
                 }
             }
         } else {
-            // Processa individualmente
+            // Process individually.
             for operation in batch {
                 self.process_individual_operation(operation).await?;
             }
@@ -538,9 +538,9 @@ impl BatchProcessor {
         Ok(())
     }
 
-    /// Processa batch de operações Get
+    /// Processes a batch of Get operations.
     async fn process_get_batch(&self, batch: Vec<BatchOperation>) -> Result<()> {
-        // Otimização: faz requests paralelos
+        // Optimization: make parallel requests.
         let mut futures = Vec::new();
 
         for operation in batch {
@@ -554,7 +554,7 @@ impl BatchProcessor {
             }
         }
 
-        // Executa todas as operações em paralelo
+        // Run all operations in parallel.
         let results = futures::future::join_all(futures).await;
 
         for (operation, result) in results {
@@ -573,9 +573,9 @@ impl BatchProcessor {
         Ok(())
     }
 
-    /// Processa batch de operações Pin
+    /// Processes a batch of Pin operations.
     async fn process_pin_batch(&self, batch: Vec<BatchOperation>) -> Result<()> {
-        // Agrupa pins em uma única operação
+        // Group the pins into a single operation.
         let mut pin_hashes = Vec::new();
 
         for operation in &batch {
@@ -584,10 +584,10 @@ impl BatchProcessor {
             }
         }
 
-        // Executa pin em batch
+        // Run the pins as a batch.
         let batch_result = self.batch_pin_operation(pin_hashes).await?;
 
-        // Distribui resultados
+        // Distribute the results.
         for (i, operation) in batch.into_iter().enumerate() {
             let individual_result = batch_result.get(i).copied().unwrap_or(false);
             let _ = operation
@@ -598,9 +598,9 @@ impl BatchProcessor {
         Ok(())
     }
 
-    /// Processa batch de operações PubSub
+    /// Processes a batch of PubSub operations.
     async fn process_pubsub_batch(&self, batch: Vec<BatchOperation>) -> Result<()> {
-        // Agrupa por tópico
+        // Group by topic.
         let mut topic_groups: HashMap<String, Vec<BatchOperation>> = HashMap::new();
 
         for operation in batch {
@@ -612,7 +612,7 @@ impl BatchProcessor {
             }
         }
 
-        // Processa cada grupo de tópico
+        // Process each topic group.
         for (topic, operations) in topic_groups {
             self.process_pubsub_topic_batch(topic, operations).await?;
         }
@@ -620,20 +620,20 @@ impl BatchProcessor {
         Ok(())
     }
 
-    /// Processa batch de PubSub para um tópico específico
+    /// Processes a PubSub batch for a specific topic.
     async fn process_pubsub_topic_batch(
         &self,
         _topic: String,
         batch: Vec<BatchOperation>,
     ) -> Result<()> {
-        // Combina mensagens do mesmo tópico
+        // Combine messages of the same topic.
         for operation in batch {
             self.process_individual_operation(operation).await?;
         }
         Ok(())
     }
 
-    /// Processa batch pendente (modo simples)
+    /// Processes a pending batch (simple mode).
     async fn process_pending_batch(&self) -> Result<()> {
         let batch = {
             let mut pending = self.pending_operations.lock().await;
@@ -648,12 +648,12 @@ impl BatchProcessor {
         let batch_size = batch.len();
         let start_time = Instant::now();
 
-        // Processa cada operação
+        // Process each operation.
         for operation in batch {
             self.process_individual_operation(operation).await?;
         }
 
-        // Atualiza estatísticas
+        // Update statistics.
         let processing_time = start_time.elapsed();
         let mut stats = self.stats.write().await;
         stats.total_operations += batch_size as u64;
@@ -663,7 +663,7 @@ impl BatchProcessor {
         Ok(())
     }
 
-    /// Processa operação individual
+    /// Processes an individual operation.
     async fn process_individual_operation(&self, operation: BatchOperation) -> Result<()> {
         let start_time = Instant::now();
 
@@ -690,7 +690,7 @@ impl BatchProcessor {
             }
         };
 
-        // Registra timing
+        // Record timing.
         let processing_time = start_time.elapsed();
         self.record_operation_timing(
             operation.operation_type,
@@ -699,53 +699,53 @@ impl BatchProcessor {
         )
         .await;
 
-        // Envia resultado
+        // Send the result.
         let _ = operation.result_sender.send(result);
 
         Ok(())
     }
 
-    /// Operação Add usando IrohBackend
+    /// Add operation using the IrohBackend.
     async fn add_operation(&self, data: Bytes) -> Result<AddResponse> {
         use std::pin::Pin;
         use tokio::io::AsyncRead;
 
-        // Converte Bytes para AsyncRead usando cursor
+        // Convert Bytes into AsyncRead using a cursor.
         let cursor = std::io::Cursor::new(data.to_vec());
         let async_read: Pin<Box<dyn AsyncRead + Send>> = Box::pin(cursor);
 
-        // Chama o método add do IrohBackend
+        // Call the IrohBackend's add method.
         let add_result = self
             .backend
             .add(async_read)
             .await
-            .map_err(|e| GuardianError::Other(format!("Erro no IrohBackend.add(): {}", e)))?;
+            .map_err(|e| GuardianError::Other(format!("Error in IrohBackend.add(): {}", e)))?;
 
         debug!(
-            "BatchProcessor: Conteúdo adicionado via IrohBackend - Hash: {}, Size: {}",
+            "BatchProcessor: Content added via IrohBackend - Hash: {}, Size: {}",
             add_result.hash, add_result.size
         );
 
         Ok(add_result)
     }
 
-    /// Operação Get usando IrohBackend
+    /// Get operation using the IrohBackend.
     async fn get_operation(&self, hash: String) -> Result<Bytes> {
         use tokio::io::AsyncReadExt;
 
-        // Chama o método cat do IrohBackend
+        // Call the IrohBackend's cat method.
         let mut async_read = self.backend.cat(&hash).await.map_err(|e| {
-            GuardianError::Other(format!("Erro no IrohBackend.cat({}): {}", hash, e))
+            GuardianError::Other(format!("Error in IrohBackend.cat({}): {}", hash, e))
         })?;
 
-        // Lê todos os dados do stream
+        // Read all data from the stream.
         let mut buffer = Vec::new();
         async_read.read_to_end(&mut buffer).await.map_err(|e| {
-            GuardianError::Other(format!("Erro ao ler dados do Hash {}: {}", hash, e))
+            GuardianError::Other(format!("Error reading data for Hash {}: {}", hash, e))
         })?;
 
         debug!(
-            "BatchProcessor: Conteúdo recuperado via IrohBackend - Hash: {}, Size: {} bytes",
+            "BatchProcessor: Content retrieved via IrohBackend - Hash: {}, Size: {} bytes",
             hash,
             buffer.len()
         );
@@ -753,36 +753,36 @@ impl BatchProcessor {
         Ok(Bytes::from(buffer))
     }
 
-    /// Operação Pin usando IrohBackend (cria Tag permanente)
+    /// Pin operation using the IrohBackend (creates a permanent Tag).
     async fn pin_operation(&self, hash: String) -> Result<bool> {
-        // Chama o método pin_add do IrohBackend
+        // Call the IrohBackend's pin_add method.
         match self.backend.pin_add(&hash).await {
             Ok(_) => {
                 debug!(
-                    "BatchProcessor: Conteúdo fixado com sucesso via IrohBackend - Hash: {}",
+                    "BatchProcessor: Content pinned successfully via IrohBackend - Hash: {}",
                     hash
                 );
                 Ok(true)
             }
             Err(e) => {
                 warn!(
-                    "BatchProcessor: Erro ao fixar conteúdo via IrohBackend - Hash: {}, Erro: {}",
+                    "BatchProcessor: Error pinning content via IrohBackend - Hash: {}, Error: {}",
                     hash, e
                 );
-                // Retorna false em vez de erro para manter compatibilidade com batch
+                // Return false instead of an error to keep batch compatibility.
                 Ok(false)
             }
         }
     }
 
-    /// Operação Pin em batch usando IrohBackend
+    /// Batch Pin operation using the IrohBackend.
     async fn batch_pin_operation(&self, hashes: Vec<String>) -> Result<Vec<bool>> {
         debug!(
-            "BatchProcessor: Processando {} operações de pin em batch",
+            "BatchProcessor: Processing {} pin operations in a batch",
             hashes.len()
         );
 
-        // Executa pins em paralelo para otimização de throughput
+        // Run the pins in parallel for throughput optimization.
         let pin_futures: Vec<_> = hashes
             .iter()
             .map(|hash| {
@@ -791,11 +791,11 @@ impl BatchProcessor {
                 async move {
                     match backend.pin_add(&hash_clone).await {
                         Ok(_) => {
-                            debug!("Batch pin bem-sucedido: {}", hash_clone);
+                            debug!("Batch pin succeeded: {}", hash_clone);
                             true
                         }
                         Err(e) => {
-                            warn!("Batch pin falhou para {}: {}", hash_clone, e);
+                            warn!("Batch pin failed for {}: {}", hash_clone, e);
                             false
                         }
                     }
@@ -803,12 +803,12 @@ impl BatchProcessor {
             })
             .collect();
 
-        // Aguarda todos os pins em paralelo
+        // Wait for all pins in parallel.
         let results = futures::future::join_all(pin_futures).await;
 
         let successful_pins = results.iter().filter(|&&r| r).count();
         info!(
-            "BatchProcessor: Batch pin concluído - {}/{} bem-sucedidos",
+            "BatchProcessor: Batch pin complete - {}/{} successful",
             successful_pins,
             hashes.len()
         );
@@ -816,40 +816,40 @@ impl BatchProcessor {
         Ok(results)
     }
 
-    /// Operação Unpin usando IrohBackend
+    /// Unpin operation using the IrohBackend.
     async fn unpin_operation(&self, hash: String) -> Result<bool> {
-        // Chama o método pin_rm do IrohBackend
+        // Call the IrohBackend's pin_rm method.
         match self.backend.pin_rm(&hash).await {
             Ok(_) => {
                 debug!(
-                    "BatchProcessor: Conteúdo desfixado com sucesso via IrohBackend - Hash: {}",
+                    "BatchProcessor: Content unpinned successfully via IrohBackend - Hash: {}",
                     hash
                 );
                 Ok(true)
             }
             Err(e) => {
                 warn!(
-                    "BatchProcessor: Erro ao desfixar conteúdo via IrohBackend - Hash: {}, Erro: {}",
+                    "BatchProcessor: Error unpinning content via IrohBackend - Hash: {}, Error: {}",
                     hash, e
                 );
-                // Retorna false em vez de erro para manter compatibilidade com batch
+                // Return false instead of an error to keep batch compatibility.
                 Ok(false)
             }
         }
     }
 
-    /// Operação PubSub usando IrohBackend com iroh-gossip nativo
+    /// PubSub operation using the IrohBackend with native iroh-gossip.
     async fn pubsub_operation(&self, topic: String, data: Bytes) -> Result<bool> {
-        // Cria interface PubSub usando iroh-gossip
-        // self.backend já é Arc<IrohBackend>, então usamos diretamente
+        // Create a PubSub interface using iroh-gossip.
+        // self.backend is already Arc<IrohBackend>, so we use it directly.
         let backend_arc = Arc::clone(&self.backend);
         let pubsub = backend_arc.create_pubsub_interface().await?;
 
-        // Publica mensagem usando o método de conveniência
+        // Publish the message using the convenience method.
         match pubsub.publish_to_topic(&topic, &data).await {
             Ok(_) => {
                 debug!(
-                    "BatchProcessor: Mensagem PubSub publicada via iroh-gossip - Tópico: {}, Size: {} bytes",
+                    "BatchProcessor: PubSub message published via iroh-gossip - Topic: {}, Size: {} bytes",
                     topic,
                     data.len()
                 );
@@ -857,7 +857,7 @@ impl BatchProcessor {
             }
             Err(e) => {
                 warn!(
-                    "BatchProcessor: Erro ao publicar via iroh-gossip - Tópico: {}, Erro: {}",
+                    "BatchProcessor: Error publishing via iroh-gossip - Topic: {}, Error: {}",
                     topic, e
                 );
                 Ok(false)
@@ -865,7 +865,7 @@ impl BatchProcessor {
         }
     }
 
-    /// Estima recursos necessários para uma operação
+    /// Estimates the resources required for an operation.
     async fn estimate_resources(&self, operation_type: &OperationType) -> ResourceEstimate {
         match operation_type {
             OperationType::Add => ResourceEstimate {
@@ -899,7 +899,7 @@ impl BatchProcessor {
         }
     }
 
-    /// Registra timing de operação para otimização
+    /// Records operation timing for optimization.
     async fn record_operation_timing(
         &self,
         operation_type: OperationType,
@@ -917,12 +917,12 @@ impl BatchProcessor {
 
         history.timing_history.push_back(timing_entry);
 
-        // Mantém histórico limitado
+        // Keep the history bounded.
         if history.timing_history.len() > 10000 {
             history.timing_history.pop_front();
         }
 
-        // Atualiza padrões
+        // Update the patterns.
         let pattern = history
             .operation_patterns
             .entry(operation_type)
@@ -939,7 +939,7 @@ impl BatchProcessor {
         pattern.avg_data_size = (pattern.avg_data_size + data_size) / 2;
     }
 
-    /// Inicia processador automático de batch
+    /// Starts the automatic batch processor.
     pub fn start_auto_processor(&self) -> tokio::task::JoinHandle<()> {
         let pending_operations = Arc::clone(&self.pending_operations);
         let typed_queues = Arc::clone(&self.typed_queues);
@@ -956,20 +956,20 @@ impl BatchProcessor {
             loop {
                 interval.tick().await;
 
-                // Processa filas tipadas se habilitado
+                // Process the typed queues if enabled.
                 if batch_config.enable_smart_batching {
-                    // Processamento automático das filas tipadas
+                    // Automatic processing of the typed queues.
                     let should_process = {
                         let queues = typed_queues.read().await;
 
-                        // Verifica se alguma fila atingiu limites para processamento
+                        // Check whether any queue has reached the processing limits.
                         let add_ready = queues.add_queue.len() >= batch_config.max_batch_size / 4;
                         let get_ready = queues.get_queue.len() >= batch_config.max_batch_size / 2;
                         let pin_ready = queues.pin_queue.len() >= batch_config.max_batch_size / 3;
                         let pubsub_ready =
                             queues.pubsub_queue.len() >= batch_config.max_batch_size / 6;
 
-                        // Ou verifica timeout das operações mais antigas
+                        // Or check the timeout of the oldest operations.
                         let now = Instant::now();
                         let timeout_threshold =
                             Duration::from_millis(batch_config.max_batch_wait_ms * 2);
@@ -1006,7 +1006,7 @@ impl BatchProcessor {
                     };
 
                     if should_process {
-                        // Processa batches usando semáforo para controlar concorrência
+                        // Process batches using the semaphore to control concurrency.
                         if let Ok(_permit) = processing_semaphore.try_acquire() {
                             let queues_clone = Arc::clone(&typed_queues);
                             let stats_clone = Arc::clone(&stats);
@@ -1024,17 +1024,17 @@ impl BatchProcessor {
                                 )
                                 .await
                                 {
-                                    debug!(target: "batch_processor", error = %e, "Erro no processamento automático");
+                                    debug!(target: "batch_processor", error = %e, "Error in automatic processing");
                                 }
-                                // Permit é automaticamente liberado quando sai de escopo
+                                // The permit is automatically released when it goes out of scope.
                             });
                         }
                     }
                 } else {
-                    // Processa fila simples
+                    // Process the simple queue.
                     let pending_count = pending_operations.lock().await.len();
                     if pending_count > 0 {
-                        // Trigger processing usando semáforo
+                        // Trigger processing using the semaphore.
                         if let Ok(_permit) = processing_semaphore.try_acquire() {
                             let ops_clone = Arc::clone(&pending_operations);
                             let stats_clone = Arc::clone(&stats);
@@ -1050,7 +1050,7 @@ impl BatchProcessor {
                                 )
                                 .await
                                 {
-                                    debug!(target: "batch_processor", error = %e, "Erro no processamento simples");
+                                    debug!(target: "batch_processor", error = %e, "Error in simple processing");
                                 }
                             });
                         }
@@ -1060,7 +1060,7 @@ impl BatchProcessor {
         })
     }
 
-    /// Processa batches automáticos das filas tipadas com IrohBackend
+    /// Processes automatic batches from the typed queues with the IrohBackend.
     async fn process_automatic_typed_batches(
         typed_queues: Arc<RwLock<TypedQueues>>,
         stats: Arc<RwLock<BatchStats>>,
@@ -1070,11 +1070,11 @@ impl BatchProcessor {
     ) -> Result<()> {
         let mut batches_to_process = Vec::new();
 
-        // Extrai batches de cada fila que precisa ser processada
+        // Extract batches from each queue that needs processing.
         {
             let mut queues = typed_queues.write().await;
 
-            // Processamento Add
+            // Add processing.
             if !queues.add_queue.is_empty()
                 && (queues.add_queue.len() >= batch_config.max_batch_size / 4
                     || Self::has_old_operations(&queues.add_queue, batch_config.max_batch_wait_ms))
@@ -1086,7 +1086,7 @@ impl BatchProcessor {
                 }
             }
 
-            // Processamento Get
+            // Get processing.
             if !queues.get_queue.is_empty()
                 && (queues.get_queue.len() >= batch_config.max_batch_size / 2
                     || Self::has_old_operations(&queues.get_queue, batch_config.max_batch_wait_ms))
@@ -1098,7 +1098,7 @@ impl BatchProcessor {
                 }
             }
 
-            // Processamento Pin
+            // Pin processing.
             if !queues.pin_queue.is_empty()
                 && (queues.pin_queue.len() >= batch_config.max_batch_size / 3
                     || Self::has_old_operations(&queues.pin_queue, batch_config.max_batch_wait_ms))
@@ -1110,7 +1110,7 @@ impl BatchProcessor {
                 }
             }
 
-            // Processamento PubSub
+            // PubSub processing.
             if !queues.pubsub_queue.is_empty() {
                 let pubsub_len = queues.pubsub_queue.len();
                 let batch = Self::extract_operations_static(&mut queues.pubsub_queue, pubsub_len);
@@ -1120,7 +1120,7 @@ impl BatchProcessor {
             }
         }
 
-        // Processa cada batch extraído
+        // Process each extracted batch.
         for (batch_type, batch) in batches_to_process {
             let batch_size = batch.len();
             let start_time = Instant::now();
@@ -1128,10 +1128,10 @@ impl BatchProcessor {
             debug!(target: "batch_processor",
                 batch_type = ?batch_type,
                 batch_size = batch_size,
-                "Processando batch automático"
+                "Processing automatic batch"
             );
 
-            // Processa batch baseado no tipo
+            // Process the batch based on its type.
             match batch_type {
                 OperationType::Add => Self::process_add_batch_static(batch, &backend).await?,
                 OperationType::Get => Self::process_get_batch_static(batch, &backend).await?,
@@ -1142,7 +1142,7 @@ impl BatchProcessor {
                 _ => Self::process_individual_batch_static(batch, &backend).await?,
             }
 
-            // Atualiza estatísticas
+            // Update statistics.
             let processing_time = start_time.elapsed();
             let mut stats_lock = stats.write().await;
             stats_lock.batched_operations += batch_size as u64;
@@ -1156,14 +1156,14 @@ impl BatchProcessor {
                 batch_type = ?batch_type,
                 batch_size = batch_size,
                 processing_time_ms = processing_time.as_millis(),
-                "Batch automático processado com sucesso"
+                "Automatic batch processed successfully"
             );
         }
 
         Ok(())
     }
 
-    /// Processa batch automático simples com IrohBackend
+    /// Processes a simple automatic batch with the IrohBackend.
     async fn process_automatic_simple_batch(
         pending_operations: Arc<Mutex<VecDeque<BatchOperation>>>,
         stats: Arc<RwLock<BatchStats>>,
@@ -1185,13 +1185,13 @@ impl BatchProcessor {
 
         debug!(target: "batch_processor",
             batch_size = batch_size,
-            "Processando batch simples automático"
+            "Processing simple automatic batch"
         );
 
-        // Processa operações individualmente
+        // Process operations individually.
         Self::process_individual_batch_static(batch, &backend).await?;
 
-        // Atualiza estatísticas
+        // Update statistics.
         let processing_time = start_time.elapsed();
         let mut stats_lock = stats.write().await;
         stats_lock.total_operations += batch_size as u64;
@@ -1202,13 +1202,13 @@ impl BatchProcessor {
         info!(target: "batch_processor",
             batch_size = batch_size,
             processing_time_ms = processing_time.as_millis(),
-            "Batch simples automático processado"
+            "Simple automatic batch processed"
         );
 
         Ok(())
     }
 
-    /// Verifica se há operações antigas na fila
+    /// Checks whether there are old operations in the queue.
     fn has_old_operations(queue: &VecDeque<BatchOperation>, max_wait_ms: u64) -> bool {
         if let Some(oldest) = queue.front() {
             let age = Instant::now().saturating_duration_since(oldest.created_at);
@@ -1218,18 +1218,18 @@ impl BatchProcessor {
         }
     }
 
-    /// Extrai operações de uma fila (versão static)
+    /// Extracts operations from a queue (static version).
     fn extract_operations_static(
         queue: &mut VecDeque<BatchOperation>,
         max_size: usize,
     ) -> Vec<BatchOperation> {
         let mut batch = Vec::with_capacity(max_size);
 
-        // Ordena por prioridade
+        // Sort by priority.
         let mut temp_vec: Vec<_> = queue.drain(..).collect();
         temp_vec.sort_by_key(|operation| std::cmp::Reverse(operation.priority));
 
-        // Pega os primeiros max_size
+        // Take the first max_size.
         for operation in temp_vec.into_iter().take(max_size) {
             batch.push(operation);
         }
@@ -1237,7 +1237,7 @@ impl BatchProcessor {
         batch
     }
 
-    /// Processa batch de Add (versão static) com IrohBackend
+    /// Processes an Add batch (static version) with the IrohBackend.
     async fn process_add_batch_static(
         batch: Vec<BatchOperation>,
         backend: &crate::p2p::network::core::IrohBackend,
@@ -1248,7 +1248,7 @@ impl BatchProcessor {
         Ok(())
     }
 
-    /// Processa batch de Get (versão static) com IrohBackend
+    /// Processes a Get batch (static version) with the IrohBackend.
     async fn process_get_batch_static(
         batch: Vec<BatchOperation>,
         backend: &crate::p2p::network::core::IrohBackend,
@@ -1259,7 +1259,7 @@ impl BatchProcessor {
         Ok(())
     }
 
-    /// Processa batch de Pin (versão static) com IrohBackend
+    /// Processes a Pin batch (static version) with the IrohBackend.
     async fn process_pin_batch_static(
         batch: Vec<BatchOperation>,
         backend: &crate::p2p::network::core::IrohBackend,
@@ -1270,7 +1270,7 @@ impl BatchProcessor {
         Ok(())
     }
 
-    /// Processa batch de PubSub (versão static) com IrohBackend
+    /// Processes a PubSub batch (static version) with the IrohBackend.
     async fn process_pubsub_batch_static(
         batch: Vec<BatchOperation>,
         backend: &crate::p2p::network::core::IrohBackend,
@@ -1281,7 +1281,7 @@ impl BatchProcessor {
         Ok(())
     }
 
-    /// Processa batch individual (versão static) com IrohBackend
+    /// Processes an individual batch (static version) with the IrohBackend.
     async fn process_individual_batch_static(
         batch: Vec<BatchOperation>,
         backend: &crate::p2p::network::core::IrohBackend,
@@ -1292,7 +1292,7 @@ impl BatchProcessor {
         Ok(())
     }
 
-    /// Processa operação individual (versão static) com IrohBackend
+    /// Processes an individual operation (static version) with the IrohBackend.
     async fn process_individual_operation_static(
         operation: BatchOperation,
         backend: &crate::p2p::network::core::IrohBackend,
@@ -1313,7 +1313,7 @@ impl BatchProcessor {
                     .map(OperationResult::PubSubResult)
             }
             _ => Err(GuardianError::Other(
-                "Operação não implementada".to_string(),
+                "Operation not implemented".to_string(),
             )),
         };
 
@@ -1321,7 +1321,7 @@ impl BatchProcessor {
         Ok(())
     }
 
-    /// Operação Add static usando IrohBackend
+    /// Static Add operation using the IrohBackend.
     async fn add_operation_static(
         data: Bytes,
         backend: &crate::p2p::network::core::IrohBackend,
@@ -1335,10 +1335,10 @@ impl BatchProcessor {
         backend
             .add(async_read)
             .await
-            .map_err(|e| GuardianError::Other(format!("Erro no add: {}", e)))
+            .map_err(|e| GuardianError::Other(format!("Error in add: {}", e)))
     }
 
-    /// Operação Get static usando IrohBackend
+    /// Static Get operation using the IrohBackend.
     async fn get_operation_static(
         hash: String,
         backend: &crate::p2p::network::core::IrohBackend,
@@ -1348,18 +1348,18 @@ impl BatchProcessor {
         let mut async_read = backend
             .cat(&hash)
             .await
-            .map_err(|e| GuardianError::Other(format!("Erro no cat para {}: {}", hash, e)))?;
+            .map_err(|e| GuardianError::Other(format!("Error in cat for {}: {}", hash, e)))?;
 
         let mut buffer = Vec::new();
         async_read
             .read_to_end(&mut buffer)
             .await
-            .map_err(|e| GuardianError::Other(format!("Erro ao ler dados: {}", e)))?;
+            .map_err(|e| GuardianError::Other(format!("Error reading data: {}", e)))?;
 
         Ok(Bytes::from(buffer))
     }
 
-    /// Operação Pin static usando IrohBackend
+    /// Static Pin operation using the IrohBackend.
     async fn pin_operation_static(
         hash: String,
         backend: &crate::p2p::network::core::IrohBackend,
@@ -1367,27 +1367,27 @@ impl BatchProcessor {
         backend.pin_add(&hash).await.map(|_| true).or(Ok(false))
     }
 
-    /// Operação PubSub static - não suportada (requer Arc)
+    /// Static PubSub operation - not supported (requires Arc).
     async fn pubsub_operation_static(
         _topic: String,
         _data: Bytes,
         _iroh_backend: &crate::p2p::network::core::IrohBackend,
     ) -> Result<bool> {
-        warn!("Operação PubSub não suportada em contexto static");
+        warn!("PubSub operation not supported in a static context");
         Ok(false)
     }
 
-    /// Obtém estatísticas atuais
+    /// Returns the current statistics.
     pub async fn get_stats(&self) -> BatchStats {
         let stats = self.stats.read().await;
         let mut stats_copy = stats.clone();
 
-        // Calcula eficiência
+        // Compute efficiency.
         if stats_copy.total_operations > 0 {
             stats_copy.batch_efficiency =
                 stats_copy.batched_operations as f64 / stats_copy.total_operations as f64;
-            // operations_per_second é atualizado durante o processamento de batches
-            // Não recalculamos aqui para evitar problemas com tempo
+            // operations_per_second is updated during batch processing.
+            // We do not recompute it here to avoid timing issues.
         }
 
         stats_copy

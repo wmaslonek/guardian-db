@@ -103,7 +103,7 @@ use guardian_db::{
         EventLogStore,
     },
 };
-use iroh::NodeId;
+use iroh::EndpointId as NodeId;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
@@ -511,13 +511,9 @@ fn format_file_size(bytes: u64) -> String {
 /// `stage` goes from 0 to `total` (inclusive).
 fn print_progress_bar(stage: usize, total: usize, label: &str) {
     let bar_width = 20;
-    let filled = if total > 0 {
-        (stage * bar_width) / total
-    } else {
-        0
-    };
+    let filled = (stage * bar_width).checked_div(total).unwrap_or(0);
     let empty = bar_width - filled;
-    let pct = if total > 0 { (stage * 100) / total } else { 0 };
+    let pct = (stage * 100).checked_div(total).unwrap_or(0);
     let bar = format!("{}{}", "█".repeat(filled), "░".repeat(empty));
     // Clears the line and rewrites
     print!("\r{}\r", " ".repeat(80));
@@ -2114,11 +2110,9 @@ async fn group_chat_mode(state: &mut ChatState, group_idx: usize, _theme: &Color
                 KeyEvent {
                     code: KeyCode::Backspace,
                     ..
-                } => {
-                    if input_buf.pop().is_some() {
-                        print!("\x08 \x08");
-                        std::io::stdout().flush().ok();
-                    }
+                } if input_buf.pop().is_some() => {
+                    print!("\x08 \x08");
+                    std::io::stdout().flush().ok();
                 }
                 KeyEvent {
                     code: KeyCode::Char('c'),
@@ -2478,11 +2472,9 @@ async fn chat_mode(state: &mut ChatState, contact_idx: usize, _theme: &ColorfulT
                 KeyEvent {
                     code: KeyCode::Backspace,
                     ..
-                } => {
-                    if input_buf.pop().is_some() {
-                        print!("\x08 \x08");
-                        std::io::stdout().flush().ok();
-                    }
+                } if input_buf.pop().is_some() => {
+                    print!("\x08 \x08");
+                    std::io::stdout().flush().ok();
                 }
                 KeyEvent {
                     code: KeyCode::Char('c'),

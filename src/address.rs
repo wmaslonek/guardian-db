@@ -3,25 +3,25 @@ use iroh_blobs::Hash;
 use std::fmt;
 
 pub trait Address: fmt::Display + fmt::Debug + Send + Sync {
-    /// Retorna o hash raiz do banco de dados.
+    /// Returns the database's root hash.
     fn get_root(&self) -> Hash;
 
-    /// Retorna o caminho do banco de dados.
+    /// Returns the database path.
     fn get_path(&self) -> &str;
 
-    /// Helper method for equality comparison
+    /// Helper method for equality comparison.
     fn equals(&self, other: &dyn Address) -> bool;
 }
 
-/// SimpleAddress é uma implementação básica da trait Address
-/// para fins de teste e prototipagem
+/// SimpleAddress is a basic implementation of the Address trait
+/// for testing and prototyping purposes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SimpleAddress {
     path: String,
 }
 
 impl SimpleAddress {
-    /// Cria um novo SimpleAddress com o caminho especificado
+    /// Creates a new SimpleAddress with the specified path.
     pub fn new<S: Into<String>>(path: S) -> Self {
         Self { path: path.into() }
     }
@@ -29,7 +29,7 @@ impl SimpleAddress {
 
 impl Address for SimpleAddress {
     fn get_root(&self) -> Hash {
-        // Retorna um hash zero para teste
+        // Return a zero hash for testing.
         Hash::from([0u8; 32])
     }
 
@@ -48,6 +48,7 @@ impl fmt::Display for SimpleAddress {
     }
 }
 
+/// A GuardianDB address composed of a root content Hash and an optional path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GuardianDBAddress {
     root: Hash,
@@ -55,12 +56,12 @@ pub struct GuardianDBAddress {
 }
 
 impl GuardianDBAddress {
-    /// Cria um novo GuardianDBAddress com Hash e caminho especificados
+    /// Creates a new GuardianDBAddress with the specified Hash and path.
     pub fn new(root: Hash, path: String) -> Self {
         Self { root, path }
     }
 
-    /// Cria um GuardianDBAddress apenas com Hash (sem caminho)
+    /// Creates a GuardianDBAddress with only a Hash (no path).
     pub fn from_hash(root: Hash) -> Self {
         Self {
             root,
@@ -68,12 +69,12 @@ impl GuardianDBAddress {
         }
     }
 
-    /// Verifica se o endereço tem um caminho associado
+    /// Checks whether the address has an associated path.
     pub fn has_path(&self) -> bool {
         !self.path.is_empty()
     }
 
-    /// Retorna o endereço raiz (sem caminho)
+    /// Returns the root address (without a path).
     pub fn root_address(&self) -> Self {
         Self {
             root: self.root,
@@ -81,7 +82,7 @@ impl GuardianDBAddress {
         }
     }
 
-    /// Adiciona ou modifica o caminho do endereço
+    /// Adds or modifies the address path.
     pub fn with_path<P: Into<String>>(mut self, path: P) -> Self {
         self.path = path.into();
         self
@@ -102,7 +103,7 @@ impl Address for GuardianDBAddress {
     }
 }
 
-/// Converte o endereço para sua representação em string, como "/GuardianDB/{hex_hash}/caminho".
+/// Converts the address to its string representation, such as "/GuardianDB/{hex_hash}/path".
 impl fmt::Display for GuardianDBAddress {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let base = format!("/GuardianDB/{}", hex::encode(self.root.as_bytes()));
@@ -114,49 +115,49 @@ impl fmt::Display for GuardianDBAddress {
     }
 }
 
-/// Verifica se uma dada string é um endereço GuardianDB sintaticamente válido.
+/// Checks whether a given string is a syntactically valid GuardianDB address.
 pub fn is_valid(addr: &str) -> Result<()> {
-    // Verifica se a string está vazia
+    // Check whether the string is empty.
     if addr.trim().is_empty() {
         return Err(GuardianError::InvalidArgument(
-            "Endereço não pode estar vazio".to_string(),
+            "Address cannot be empty".to_string(),
         ));
     }
 
-    // Remove o prefixo, se existir. unwrap_or retorna o slice original se o prefixo não for encontrado.
+    // Remove the prefix if it exists. unwrap_or returns the original slice if the prefix is not found.
     let trimmed = addr.strip_prefix("/GuardianDB/").unwrap_or(addr);
 
-    // Verifica se após remover o prefixo ainda há conteúdo
+    // Check whether there is still content after removing the prefix.
     if trimmed.is_empty() {
         return Err(GuardianError::InvalidArgument(
-            "Endereço inválido: apenas o prefixo GuardianDB encontrado".to_string(),
+            "Invalid address: only the GuardianDB prefix found".to_string(),
         ));
     }
 
-    // Pega a primeira parte, que deve ser o hash em hex (64 caracteres).
+    // Take the first part, which should be the hash in hex (64 characters).
     let hash_part = trimmed.split('/').next().ok_or_else(|| {
-        GuardianError::InvalidArgument("Endereço inválido: formato incorreto ou vazio".to_string())
+        GuardianError::InvalidArgument("Invalid address: incorrect or empty format".to_string())
     })?;
 
-    // Verifica se o hash não está vazio
+    // Check whether the hash is not empty.
     if hash_part.is_empty() {
         return Err(GuardianError::InvalidArgument(
-            "Endereço inválido: hash não pode estar vazio".to_string(),
+            "Invalid address: hash cannot be empty".to_string(),
         ));
     }
 
-    // Valida que é um hash hex válido de 64 caracteres (32 bytes)
+    // Validate that it is a valid 64-character hex hash (32 bytes).
     if hash_part.len() != 64 {
         return Err(GuardianError::InvalidArgument(format!(
-            "Endereço inválido: hash deve ter 64 caracteres hex, encontrado {}",
+            "Invalid address: hash must be 64 hex characters, found {}",
             hash_part.len()
         )));
     }
 
-    // Tenta decodificar como hex
+    // Try to decode it as hex.
     hex::decode(hash_part).map_err(|e| {
         GuardianError::InvalidArgument(format!(
-            "Endereço inválido: hash hex inválido '{}': {}",
+            "Invalid address: invalid hex hash '{}': {}",
             hash_part, e
         ))
     })?;
@@ -164,38 +165,35 @@ pub fn is_valid(addr: &str) -> Result<()> {
     Ok(())
 }
 
-/// Analisa uma string e retorna uma instância de `GuardianDBAddress` se for um endereço válido.
+/// Parses a string and returns a `GuardianDBAddress` instance if it is a valid address.
 pub fn parse(addr: &str) -> Result<GuardianDBAddress> {
-    // Primeiro, valida o endereço. Em caso de erro, retorna um erro mais descritivo.
+    // First, validate the address. On error, return a more descriptive error.
     if is_valid(addr).is_err() {
         return Err(GuardianError::InvalidArgument(format!(
-            "Não é um endereço GuardianDB válido: '{}'",
+            "Not a valid GuardianDB address: '{}'",
             addr
         )));
     }
 
     let trimmed = addr.strip_prefix("/GuardianDB/").unwrap_or(addr);
 
-    // Divide a string em no máximo duas partes: o hash e o resto (o caminho).
-    // Isso é mais eficiente que `split` e depois `join`.
+    // Split the string into at most two parts: the hash and the rest (the path).
+    // This is more efficient than `split` followed by `join`.
     let mut parts = trimmed.splitn(2, '/');
 
-    // `is_valid` já garantiu que a primeira parte existe e é um hash válido.
-    // O `unwrap` aqui é seguro.
+    // `is_valid` already ensured that the first part exists and is a valid hash.
+    // The `unwrap` here is safe.
     let hash_part = parts.next().unwrap();
 
-    // Decodifica hex para bytes
+    // Decode hex into bytes.
     let hash_bytes = hex::decode(hash_part).map_err(|e| {
-        GuardianError::InvalidArgument(format!(
-            "Endereço inválido: não foi possível decodificar o hash: {}",
-            e
-        ))
+        GuardianError::InvalidArgument(format!("Invalid address: could not decode the hash: {}", e))
     })?;
 
-    // Converte para array de 32 bytes
+    // Convert into a 32-byte array.
     if hash_bytes.len() != 32 {
         return Err(GuardianError::InvalidArgument(format!(
-            "Endereço inválido: hash deve ter 32 bytes, encontrado {}",
+            "Invalid address: hash must be 32 bytes, found {}",
             hash_bytes.len()
         )));
     }
@@ -204,7 +202,7 @@ pub fn parse(addr: &str) -> Result<GuardianDBAddress> {
     hash_array.copy_from_slice(&hash_bytes);
     let root_hash = Hash::from_bytes(hash_array);
 
-    // A segunda parte, se existir, é o caminho. Caso contrário, é uma string vazia.
+    // The second part, if it exists, is the path. Otherwise, it is an empty string.
     let path = parts.next().unwrap_or("").to_string();
 
     Ok(GuardianDBAddress {
@@ -218,7 +216,7 @@ mod tests {
     use super::*;
     use iroh_blobs::Hash;
 
-    // Hash de teste (32 bytes = 64 chars hex)
+    // Test hash (32 bytes = 64 hex chars).
     fn test_hash() -> Hash {
         Hash::from([0x12; 32])
     }
@@ -229,33 +227,33 @@ mod tests {
 
     #[test]
     fn test_is_valid_success() {
-        // Hash válido de teste (64 chars hex)
+        // Valid test hash (64 hex chars).
         let valid_addr = format!("/GuardianDB/{}", test_hash_string());
         assert!(is_valid(&valid_addr).is_ok());
 
-        // Sem prefixo também deve funcionar
+        // Without the prefix should also work.
         let without_prefix = test_hash_string();
         assert!(is_valid(&without_prefix).is_ok());
 
-        // Com caminho
+        // With a path.
         let with_path = format!("/GuardianDB/{}/path/to/resource", test_hash_string());
         assert!(is_valid(&with_path).is_ok());
     }
 
     #[test]
     fn test_is_valid_failures() {
-        // String vazia
+        // Empty string.
         assert!(is_valid("").is_err());
         assert!(is_valid("   ").is_err());
 
-        // Apenas prefixo
+        // Prefix only.
         assert!(is_valid("/GuardianDB/").is_err());
 
-        // Hash inválido (não é hex válido)
+        // Invalid hash (not valid hex).
         assert!(is_valid("/GuardianDB/invalid-hash").is_err());
         assert!(is_valid("invalid-hash").is_err());
 
-        // Hash muito curto
+        // Hash too short.
         assert!(is_valid("/GuardianDB/123abc").is_err());
     }
 

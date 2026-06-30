@@ -45,10 +45,12 @@ mod tests {
     #[tokio::test]
     async fn test_signature_verification_components() {
         // Teste dos componentes de verificação de assinatura usando Ed25519
-        use rand_core::OsRng;
+        use rand::Rng;
 
         // Cria uma chave de teste
-        let signing_key = SigningKey::generate(&mut OsRng);
+        let mut sk_bytes = [0u8; 32];
+        rand::rng().fill_bytes(&mut sk_bytes);
+        let signing_key = SigningKey::from_bytes(&sk_bytes);
         let verifying_key = signing_key.verifying_key();
 
         // Cria uma mensagem de teste

@@ -75,6 +75,8 @@ fn create_test_options() -> CreateDBOptions {
         span: None,
         close_func: None,
         store_specific_opts: None,
+        doc_ticket: None,
+        read_only: None,
     }
 }
 
@@ -767,10 +769,6 @@ async fn test_store_load_and_sync() {
 
     // Testa load
     store.load(3).await.expect("Failed to load");
-
-    // Verifica replication status - apenas checa que existe
-    let _status = store.replication_status();
-    // Não testa campos privados como progress
 }
 
 // ============================================================================

@@ -13,30 +13,30 @@ pub use level_down::LevelDownCache;
 
 const REDB_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("cache");
 
-// Type aliases para simplificar tipos complexos
+// Type aliases to simplify complex types.
 type DatastoreBox = Box<dyn Datastore + Send + Sync>;
 type CleanupFn = Box<dyn FnOnce() -> Result<()> + Send + Sync>;
 type NewCacheResult = Result<(DatastoreBox, CleanupFn)>;
 
-/// Define as opções para a criação de um cache.
+/// Defines the options for creating a cache.
 #[derive(Debug, Clone)]
 pub struct Options {
-    /// Span para logging estruturado com tracing.
+    /// Span for structured logging with tracing.
     pub span: Option<Span>,
-    /// Tamanho máximo do cache em bytes (padrão: 100MB)
+    /// Maximum cache size in bytes (default: 100MB).
     pub max_cache_size: Option<u64>,
-    /// Modo de cache: persistente ou em memória
+    /// Cache mode: persistent or in-memory.
     pub cache_mode: CacheMode,
 }
 
-/// Modo de operação do cache
+/// Cache operating mode.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CacheMode {
-    /// Cache persistente no disco
+    /// Persistent cache on disk.
     Persistent,
-    /// Cache em memória (temporário)
+    /// In-memory (temporary) cache.
     InMemory,
-    /// Automático: detecta baseado no diretório
+    /// Automatic: detected based on the directory.
     Auto,
 }
 
@@ -50,11 +50,11 @@ impl Default for Options {
     }
 }
 
-/// A trait `Cache` define a interface para um mecanismo de cache
-/// para os bancos de dados GuardianDB.
+/// The `Cache` trait defines the interface for a caching mechanism
+/// for GuardianDB databases.
 pub trait Cache: Send + Sync {
-    /// Cria uma nova instância de cache no caminho especificado
-    /// Retorna um Datastore e uma função de cleanup
+    /// Creates a new cache instance at the specified path.
+    /// Returns a Datastore and a cleanup function.
     #[allow(clippy::new_ret_no_self)]
     fn new(path: &str, opts: Option<Options>) -> NewCacheResult
     where
@@ -63,24 +63,24 @@ pub trait Cache: Send + Sync {
         RedbCache::create_cache_instance(path, opts.unwrap_or_default())
     }
 
-    /// Carrega um cache para um determinado endereço de banco de dados e um diretório raiz.
+    /// Loads a cache for a given database address and root directory.
     fn load(&self, directory: &str, db_address: &dyn Address) -> Result<DatastoreBox>;
 
-    /// Fecha um cache e todos os seus armazenamentos de dados associados.
+    /// Closes a cache and all of its associated datastores.
     fn close(&mut self) -> Result<()>;
 
-    /// Remove todos os dados em cache de um banco de dados.
+    /// Removes all cached data for a database.
     fn destroy(&self, directory: &str, db_address: &dyn Address) -> Result<()>;
 }
 
-/// Implementação de cache usando redb como backend
+/// Cache implementation using redb as the backend.
 pub struct RedbCache {
     caches: Arc<Mutex<HashMap<String, Arc<RedbDatastore>>>>,
     options: Options,
 }
 
 impl RedbCache {
-    /// Cria uma nova instância do RedbCache
+    /// Creates a new RedbCache instance.
     pub fn new(opts: Options) -> Self {
         Self {
             caches: Arc::new(Mutex::new(HashMap::new())),
@@ -88,7 +88,7 @@ impl RedbCache {
         }
     }
 
-    /// Factory method para criar instâncias de cache
+    /// Factory method for creating cache instances.
     #[instrument(level = "info")]
     pub fn create_cache_instance(path: &str, opts: Options) -> NewCacheResult {
         info!("Creating cache instance: path={}", path);
@@ -96,7 +96,7 @@ impl RedbCache {
         let datastore = RedbDatastore::new(path, opts.clone())?;
         let path_clone = path.to_string();
 
-        // Função de cleanup que remove o cache do disco (apenas se não for em memória)
+        // Cleanup function that removes the cache from disk (only if not in-memory).
         let cleanup: Box<dyn FnOnce() -> Result<()> + Send + Sync> = Box::new(move || {
             if path_clone != ":memory:" && Path::new(&path_clone).exists() {
                 match std::fs::remove_file(&path_clone) {
@@ -123,7 +123,7 @@ impl RedbCache {
         Ok((Box::new(datastore), cleanup))
     }
 
-    /// Gera uma chave única para o cache baseada no diretório e endereço
+    /// Generates a unique cache key based on the directory and address.
     fn generate_cache_key(directory: &str, db_address: &dyn Address) -> String {
         let db_path = PathBuf::from(db_address.get_root().to_string()).join(db_address.get_path());
         PathBuf::from(directory)
@@ -156,7 +156,7 @@ impl Cache for RedbCache {
             }));
         }
 
-        // Cria um novo cache se não existir
+        // Create a new cache if it does not exist.
         let datastore = Arc::new(RedbDatastore::new(&cache_key, self.options.clone())?);
         caches.insert(cache_key.clone(), datastore.clone());
 
@@ -194,13 +194,13 @@ impl Cache for RedbCache {
             directory, &cache_key
         );
 
-        // Remove do mapa de caches
+        // Remove it from the cache map.
         {
             let mut caches = self.caches.lock().unwrap();
             caches.remove(&cache_key);
         }
 
-        // Remove arquivo do disco (apenas se não for em memória)
+        // Remove the file from disk (only if not in-memory).
         if directory != ":memory:" && Path::new(&cache_key).exists() {
             std::fs::remove_file(&cache_key)
                 .map_err(|e| GuardianError::Other(format!("Failed to remove cache file: {}", e)))?;
@@ -212,18 +212,18 @@ impl Cache for RedbCache {
     }
 }
 
-/// Implementação de Datastore usando redb
+/// Datastore implementation using redb.
 pub struct RedbDatastore {
     db: Database,
     path: String,
     span: Span,
 }
 
-// RedbDatastore não pode ser Clone porque redb::Database não é Clone.
-// Usamos Arc<RedbDatastore> + um handle wrapper para compatibilidade.
+// RedbDatastore cannot be Clone because redb::Database is not Clone.
+// We use Arc<RedbDatastore> + a handle wrapper for compatibility.
 
 impl RedbDatastore {
-    /// Cria uma nova instância do RedbDatastore
+    /// Creates a new RedbDatastore instance.
     #[instrument(level = "debug")]
     pub fn new(path: &str, opts: Options) -> Result<Self> {
         debug!("Creating RedbDatastore: path={}", path);
@@ -238,7 +238,7 @@ impl RedbDatastore {
         } else {
             debug!("Creating persistent cache: path={}", path);
 
-            // Cria o diretório se não existir
+            // Create the directory if it does not exist.
             if let Some(parent) = Path::new(path).parent() {
                 std::fs::create_dir_all(parent).map_err(|e| {
                     GuardianError::Store(format!("Failed to create cache directory: {}", e))
@@ -278,12 +278,12 @@ impl RedbDatastore {
         })
     }
 
-    /// Retorna uma referência ao span de tracing para instrumentação
+    /// Returns a reference to the tracing span used for instrumentation.
     pub fn span(&self) -> &Span {
         &self.span
     }
 
-    /// Flush (compact) o datastore
+    /// Flushes (compacts) the datastore.
     #[instrument(level = "debug", skip(self))]
     pub fn flush(&self) -> Result<()> {
         let _entered = self.span.enter();
@@ -573,10 +573,12 @@ pub struct RedbDatastoreHandle {
 }
 
 impl RedbDatastoreHandle {
+    /// Wraps a shared RedbDatastore in a cloneable handle.
     pub fn new(datastore: Arc<RedbDatastore>) -> Self {
         Self { inner: datastore }
     }
 
+    /// Flushes (compacts) the underlying datastore.
     pub fn flush(&self) -> Result<()> {
         self.inner.flush()
     }
@@ -607,17 +609,17 @@ impl Datastore for RedbDatastoreHandle {
     }
 }
 
-/// Factory function para criar instâncias de cache
+/// Factory function for creating cache instances.
 pub fn create_cache(opts: Options) -> RedbCache {
     RedbCache::new(opts)
 }
 
-/// Cria um cache padrão com configurações otimizadas
+/// Creates a default cache with optimized settings.
 pub fn create_default_cache() -> RedbCache {
     create_cache(Options::default())
 }
 
-/// Cria um cache em memória para testes
+/// Creates an in-memory cache for testing.
 pub fn create_memory_cache() -> RedbCache {
     create_cache(Options {
         cache_mode: CacheMode::InMemory,

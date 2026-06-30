@@ -1,208 +1,220 @@
-/// Pool de Conexões Otimizado para Backend Iroh
+/// Optimized connection pool for the Iroh backend.
 ///
-/// Gerenciamento inteligente de conexões P2P com load balancing,
-/// circuit breaking e recuperação automática para maximizar throughput.
+/// Intelligent management of P2P connections with load balancing,
+/// circuit breaking and automatic recovery to maximize throughput.
 use crate::guardian::error::{GuardianError, Result};
-use iroh::{NodeAddr, NodeId};
+use iroh::{EndpointAddr as NodeAddr, EndpointId as NodeId, TransportAddr};
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{RwLock, Semaphore, broadcast};
 use tokio::time::timeout;
 use tracing::{debug, error, info, instrument, warn};
 
-/// Pool de conexões otimizado para P2P
+/// Iterates the direct IP addresses (SocketAddr) of an EndpointAddr.
+///
+/// Iroh 1.0: EndpointAddr exposes `addrs: BTreeSet<TransportAddr>` (IP + relay unified),
+/// replacing the former `direct_addresses()` and `relay_url()` methods.
+fn direct_socket_addrs(addr: &NodeAddr) -> impl Iterator<Item = SocketAddr> + '_ {
+    addr.addrs.iter().filter_map(|a| match a {
+        TransportAddr::Ip(sa) => Some(*sa),
+        _ => None,
+    })
+}
+
+/// Optimized connection pool for P2P.
 pub struct OptimizedConnectionPool {
-    /// Conexões ativas por peer
+    /// Active connections per peer.
     active_connections: Arc<RwLock<HashMap<NodeId, ConnectionInfo>>>,
-    /// Pool de conexões disponíveis
+    /// Pool of available connections.
     connection_pool: Arc<RwLock<HashMap<NodeId, Vec<PooledConnection>>>>,
-    /// Semáforo para controle de concorrência
+    /// Semaphore for concurrency control.
     connection_semaphore: Arc<Semaphore>,
-    /// Configuração do pool
+    /// Pool configuration.
     pool_config: PoolConfig,
-    /// Estatísticas de performance
+    /// Performance statistics.
     stats: Arc<RwLock<PoolStats>>,
-    /// Circuit breakers por peer
+    /// Circuit breakers per peer.
     circuit_breakers: Arc<RwLock<HashMap<NodeId, CircuitBreaker>>>,
-    /// Monitor de saúde das conexões
+    /// Connection health monitor.
     health_monitor: Arc<RwLock<HealthMonitor>>,
-    /// Canal para eventos de conexão
+    /// Channel for connection events.
     event_sender: broadcast::Sender<ConnectionEvent>,
 }
 
-/// Informações de uma conexão
+/// Information about a connection.
 #[derive(Debug, Clone)]
 pub struct ConnectionInfo {
-    /// ID da conexão
+    /// Connection ID.
     pub connection_id: String,
-    /// Endereço do peer (Iroh NodeAddr)
+    /// Peer address (Iroh NodeAddr).
     pub peer_address: NodeAddr,
-    /// Timestamp da conexão
+    /// Connection timestamp.
     pub connected_at: Instant,
-    /// Último uso
+    /// Last use.
     pub last_used: Instant,
-    /// Número de operações realizadas
+    /// Number of operations performed.
     pub operations_count: u64,
-    /// Latência média (ms)
+    /// Average latency (ms).
     pub avg_latency_ms: f64,
-    /// Status da conexão
+    /// Connection status.
     pub status: ConnectionStatus,
-    /// Prioridade (0-10)
+    /// Priority (0-10).
     pub priority: u8,
-    /// Largura de banda disponível (bytes/s)
+    /// Available bandwidth (bytes/s).
     pub bandwidth_bps: u64,
 }
 
-/// Conexão no pool
+/// A connection in the pool.
 #[derive(Debug, Clone)]
 pub struct PooledConnection {
-    /// Informações da conexão
+    /// Connection information.
     pub info: ConnectionInfo,
-    /// Timestamp quando foi colocada no pool
+    /// Timestamp when it was placed in the pool.
     pub pooled_at: Instant,
-    /// Número de vezes que foi reutilizada
+    /// Number of times it has been reused.
     pub reuse_count: u32,
-    /// Se está sendo usada atualmente
+    /// Whether it is currently in use.
     pub in_use: bool,
 }
 
-/// Status de uma conexão
+/// Status of a connection.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConnectionStatus {
-    /// Conectada e saudável
+    /// Connected and healthy.
     Healthy,
-    /// Conectada mas com problemas
+    /// Connected but with problems.
     Degraded,
-    /// Temporariamente indisponível
+    /// Temporarily unavailable.
     Unavailable,
-    /// Desconectada
+    /// Disconnected.
     Disconnected,
-    /// Falha de conexão
+    /// Connection failure.
     Failed,
 }
 
-/// Configuração do pool de conexões
+/// Connection pool configuration.
 #[derive(Debug, Clone)]
 pub struct PoolConfig {
-    /// Número máximo de conexões por peer
+    /// Maximum number of connections per peer.
     pub max_connections_per_peer: u32,
-    /// Número máximo total de conexões
+    /// Maximum total number of connections.
     pub max_total_connections: u32,
-    /// Timeout para estabelecer conexão (ms)
+    /// Timeout for establishing a connection (ms).
     pub connection_timeout_ms: u64,
-    /// Timeout de idle antes de fechar conexão (s)
+    /// Idle timeout before closing a connection (s).
     pub idle_timeout_secs: u64,
-    /// Intervalo de health check (s)
+    /// Health check interval (s).
     pub health_check_interval_secs: u64,
-    /// Número máximo de tentativas de reconexão
+    /// Maximum number of reconnection attempts.
     pub max_retry_attempts: u32,
-    /// Backoff inicial para retry (ms)
+    /// Initial retry backoff (ms).
     pub initial_retry_backoff_ms: u64,
-    /// Multiplicador do backoff
+    /// Backoff multiplier.
     pub backoff_multiplier: f64,
-    /// Threshold para circuit breaker
+    /// Circuit breaker threshold.
     pub circuit_breaker_threshold: f64,
-    /// Habilitar load balancing inteligente
+    /// Enable intelligent load balancing.
     pub enable_intelligent_load_balancing: bool,
 }
 
-/// Estatísticas do pool de conexões
+/// Connection pool statistics.
 #[derive(Debug, Clone, Default)]
 pub struct PoolStats {
-    /// Total de conexões ativas
+    /// Total active connections.
     pub active_connections: u32,
-    /// Total de conexões no pool
+    /// Total connections in the pool.
     pub pooled_connections: u32,
-    /// Conexões criadas
+    /// Connections created.
     pub connections_created: u64,
-    /// Conexões reutilizadas
+    /// Connections reused.
     pub connections_reused: u64,
-    /// Conexões que falharam
+    /// Connections that failed.
     pub connections_failed: u64,
-    /// Timeout de conexões
+    /// Connection timeouts.
     pub connections_timeout: u64,
-    /// Tempo médio de estabelecimento de conexão (ms)
+    /// Average connection establishment time (ms).
     pub avg_connection_time_ms: f64,
-    /// Taxa de reutilização
+    /// Reuse rate.
     pub reuse_rate: f64,
-    /// Largura de banda total (bytes/s)
+    /// Total bandwidth (bytes/s).
     pub total_bandwidth_bps: u64,
-    /// Latência média global (ms)
+    /// Global average latency (ms).
     pub global_avg_latency_ms: f64,
 }
 
-/// Circuit Breaker para controle de falhas
+/// Circuit breaker for failure control.
 #[derive(Debug, Clone)]
 pub struct CircuitBreaker {
-    /// Estado atual
+    /// Current state.
     pub state: CircuitState,
-    /// Contador de falhas
+    /// Failure counter.
     pub failure_count: u32,
-    /// Threshold de falhas
+    /// Failure threshold.
     pub failure_threshold: u32,
-    /// Timestamp da última falha
+    /// Timestamp of the last failure.
     pub last_failure_time: Option<Instant>,
-    /// Timeout para tentar novamente (ms)
+    /// Timeout before retrying (ms).
     pub timeout_ms: u64,
-    /// Contador de sucessos consecutivos
+    /// Counter of consecutive successes.
     pub success_count: u32,
 }
 
-/// Estados do Circuit Breaker
+/// Circuit breaker states.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CircuitState {
-    /// Funcionando normalmente
+    /// Working normally.
     Closed,
-    /// Aberto devido a falhas
+    /// Open due to failures.
     Open,
-    /// Testando se voltou a funcionar
+    /// Testing whether it works again.
     HalfOpen,
 }
 
-/// Monitor de saúde das conexões
+/// Connection health monitor.
 #[derive(Debug)]
 pub struct HealthMonitor {
-    /// Métricas de saúde por peer
+    /// Health metrics per peer.
     peer_health: HashMap<NodeId, PeerHealthMetrics>,
-    /// Última verificação de saúde
+    /// Last health check.
     #[allow(dead_code)]
     last_health_check: Instant,
-    /// Peers marcados como problemáticos
+    /// Peers marked as problematic.
     unhealthy_peers: HashMap<NodeId, Instant>,
 }
 
-/// Métricas de saúde de um peer
+/// Health metrics of a peer.
 #[derive(Debug, Clone)]
 pub struct PeerHealthMetrics {
-    /// Latência atual (ms)
+    /// Current latency (ms).
     pub current_latency_ms: f64,
-    /// Packet loss (0.0-1.0)
+    /// Packet loss (0.0-1.0).
     pub packet_loss_rate: f64,
-    /// Throughput (bytes/s)
+    /// Throughput (bytes/s).
     pub throughput_bps: u64,
-    /// Uptime (segundos)
+    /// Uptime (seconds).
     pub uptime_secs: u64,
-    /// Score de saúde (0.0-1.0)
+    /// Health score (0.0-1.0).
     pub health_score: f64,
-    /// Timestamp da última medição
+    /// Timestamp of the last measurement.
     pub last_measured: Instant,
 }
 
-/// Eventos de conexão
+/// Connection events.
 #[derive(Debug, Clone)]
 pub enum ConnectionEvent {
-    /// Nova conexão estabelecida
+    /// New connection established.
     Connected { node_id: NodeId, latency_ms: f64 },
-    /// Conexão perdida
+    /// Connection lost.
     Disconnected { node_id: NodeId, reason: String },
-    /// Conexão degradada
+    /// Connection degraded.
     Degraded { node_id: NodeId, health_score: f64 },
-    /// Conexão recuperada
+    /// Connection recovered.
     Recovered { node_id: NodeId },
-    /// Circuit breaker ativado
+    /// Circuit breaker opened.
     CircuitBreakerOpen { node_id: NodeId },
-    /// Circuit breaker fechado
+    /// Circuit breaker closed.
     CircuitBreakerClosed { node_id: NodeId },
 }
 
@@ -224,7 +236,7 @@ impl Default for PoolConfig {
 }
 
 impl OptimizedConnectionPool {
-    /// Cria novo pool de conexões otimizado
+    /// Creates a new optimized connection pool.
     pub fn new(pool_config: PoolConfig) -> Self {
         let (event_sender, _) = broadcast::channel(1000);
 
@@ -246,50 +258,50 @@ impl OptimizedConnectionPool {
         }
     }
 
-    /// Obtém ou cria uma conexão otimizada para um peer
+    /// Gets or creates an optimized connection for a peer.
     #[instrument(skip(self))]
     pub async fn get_connection(&self, node_id: NodeId, address: NodeAddr) -> Result<String> {
-        // Verifica circuit breaker
+        // Check the circuit breaker.
         if !self.check_circuit_breaker(node_id).await? {
             return Err(GuardianError::Other(format!(
-                "Circuit breaker aberto para node {}",
+                "Circuit breaker open for node {}",
                 node_id
             )));
         }
 
-        // Tenta reutilizar conexão do pool
+        // Try to reuse a connection from the pool.
         if let Some(connection_id) = self.try_reuse_connection(node_id).await? {
-            debug!("Reutilizando conexão existente para node {}", node_id);
+            debug!("Reusing existing connection for node {}", node_id);
             return Ok(connection_id);
         }
 
-        // Adquire permissão para nova conexão
+        // Acquire a permit for a new connection.
         let _permit = self
             .connection_semaphore
             .acquire()
             .await
-            .map_err(|e| GuardianError::Other(format!("Falha ao adquirir semáforo: {}", e)))?;
+            .map_err(|e| GuardianError::Other(format!("Failed to acquire semaphore: {}", e)))?;
 
-        // Estabelece nova conexão
+        // Establish a new connection.
         self.establish_new_connection(node_id, address).await
     }
 
-    /// Tenta reutilizar conexão existente do pool
+    /// Tries to reuse an existing connection from the pool.
     async fn try_reuse_connection(&self, node_id: NodeId) -> Result<Option<String>> {
         let mut pool = self.connection_pool.write().await;
 
         if let Some(connections) = pool.get_mut(&node_id) {
-            // Procura conexão saudável disponível
+            // Look for an available healthy connection.
             for conn in connections.iter_mut() {
                 if !conn.in_use && conn.info.status == ConnectionStatus::Healthy {
-                    // Verifica se não está muito idle
+                    // Check that it is not too idle.
                     let idle_time = Instant::now().saturating_duration_since(conn.info.last_used);
                     if idle_time.as_secs() < self.pool_config.idle_timeout_secs {
                         conn.in_use = true;
                         conn.reuse_count += 1;
                         conn.info.last_used = Instant::now();
 
-                        // Atualiza estatísticas
+                        // Update statistics.
                         let mut stats = self.stats.write().await;
                         stats.connections_reused += 1;
                         stats.reuse_rate = stats.connections_reused as f64
@@ -304,17 +316,17 @@ impl OptimizedConnectionPool {
         Ok(None)
     }
 
-    /// Estabelece nova conexão com otimizações
+    /// Establishes a new connection with optimizations.
     async fn establish_new_connection(&self, node_id: NodeId, address: NodeAddr) -> Result<String> {
         let connection_start = Instant::now();
         let connection_id = format!("conn_{}_{}", node_id, uuid::Uuid::new_v4());
 
         debug!(
-            "Estabelecendo nova conexão para node {} em {:?}",
+            "Establishing new connection for node {} at {:?}",
             node_id, address
         );
 
-        // Estabelece conexão com timeout
+        // Establish the connection with a timeout.
         let connection_result = timeout(
             Duration::from_millis(self.pool_config.connection_timeout_ms),
             self.establish_connection(node_id, address.clone()),
@@ -323,7 +335,7 @@ impl OptimizedConnectionPool {
 
         match connection_result {
             Ok(Ok(latency_ms)) => {
-                // Conexão estabelecida com sucesso
+                // Connection established successfully.
                 let connection_time = connection_start.elapsed();
 
                 let connection_info = ConnectionInfo {
@@ -334,17 +346,17 @@ impl OptimizedConnectionPool {
                     operations_count: 0,
                     avg_latency_ms: latency_ms,
                     status: ConnectionStatus::Healthy,
-                    priority: 5,               // Prioridade padrão
-                    bandwidth_bps: 10_000_000, // 10 Mbps estimado inicial
+                    priority: 5,               // Default priority.
+                    bandwidth_bps: 10_000_000, // 10 Mbps initial estimate.
                 };
 
-                // Adiciona à lista de conexões ativas
+                // Add it to the active connections list.
                 {
                     let mut active = self.active_connections.write().await;
                     active.insert(node_id, connection_info.clone());
                 }
 
-                // Atualiza estatísticas
+                // Update statistics.
                 {
                     let mut stats = self.stats.write().await;
                     stats.connections_created += 1;
@@ -353,89 +365,86 @@ impl OptimizedConnectionPool {
                         (stats.avg_connection_time_ms + connection_time.as_millis() as f64) / 2.0;
                 }
 
-                // Registra sucesso no circuit breaker
+                // Record the success in the circuit breaker.
                 self.record_success(node_id).await;
 
-                // Envia evento
+                // Send an event.
                 let _ = self.event_sender.send(ConnectionEvent::Connected {
                     node_id,
                     latency_ms,
                 });
 
                 info!(
-                    "Nova conexão estabelecida: {} -> {} (latency: {:.2}ms)",
+                    "New connection established: {} -> {} (latency: {:.2}ms)",
                     node_id, connection_id, latency_ms
                 );
                 Ok(connection_id)
             }
             Ok(Err(e)) => {
-                // Falha na conexão
+                // Connection failure.
                 self.record_failure(node_id).await;
 
                 let mut stats = self.stats.write().await;
                 stats.connections_failed += 1;
 
-                error!("Falha ao estabelecer conexão para {}: {}", node_id, e);
+                error!("Failed to establish connection to {}: {}", node_id, e);
                 Err(e)
             }
             Err(_) => {
-                // Timeout
+                // Timeout.
                 self.record_failure(node_id).await;
 
                 let mut stats = self.stats.write().await;
                 stats.connections_timeout += 1;
 
                 let timeout_error = GuardianError::Other(format!(
-                    "Timeout ao conectar com node {} ({}ms)",
+                    "Timeout connecting to node {} ({}ms)",
                     node_id, self.pool_config.connection_timeout_ms
                 ));
 
-                error!("Timeout na conexão: {}", timeout_error);
+                error!("Connection timeout: {}", timeout_error);
                 Err(timeout_error)
             }
         }
     }
 
-    /// Estabelece conexão com peer usando Iroh
+    /// Establishes a connection to a peer using Iroh.
     async fn establish_connection(&self, node_id: NodeId, address: NodeAddr) -> Result<f64> {
         let connection_start = Instant::now();
 
         debug!(
-            "Estabelecendo conexão com node {} no endereço {:?}",
+            "Establishing connection to node {} at address {:?}",
             node_id, address
         );
 
-        // Valida o endereço NodeAddr
+        // Validate the NodeAddr address.
         if !self.validate_node_addr(&address) {
             return Err(GuardianError::Other(format!(
-                "Endereço inválido: {:?}",
+                "Invalid address: {:?}",
                 address
             )));
         }
 
-        // Executa ping para medir latência
+        // Perform a ping to measure latency.
         let latency_result = self.measure_peer_latency(&address).await;
 
         match latency_result {
             Ok(latency_ms) => {
-                // Verifica se a latência é aceitável (< 5000ms)
+                // Check whether the latency is acceptable (< 5000ms).
                 if latency_ms > 5000.0 {
-                    warn!(
-                        "Latência muito alta para node {}: {:.2}ms",
-                        node_id, latency_ms
-                    );
+                    warn!("Latency too high for node {}: {:.2}ms", node_id, latency_ms);
                     return Err(GuardianError::Other(format!(
-                        "Latência inaceitável: {:.2}ms",
+                        "Unacceptable latency: {:.2}ms",
                         latency_ms
                     )));
                 }
 
-                // Tenta estabelecer handshake com o peer
+                // Try to establish a handshake with the peer.
                 self.perform_connection_handshake(node_id, &address).await?;
 
                 let connection_time = connection_start.elapsed();
                 debug!(
-                    "Conexão estabelecida com sucesso em {:.2}ms, latência: {:.2}ms",
+                    "Connection established successfully in {:.2}ms, latency: {:.2}ms",
                     connection_time.as_millis(),
                     latency_ms
                 );
@@ -443,23 +452,23 @@ impl OptimizedConnectionPool {
                 Ok(latency_ms)
             }
             Err(e) => {
-                error!("Falha ao medir latência para node {}: {}", node_id, e);
-                Err(GuardianError::Other(format!("Falha na conexão: {}", e)))
+                error!("Failed to measure latency for node {}: {}", node_id, e);
+                Err(GuardianError::Other(format!("Connection failure: {}", e)))
             }
         }
     }
 
-    /// Valida se o endereço NodeAddr é válido e acessível
+    /// Validates whether the NodeAddr address is valid and reachable.
     fn validate_node_addr(&self, address: &NodeAddr) -> bool {
-        // NodeAddr do Iroh contém node_id, relay_url (opcional) e direct_addresses
-        // Valida se tem pelo menos um endereço direto ou relay
-        address.direct_addresses().count() > 0 || address.relay_url().is_some()
+        // Iroh's EndpointAddr contains id and addrs (IP + relay unified in TransportAddr).
+        // Validate that it has at least one transport address.
+        !address.addrs.is_empty()
     }
 
-    /// Mede latência fazendo ping para o endereço
+    /// Measures latency by pinging the address.
     async fn measure_peer_latency(&self, address: &NodeAddr) -> Result<f64> {
-        // Tenta primeiro os endereços diretos
-        for socket_addr in address.direct_addresses() {
+        // Try the direct addresses first.
+        for socket_addr in direct_socket_addrs(address) {
             let start_time = Instant::now();
 
             match tokio::net::TcpStream::connect(socket_addr).await {
@@ -468,19 +477,19 @@ impl OptimizedConnectionPool {
                     return Ok(latency.as_millis() as f64);
                 }
                 Err(_) => {
-                    // Tenta o próximo endereço
+                    // Try the next address.
                     continue;
                 }
             }
         }
 
-        // Se nenhum endereço direto funcionou, retorna erro
+        // If no direct address worked, return an error.
         Err(GuardianError::Other(
-            "Não foi possível conectar a nenhum endereço direto".to_string(),
+            "Could not connect to any direct address".to_string(),
         ))
     }
 
-    /// Executa handshake de conexão com o peer
+    /// Performs the connection handshake with the peer.
     async fn perform_connection_handshake(
         &self,
         node_id: NodeId,
@@ -488,15 +497,17 @@ impl OptimizedConnectionPool {
     ) -> Result<()> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-        debug!("Executando handshake com node {} em {:?}", node_id, address);
+        debug!(
+            "Performing handshake with node {} at {:?}",
+            node_id, address
+        );
 
         let handshake_start = Instant::now();
 
-        // Obtém o primeiro endereço direto disponível
-        let socket_addr = address.direct_addresses().next().ok_or_else(|| {
-            GuardianError::Other("Nenhum endereço direto disponível para handshake".to_string())
+        // Get the first available direct address.
+        let socket_addr = direct_socket_addrs(address).next().ok_or_else(|| {
+            GuardianError::Other("No direct address available for handshake".to_string())
         })?;
-        let socket_addr = *socket_addr;
 
         // Estabelece conexão TCP
         let mut stream = match tokio::time::timeout(
@@ -507,42 +518,45 @@ impl OptimizedConnectionPool {
         {
             Ok(Ok(stream)) => stream,
             Ok(Err(e)) => {
-                return Err(GuardianError::Other(format!("Falha na conexão TCP: {}", e)));
+                return Err(GuardianError::Other(format!(
+                    "TCP connection failure: {}",
+                    e
+                )));
             }
             Err(_) => {
-                return Err(GuardianError::Other("Timeout na conexão TCP".to_string()));
+                return Err(GuardianError::Other("TCP connection timeout".to_string()));
             }
         };
 
-        debug!("Conexão TCP estabelecida com {}", socket_addr);
+        debug!("TCP connection established with {}", socket_addr);
 
-        // Fase 1: Negociação de protocolo
+        // Phase 1: Protocol negotiation.
         let protocol_version = b"guardian-db/1.0";
         let mut handshake_msg = Vec::with_capacity(64);
 
-        // Monta mensagem de handshake inicial
+        // Build the initial handshake message.
         handshake_msg.extend_from_slice(&(protocol_version.len() as u16).to_be_bytes());
         handshake_msg.extend_from_slice(protocol_version);
         handshake_msg.extend_from_slice(node_id.as_bytes());
 
-        // Adiciona timestamp para evitar replay attacks
+        // Add a timestamp to prevent replay attacks.
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
         handshake_msg.extend_from_slice(&timestamp.to_be_bytes());
 
-        // Envia mensagem inicial
+        // Send the initial message.
         if let Err(e) = stream.write_all(&handshake_msg).await {
             return Err(GuardianError::Other(format!(
-                "Falha ao enviar handshake: {}",
+                "Failed to send handshake: {}",
                 e
             )));
         }
 
-        debug!("Mensagem de handshake enviada");
+        debug!("Handshake message sent");
 
-        // Fase 2: Recebe resposta do peer
+        // Phase 2: Receive the peer's response.
         let mut response_len_buf = [0u8; 2];
         if let Err(e) = tokio::time::timeout(
             Duration::from_millis(3000),
@@ -551,18 +565,16 @@ impl OptimizedConnectionPool {
         .await
         {
             return Err(GuardianError::Other(format!(
-                "Timeout ao ler resposta: {:?}",
+                "Timeout reading response: {:?}",
                 e
             )));
         }
 
         let response_len = u16::from_be_bytes(response_len_buf) as usize;
 
-        // Valida tamanho da resposta
+        // Validate the response size.
         if response_len == 0 || response_len > 1024 {
-            return Err(GuardianError::Other(
-                "Tamanho de resposta inválido".to_string(),
-            ));
+            return Err(GuardianError::Other("Invalid response size".to_string()));
         }
 
         let mut response_buf = vec![0u8; response_len];
@@ -573,47 +585,47 @@ impl OptimizedConnectionPool {
         .await
         {
             return Err(GuardianError::Other(format!(
-                "Timeout ao ler dados de resposta: {:?}",
+                "Timeout reading response data: {:?}",
                 e
             )));
         }
 
-        debug!("Resposta recebida: {} bytes", response_len);
+        debug!("Response received: {} bytes", response_len);
 
-        // Fase 3: Validação da resposta
+        // Phase 3: Response validation.
         if response_buf.len() < protocol_version.len() + 32 + 8 {
             // version + node_id (32 bytes) + timestamp
-            return Err(GuardianError::Other("Resposta muito pequena".to_string()));
+            return Err(GuardianError::Other("Response too small".to_string()));
         }
 
         let mut offset = 0;
 
-        // Verifica versão do protocolo
+        // Check the protocol version.
         let peer_protocol_version = &response_buf[offset..offset + protocol_version.len()];
         if peer_protocol_version != protocol_version {
             return Err(GuardianError::Other(
-                "Versão de protocolo incompatível".to_string(),
+                "Incompatible protocol version".to_string(),
             ));
         }
         offset += protocol_version.len();
 
-        // Extrai e valida NodeId do peer (32 bytes)
+        // Extract and validate the peer's NodeId (32 bytes).
         let received_node_id_bytes: [u8; 32] = response_buf[offset..offset + 32]
             .try_into()
-            .map_err(|_| GuardianError::Other("NodeId inválido recebido".to_string()))?;
+            .map_err(|_| GuardianError::Other("Invalid NodeId received".to_string()))?;
         let received_node_id = NodeId::from_bytes(&received_node_id_bytes)
-            .map_err(|e| GuardianError::Other(format!("Falha ao converter NodeId: {}", e)))?;
+            .map_err(|e| GuardianError::Other(format!("Failed to convert NodeId: {}", e)))?;
         offset += 32;
 
-        // Verifica se o NodeId bate
+        // Check that the NodeId matches.
         if received_node_id != node_id {
             return Err(GuardianError::Other(format!(
-                "NodeId mismatch: esperado {}, recebido {}",
+                "NodeId mismatch: expected {}, received {}",
                 node_id, received_node_id
             )));
         }
 
-        // Verifica timestamp para evitar replay attacks
+        // Check the timestamp to prevent replay attacks.
         let peer_timestamp_bytes = &response_buf[offset..offset + 8];
         let peer_timestamp = u64::from_be_bytes([
             peer_timestamp_bytes[0],
@@ -631,25 +643,25 @@ impl OptimizedConnectionPool {
             .unwrap()
             .as_secs();
 
-        // Aceita timestamps até 5 minutos de diferença
+        // Accept timestamps up to 5 minutes apart.
         if (current_time as i64 - peer_timestamp as i64).abs() > 300 {
             warn!(
-                "Timestamp do peer muito diferente: {} vs {}",
+                "Peer timestamp too different: {} vs {}",
                 peer_timestamp, current_time
             );
-            // Não falha por timestamp, apenas avisa
+            // Does not fail on timestamp, only warns.
         }
 
-        // Fase 4: Confirmação final
+        // Phase 4: Final confirmation.
         let confirmation = b"HANDSHAKE_OK";
         if let Err(e) = stream.write_all(confirmation).await {
             return Err(GuardianError::Other(format!(
-                "Falha ao enviar confirmação: {}",
+                "Failed to send confirmation: {}",
                 e
             )));
         }
 
-        // Aguarda confirmação do peer
+        // Wait for the peer's confirmation.
         let mut peer_confirmation = [0u8; 12]; // "HANDSHAKE_OK".len()
         if let Err(e) = tokio::time::timeout(
             Duration::from_millis(2000),
@@ -658,24 +670,24 @@ impl OptimizedConnectionPool {
         .await
         {
             return Err(GuardianError::Other(format!(
-                "Timeout na confirmação final: {:?}",
+                "Timeout on final confirmation: {:?}",
                 e
             )));
         }
 
         if &peer_confirmation != confirmation {
             return Err(GuardianError::Other(
-                "Confirmação de handshake inválida".to_string(),
+                "Invalid handshake confirmation".to_string(),
             ));
         }
 
-        // Fecha a conexão de handshake
+        // Close the handshake connection.
         let _ = stream.shutdown().await;
 
         let handshake_duration = handshake_start.elapsed();
 
         info!(
-            "Handshake completo com node {} em {:.2}ms - Protocolo: {}, Timestamp válido: {}",
+            "Handshake complete with node {} in {:.2}ms - Protocol: {}, Timestamp valid: {}",
             node_id,
             handshake_duration.as_millis(),
             std::str::from_utf8(protocol_version).unwrap_or("unknown"),
@@ -685,7 +697,7 @@ impl OptimizedConnectionPool {
         Ok(())
     }
 
-    /// Verifica estado do circuit breaker
+    /// Checks the circuit breaker state.
     async fn check_circuit_breaker(&self, node_id: NodeId) -> Result<bool> {
         let circuit_breakers = self.circuit_breakers.read().await;
 
@@ -693,19 +705,16 @@ impl OptimizedConnectionPool {
             match breaker.state {
                 CircuitState::Closed => Ok(true),
                 CircuitState::Open => {
-                    // Verifica se pode tentar half-open
+                    // Check whether it can attempt half-open.
                     if let Some(last_failure) = breaker.last_failure_time {
                         let elapsed = Instant::now().saturating_duration_since(last_failure);
                         if elapsed.as_millis() > breaker.timeout_ms as u128 {
-                            // Transiciona para half-open
+                            // Transition to half-open.
                             drop(circuit_breakers);
                             let mut breakers = self.circuit_breakers.write().await;
                             if let Some(breaker) = breakers.get_mut(&node_id) {
                                 breaker.state = CircuitState::HalfOpen;
-                                info!(
-                                    "Circuit breaker para {} transitioning to half-open",
-                                    node_id
-                                );
+                                info!("Circuit breaker for {} transitioning to half-open", node_id);
                             }
                             Ok(true)
                         } else {
@@ -715,14 +724,14 @@ impl OptimizedConnectionPool {
                         Ok(false)
                     }
                 }
-                CircuitState::HalfOpen => Ok(true), // Permite tentativas limitadas
+                CircuitState::HalfOpen => Ok(true), // Allows limited attempts.
             }
         } else {
-            Ok(true) // Sem circuit breaker = permitido
+            Ok(true) // No circuit breaker = allowed.
         }
     }
 
-    /// Registra sucesso para circuit breaker
+    /// Records a success for the circuit breaker.
     async fn record_success(&self, node_id: NodeId) {
         let mut breakers = self.circuit_breakers.write().await;
 
@@ -731,7 +740,7 @@ impl OptimizedConnectionPool {
 
             match breaker.state {
                 CircuitState::HalfOpen => {
-                    // Se múltiplos sucessos, fecha o circuit breaker
+                    // After multiple successes, close the circuit breaker.
                     if breaker.success_count >= 3 {
                         breaker.state = CircuitState::Closed;
                         breaker.failure_count = 0;
@@ -739,23 +748,23 @@ impl OptimizedConnectionPool {
                         let _ = self
                             .event_sender
                             .send(ConnectionEvent::CircuitBreakerClosed { node_id });
-                        info!("Circuit breaker fechado para node {}", node_id);
+                        info!("Circuit breaker closed for node {}", node_id);
                     }
                 }
                 CircuitState::Open => {
-                    // Não deveria acontecer, mas reset se acontecer
+                    // Should not happen, but reset if it does.
                     breaker.state = CircuitState::Closed;
                     breaker.failure_count = 0;
                 }
                 CircuitState::Closed => {
-                    // Mantém closed e reset failure count
+                    // Keep it closed and reset the failure count.
                     breaker.failure_count = 0;
                 }
             }
         }
     }
 
-    /// Registra falha para circuit breaker
+    /// Records a failure for the circuit breaker.
     async fn record_failure(&self, node_id: NodeId) {
         let mut breakers = self.circuit_breakers.write().await;
 
@@ -772,7 +781,7 @@ impl OptimizedConnectionPool {
         breaker.last_failure_time = Some(Instant::now());
         breaker.success_count = 0;
 
-        // Verifica se deve abrir o circuit breaker
+        // Check whether the circuit breaker should open.
         if breaker.failure_count >= breaker.failure_threshold
             && breaker.state == CircuitState::Closed
         {
@@ -782,13 +791,13 @@ impl OptimizedConnectionPool {
                 .event_sender
                 .send(ConnectionEvent::CircuitBreakerOpen { node_id });
             warn!(
-                "Circuit breaker aberto para node {} após {} falhas",
+                "Circuit breaker opened for node {} after {} failures",
                 node_id, breaker.failure_count
             );
         }
     }
 
-    /// Libera uma conexão de volta para o pool
+    /// Releases a connection back to the pool.
     pub async fn release_connection(&self, node_id: NodeId, connection_id: String) -> Result<()> {
         let mut pool = self.connection_pool.write().await;
 
@@ -799,7 +808,7 @@ impl OptimizedConnectionPool {
                     conn.info.last_used = Instant::now();
 
                     debug!(
-                        "Conexão liberada para pool: {} (node: {})",
+                        "Connection released to pool: {} (node: {})",
                         connection_id, node_id
                     );
                     return Ok(());
@@ -807,8 +816,8 @@ impl OptimizedConnectionPool {
             }
         }
 
-        // Se não encontrou no pool, pode ter sido uma conexão nova
-        // Move da lista ativa para o pool
+        // If it was not found in the pool, it may have been a new connection.
+        // Move it from the active list to the pool.
         if let Some(active_info) = self.active_connections.write().await.remove(&node_id) {
             let pooled_conn = PooledConnection {
                 info: active_info,
@@ -829,7 +838,7 @@ impl OptimizedConnectionPool {
         Ok(())
     }
 
-    /// Inicia monitor de saúde das conexões
+    /// Starts the connection health monitor.
     pub fn start_health_monitor(&self) -> tokio::task::JoinHandle<()> {
         let pool = Arc::clone(&self.connection_pool);
         let health_monitor = Arc::clone(&self.health_monitor);
@@ -842,33 +851,33 @@ impl OptimizedConnectionPool {
             loop {
                 interval.tick().await;
 
-                debug!("Executando health check das conexões...");
+                debug!("Running connection health check...");
 
                 let pool_snapshot = {
                     let pool_read = pool.read().await;
-                    // Cria uma snapshot dos peer IDs para iterar sem manter o lock
+                    // Create a snapshot of the peer IDs to iterate without holding the lock.
                     pool_read.keys().cloned().collect::<Vec<_>>()
                 };
 
                 for node_id in pool_snapshot.iter() {
-                    // Obtém as conexões para este node (se ainda existir)
+                    // Get the connections for this node (if it still exists).
                     let connections = {
                         let pool_read = pool.read().await;
                         pool_read.get(node_id).cloned().unwrap_or_default()
                     };
 
                     for conn in connections.iter() {
-                        // Executa health check
+                        // Run a health check.
                         let health_score = Self::perform_health_check(&conn.info).await;
 
-                        // Atualiza métricas de saúde
+                        // Update the health metrics.
                         {
                             let mut monitor = health_monitor.write().await;
                             monitor.peer_health.insert(
                                 *node_id,
                                 PeerHealthMetrics {
                                     current_latency_ms: conn.info.avg_latency_ms,
-                                    packet_loss_rate: 0.02, // 2% simulado
+                                    packet_loss_rate: 0.02, // 2% simulated
                                     throughput_bps: conn.info.bandwidth_bps,
                                     uptime_secs: Instant::now()
                                         .saturating_duration_since(conn.info.connected_at)
@@ -896,12 +905,11 @@ impl OptimizedConnectionPool {
         })
     }
 
-    /// Executa health check de uma conexão
+    /// Performs a health check of a connection.
     async fn perform_health_check(connection_info: &ConnectionInfo) -> f64 {
-        // Tenta fazer ping para verificar conectividade usando endereços diretos do NodeAddr
+        // Try to ping to check connectivity using the NodeAddr's direct addresses.
         let connectivity_score =
-            if let Some(socket_addr) = connection_info.peer_address.direct_addresses().next() {
-                let socket_addr = *socket_addr;
+            if let Some(socket_addr) = direct_socket_addrs(&connection_info.peer_address).next() {
                 let ping_start = Instant::now();
 
                 match tokio::time::timeout(
@@ -912,20 +920,20 @@ impl OptimizedConnectionPool {
                 {
                     Ok(Ok(_)) => {
                         let ping_latency = ping_start.elapsed().as_millis() as f64;
-                        // Score baseado na latência do ping (0-1, onde 1 é melhor)
+                        // Score based on the ping latency (0-1, where 1 is best).
                         (100.0 - ping_latency.min(100.0)) / 100.0
                     }
                     Ok(Err(_)) | Err(_) => {
-                        // Conexão falhou ou timeout
+                        // Connection failed or timed out.
                         0.1
                     }
                 }
             } else {
-                // Não conseguiu extrair endereço, usa score médio
+                // Could not extract an address, use an average score.
                 0.5
             };
 
-        // Calcula scores baseados em métricas da conexão
+        // Compute scores based on connection metrics.
         let latency_score = (100.0 - connection_info.avg_latency_ms.min(100.0)) / 100.0;
 
         let age_score = {
@@ -955,7 +963,7 @@ impl OptimizedConnectionPool {
         };
 
         let operations_score = {
-            // Conexões mais usadas são consideradas mais saudáveis
+            // More heavily used connections are considered healthier.
             if connection_info.operations_count > 100 {
                 1.0
             } else if connection_info.operations_count > 10 {
@@ -965,7 +973,7 @@ impl OptimizedConnectionPool {
             }
         };
 
-        // Score final ponderado
+        // Final weighted score.
         let final_score = (connectivity_score * 0.4)
             + (latency_score * 0.25)
             + (age_score * 0.15)
@@ -975,12 +983,12 @@ impl OptimizedConnectionPool {
         final_score.clamp(0.0, 1.0)
     }
 
-    /// Obtém estatísticas atuais do pool
+    /// Returns the current pool statistics.
     pub async fn get_stats(&self) -> PoolStats {
         self.stats.read().await.clone()
     }
 
-    /// Subscribe para eventos de conexão
+    /// Subscribes to connection events.
     pub fn subscribe_events(&self) -> broadcast::Receiver<ConnectionEvent> {
         self.event_sender.subscribe()
     }

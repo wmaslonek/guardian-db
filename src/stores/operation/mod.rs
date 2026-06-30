@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod traits;
 
-/// Representa um documento em uma operação de log.
+/// Represents a document within a log operation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OpDoc {
     #[serde(rename = "key")]
@@ -16,23 +16,23 @@ pub struct OpDoc {
 }
 
 impl OpDoc {
-    /// Cria um novo OpDoc
+    /// Creates a new OpDoc.
     pub fn new(key: String, value: Vec<u8>) -> Self {
         Self { key, value }
     }
 
-    /// Getter para key
+    /// Getter for key.
     pub fn key(&self) -> &str {
         &self.key
     }
 
-    /// Getter para value
+    /// Getter for value.
     pub fn value(&self) -> &[u8] {
         &self.value
     }
 }
 
-/// Representa uma operação a ser adicionada ao log.
+/// Represents an operation to be added to the log.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Operation {
     #[serde(rename = "key")]
@@ -48,11 +48,11 @@ pub struct Operation {
     pub docs: Vec<OpDoc>,
 
     #[serde(skip)]
-    pub entry: Option<Entry>, // Mudado para Option para indicar quando não está disponível
+    pub entry: Option<Entry>, // Changed to Option to indicate when it is not available.
 }
 
 impl Operation {
-    /// Cria uma nova operação básica
+    /// Creates a new basic operation.
     pub fn new(key: Option<String>, op: String, value: Option<Vec<u8>>) -> Self {
         Self {
             key,
@@ -63,7 +63,7 @@ impl Operation {
         }
     }
 
-    /// Cria uma nova operação com documentos (para operações batch)
+    /// Creates a new operation with documents (for batch operations).
     pub fn new_with_documents(
         key: Option<String>,
         op: String,
@@ -79,7 +79,7 @@ impl Operation {
         }
     }
 
-    /// Getters públicos para acessar os campos
+    /// Public getters to access the fields.
     pub fn key(&self) -> Option<&String> {
         self.key.as_ref()
     }
@@ -100,41 +100,41 @@ impl Operation {
         self.entry.as_ref()
     }
 
-    /// Define a entry após a criação da operação
+    /// Sets the entry after the operation is created.
     pub fn set_entry(&mut self, entry: Entry) {
         self.entry = Some(entry);
     }
 
-    /// Verifica se a operação tem uma entry válida
+    /// Checks whether the operation has a valid entry.
     pub fn has_entry(&self) -> bool {
         self.entry.is_some()
     }
 
-    /// Serializa a operação para bytes usando postcard
+    /// Serializes the operation to bytes using postcard.
     pub fn marshal(&self) -> Result<Vec<u8>> {
         serializer::serialize(self)
     }
 }
 
-/// Analisa um Entry do Log para extrair os dados da operação.
+/// Parses a Log Entry to extract the operation data.
 ///
-/// **NOTA:** Entry.payload agora é Vec<u8> (migrado na Fase 3).
+/// **NOTE:** Entry.payload is now Vec<u8> (migrated in Phase 3).
 pub fn parse_operation(entry: Entry) -> Result<Operation> {
-    // Payload contém dados base64-encoded, decodifica primeiro
+    // The payload contains base64-encoded data; decode it first.
     let payload_bytes = entry.payload();
 
-    // Decodifica base64 para obter os bytes originais da serialização Postcard
+    // Decode base64 to get the original bytes from the Postcard serialization.
     use base64::{Engine as _, engine::general_purpose};
     let decoded_bytes = general_purpose::STANDARD
         .decode(payload_bytes)
         .map_err(|err| GuardianError::Store(format!("Unable to decode base64 payload: {}", err)))?;
 
-    // Desserializa o payload usando postcard
+    // Deserialize the payload using postcard.
     let mut op: Operation = serializer::deserialize(&decoded_bytes).map_err(|err| {
         GuardianError::Store(format!("Unable to parse operation payload: {}", err))
     })?;
 
-    // Atribui a entrada à operação após a desserialização bem-sucedida
+    // Attach the entry to the operation after successful deserialization.
     op.entry = Some(entry);
 
     Ok(op)
@@ -199,9 +199,9 @@ mod tests {
 
         let bytes = op.marshal().expect("Failed to marshal operation");
 
-        // Postcard é binário, então apenas verificamos que não está vazio
+        // Postcard is binary, so we just check that it is not empty.
         assert!(!bytes.is_empty());
-        println!("✅ Marshaled operation: {} bytes", bytes.len());
+        println!("✓ Marshaled operation: {} bytes", bytes.len());
     }
 
     #[test]
@@ -212,7 +212,7 @@ mod tests {
             Some(b"test_data".to_vec()),
         );
 
-        // Serializa 3 vezes
+        // Serialize 3 times.
         let hashes: Vec<String> = (0..3)
             .map(|_| {
                 let bytes = op.marshal().expect("Marshal failed");
@@ -220,13 +220,13 @@ mod tests {
             })
             .collect();
 
-        // Todos os hashes devem ser idênticos
+        // All hashes must be identical.
         let first = &hashes[0];
         for hash in &hashes[1..] {
             assert_eq!(first, hash, "Operation serialization not deterministic!");
         }
 
-        println!("✅ Operation deterministic hash: {}", first);
+        println!("✓ Operation deterministic hash: {}", first);
     }
 
     #[test]
@@ -243,7 +243,7 @@ mod tests {
         op.set_entry(entry);
         assert!(op.has_entry());
 
-        println!("✅ Operation set_entry successful");
+        println!("✓ Operation set_entry successful");
     }
 
     #[test]
@@ -258,13 +258,13 @@ mod tests {
             ],
         );
 
-        // Serializa
+        // Serialize.
         let bytes = original.marshal().expect("Marshal failed");
 
-        // Desserializa
+        // Deserialize.
         let deserialized: Operation = serializer::deserialize(&bytes).expect("Deserialize failed");
 
-        // Valida
+        // Validate.
         assert_eq!(original.key(), deserialized.key());
         assert_eq!(original.op(), deserialized.op());
         assert_eq!(original.docs().len(), deserialized.docs().len());
@@ -274,12 +274,12 @@ mod tests {
             assert_eq!(orig_doc.value(), deser_doc.value());
         }
 
-        println!("✅ Complex operation roundtrip successful");
+        println!("✓ Complex operation roundtrip successful");
     }
 
     #[test]
     fn test_parse_operation() {
-        // Cria uma operação e a serializa usando postcard
+        // Create an operation and serialize it using postcard.
         let original_op = Operation::new(
             Some("parse_test".to_string()),
             "GET".to_string(),
@@ -288,15 +288,15 @@ mod tests {
 
         let postcard_data = original_op.marshal().expect("Failed to marshal");
 
-        // Codifica em base64 como faz add_operation
+        // Encode to base64 as add_operation does.
         use base64::{Engine as _, engine::general_purpose};
         let base64_data = general_purpose::STANDARD.encode(&postcard_data);
 
-        // Cria uma entry com o payload base64
+        // Create an entry with the base64 payload.
         let identity = create_test_identity();
         let entry = Entry::new(identity, "test_log", base64_data.as_bytes(), &[], None);
 
-        // Testa o parse
+        // Test the parse.
         let parsed_op = parse_operation(entry).expect("Failed to parse operation");
 
         assert_eq!(parsed_op.key(), Some(&"parse_test".to_string()));

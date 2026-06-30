@@ -15,7 +15,7 @@ use crate::traits::{
     TracerWrapper,
 };
 use bytes::Bytes;
-use iroh_docs::{AuthorId, api::Doc, store::Query};
+use iroh_docs::{AuthorId, Capability, api::Doc, store::Query};
 use opentelemetry::trace::{TracerProvider, noop::NoopTracerProvider};
 use parking_lot::RwLock;
 use serde_json::{Map, Value};
@@ -23,16 +23,19 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{Span, debug, info, instrument, warn};
 
-/// Representa um documento genérico.
+/// Represents a generic document.
 pub type Document = Value;
 
-/// Chave usada no cache para persistir o NamespaceId do documento iroh-docs
+/// Cache key used to persist the iroh-docs document's NamespaceId.
 const NAMESPACE_CACHE_KEY: &[u8] = b"_iroh_docs_doc_namespace_id";
+/// Cache key used to persist whether this replica holds the namespace write secret.
+/// Stored as a single byte: 1 = write-capable, 0 = read-only.
+const WRITABLE_CACHE_KEY: &[u8] = b"_iroh_docs_doc_writable";
 
-/// Índice local em memória que espelha o estado do documento iroh-docs.
+/// Local in-memory index that mirrors the iroh-docs document state.
 ///
-/// Atualizado atomicamente após cada operação de put/delete,
-/// servindo como cache síncrono para queries do StoreIndex.
+/// Updated atomically after each put/delete operation,
+/// serving as a synchronous cache for StoreIndex queries.
 pub struct DocumentStoreIndex {
     index: Arc<RwLock<HashMap<String, Vec<u8>>>>,
 }
@@ -86,6 +89,47 @@ impl DocumentStoreIndex {
     }
 }
 
+/// Rebuilds the in-memory index from the current state of the iroh-docs document.
+/// Shared between `sync_index_from_docs` and the reactive live-sync task.
+async fn refresh_doc_index(
+    docs: &WillowDocs,
+    doc: &Doc,
+    client: &Arc<IrohClient>,
+    index: &Arc<DocumentStoreIndex>,
+) -> Result<usize> {
+    let entries = docs
+        .get_many(doc, Query::single_latest_per_key().build())
+        .await?;
+
+    index.clear_all();
+    let mut count = 0;
+
+    for entry in &entries {
+        let key = String::from_utf8_lossy(entry.key()).to_string();
+
+        if entry.content_len() == 0 {
+            continue;
+        }
+
+        let hash_str = entry.content_hash().to_hex();
+        match client.cat_bytes(&hash_str).await {
+            Ok(value) => {
+                index.insert(key, value);
+                count += 1;
+            }
+            Err(e) => {
+                warn!("Failed to read content for key from iroh-docs: {:?}", e);
+            }
+        }
+    }
+
+    debug!(
+        "DocumentStore index synchronized from iroh-docs: {} entries",
+        count
+    );
+    Ok(count)
+}
+
 impl StoreIndex for DocumentStoreIndex {
     type Error = GuardianError;
 
@@ -114,8 +158,8 @@ impl StoreIndex for DocumentStoreIndex {
         Ok(guard.is_empty())
     }
 
-    /// No-op para a implementação baseada em iroh-docs.
-    /// O índice local é atualizado diretamente após cada operação put/delete.
+    /// No-op for the iroh-docs-based implementation.
+    /// The local index is updated directly after each put/delete operation.
     fn update_index(
         &mut self,
         _log: &crate::log::Log,
@@ -131,55 +175,58 @@ impl StoreIndex for DocumentStoreIndex {
     }
 }
 
-/// Implementação da DocumentStore para GuardianDB usando iroh-docs (WillowDocs).
+/// DocumentStore implementation for GuardianDB using iroh-docs (WillowDocs).
 ///
-/// Esta implementação utiliza o protocolo iroh-docs para armazenamento de documentos
-/// distribuído com resolução de conflitos Last-Write-Wins (LWW), substituindo a
-/// arquitetura anterior baseada em BaseStore + OpLog.
+/// This implementation uses the iroh-docs protocol for distributed document
+/// storage with Last-Write-Wins (LWW) conflict resolution, replacing the
+/// previous architecture based on BaseStore + OpLog.
 ///
-/// # Arquitetura
+/// # Architecture
 ///
 /// - **Backend**: iroh-docs (Willow range-based reconciliation)
-/// - **Escrita**: `doc.set_bytes()` / `doc.del()` via WillowDocs
-/// - **Leitura**: Índice local em memória espelhando o estado do iroh-docs
-/// - **Sync**: Automático via Willow (sem gossip heads manuais)
-/// - **Índice local**: HashMap em memória espelhando o estado do iroh-docs
+/// - **Write**: `doc.set_bytes()` / `doc.del()` via WillowDocs
+/// - **Read**: Local in-memory index mirroring the iroh-docs state
+/// - **Sync**: Automatic via Willow (no manual gossip heads)
+/// - **Local index**: In-memory HashMap mirroring the iroh-docs state
 pub struct GuardianDBDocumentStore {
-    /// WillowDocs backend (iroh-docs) — substitui BaseStore
+    /// WillowDocs backend (iroh-docs) — replaces BaseStore.
     docs: WillowDocs,
-    /// Handle do documento iroh-docs para este namespace
+    /// iroh-docs document handle for this namespace.
     doc_handle: Doc,
-    /// AuthorId para operações de escrita (mapeado da Identity)
+    /// AuthorId for write operations (mapped from the Identity).
     author_id: AuthorId,
-    /// Controlador de acesso para validação de permissões
+    /// Access controller for permission validation.
     access_controller: Arc<dyn AccessController>,
-    /// Barramento de eventos para notificações reativas
+    /// Event bus for reactive notifications.
     event_bus: Arc<EventBus>,
-    /// Referência ao IrohClient (compatibilidade Store trait)
+    /// Reference to the IrohClient (Store trait compatibility).
     client: Arc<IrohClient>,
-    /// Identidade criptográfica da store
+    /// Cryptographic identity of the store.
     identity: Arc<Identity>,
-    /// Endereço da store (cached para resolver problemas de lifetime)
+    /// Store address (cached to resolve lifetime issues).
     cached_address: Arc<dyn Address + Send + Sync>,
-    /// Nome do banco de dados
+    /// Database name.
     db_name: String,
-    /// Cache local (sled) — usado para persistir o NamespaceId entre recarregamentos
+    /// Local cache (sled) — used to persist the NamespaceId across reloads.
     cache: Arc<dyn Datastore>,
-    /// Índice local em memória espelhando o estado do iroh-docs
+    /// Local in-memory index mirroring the iroh-docs state.
     index: Arc<DocumentStoreIndex>,
-    /// Opções de documento (marshal, unmarshal, key_extractor)
+    /// Document options (marshal, unmarshal, key_extractor).
     doc_opts: CreateDocumentDBOptions,
-    /// Span para tracing estruturado
+    /// Span for structured tracing.
     span: Span,
-    /// Tracer para telemetria
+    /// Tracer for telemetry.
     tracer: Arc<TracerWrapper>,
-    /// Interface de emissão de eventos (compatibilidade Store trait)
+    /// Event emission interface (Store trait compatibility).
     emitter_interface: Arc<dyn crate::events::EmitterInterface + Send + Sync>,
-    /// Log vazio para compatibilidade com a trait Store (op_log())
+    /// Empty log for compatibility with the Store trait (op_log()).
     empty_log: Arc<RwLock<crate::log::Log>>,
-    /// Optional: BlobStore para grandes attachments binários
+    /// Optional: BlobStore for large binary attachments.
     #[allow(dead_code)]
     blob_store: Option<Arc<crate::p2p::network::core::blobs::BlobStore>>,
+    /// Whether this replica may originate writes. `false` when opened read-only (via the
+    /// `read_only` option) or imported from a read-only `DocTicket` (no namespace secret).
+    writable: bool,
 }
 
 #[async_trait::async_trait]
@@ -214,10 +261,6 @@ impl Store for GuardianDBDocumentStore {
         "document"
     }
 
-    fn replication_status(&self) -> crate::stores::replicator::replication_info::ReplicationInfo {
-        crate::stores::replicator::replication_info::ReplicationInfo::new()
-    }
-
     fn cache(&self) -> Arc<dyn Datastore> {
         self.cache.clone()
     }
@@ -236,13 +279,13 @@ impl Store for GuardianDBDocumentStore {
         Ok(())
     }
 
-    /// No-op para iroh-docs — Willow sync gerencia o carregamento automaticamente.
+    /// No-op for iroh-docs — Willow sync handles loading automatically.
     async fn load(&self, _amount: usize) -> std::result::Result<(), Self::Error> {
         self.sync_index_from_docs().await?;
         Ok(())
     }
 
-    /// No-op para iroh-docs — Willow sync substitui o exchange de heads via gossip.
+    /// No-op for iroh-docs — Willow sync replaces the gossip heads exchange.
     async fn sync(
         &self,
         _heads: Vec<crate::log::entry::Entry>,
@@ -251,19 +294,19 @@ impl Store for GuardianDBDocumentStore {
         Ok(())
     }
 
-    /// No-op para iroh-docs.
+    /// No-op for iroh-docs.
     async fn load_more_from(&self, _amount: u64, _entries: Vec<crate::log::entry::Entry>) {
-        // iroh-docs gerencia seu próprio carregamento incremental.
+        // iroh-docs manages its own incremental loading.
     }
 
-    /// No-op para iroh-docs.
+    /// No-op for iroh-docs.
     async fn load_from_snapshot(&self) -> std::result::Result<(), Self::Error> {
         self.sync_index_from_docs().await?;
         Ok(())
     }
 
-    /// Retorna um Log vazio para compatibilidade com a trait Store.
-    /// Na arquitetura iroh-docs, o OpLog não é mais utilizado.
+    /// Returns an empty Log for compatibility with the Store trait.
+    /// In the iroh-docs architecture, the OpLog is no longer used.
     fn op_log(&self) -> Arc<parking_lot::RwLock<crate::log::Log>> {
         self.empty_log.clone()
     }
@@ -284,13 +327,16 @@ impl Store for GuardianDBDocumentStore {
         self.access_controller.as_ref()
     }
 
-    /// Traduz uma Operation para operações iroh-docs (set_bytes/del).
-    /// Retorna uma Entry sintética para compatibilidade com a trait Store.
+    /// Translates an Operation into iroh-docs operations (set_bytes/del).
+    /// Returns a synthetic Entry for compatibility with the Store trait.
     async fn add_operation(
         &self,
         op: Operation,
         _on_progress_callback: Option<tokio::sync::mpsc::Sender<crate::log::entry::Entry>>,
     ) -> std::result::Result<crate::log::entry::Entry, Self::Error> {
+        // Canonical write path for the public DocumentStore API: enforce read-only here too.
+        self.ensure_writable()?;
+
         let key = op.key().cloned().unwrap_or_default();
 
         match op.op() {
@@ -318,13 +364,13 @@ impl Store for GuardianDBDocumentStore {
             }
             other => {
                 return Err(GuardianError::Store(format!(
-                    "Operação desconhecida: {}",
+                    "Unknown operation: {}",
                     other
                 )));
             }
         }
 
-        // Cria Entry sintética para compatibilidade
+        // Create a synthetic Entry for compatibility.
         let payload = crate::guardian::serializer::serialize(&op).unwrap_or_default();
         let clock = LamportClock::new(self.identity.pub_key());
         let entry_arc = crate::log::entry::Entry::create(
@@ -357,59 +403,120 @@ impl Store for GuardianDBDocumentStore {
 }
 
 impl GuardianDBDocumentStore {
-    /// Retorna uma referência ao span de tracing para instrumentação
+    /// Returns a reference to the tracing span used for instrumentation.
     pub fn span(&self) -> &Span {
         &self.span
     }
 
-    /// Retorna o NamespaceId do documento iroh-docs subjacente
+    /// Returns the NamespaceId of the underlying iroh-docs document.
     pub fn namespace_id(&self) -> iroh_docs::NamespaceId {
         self.doc_handle.id()
     }
 
-    /// Retorna o AuthorId usado para operações de escrita
+    /// Generates a `DocTicket` (with write capability) for this store's iroh-docs namespace.
+    /// The peer that receives the ticket can import the same namespace and replicate securely.
+    ///
+    /// Note: this grants write capability (carries the namespace secret). For role-gated
+    /// sharing, the automatic ticket exchange hands out read or write tickets per requester
+    /// (see [`GuardianDBDocumentStore::share_tickets`]).
+    pub async fn share_ticket(&self) -> Result<String> {
+        let ticket = self.docs.share_doc(&self.doc_handle, true).await?;
+        Ok(ticket.to_string())
+    }
+
+    /// Generates both the read-only and read-write `DocTicket`s for this store's namespace.
+    ///
+    /// Returns `(read_ticket, write_ticket)`. The read ticket carries only the namespace
+    /// public key (no write secret); the write ticket carries the namespace secret.
+    pub async fn share_tickets(&self) -> Result<(String, String)> {
+        let read_ticket = self.docs.share_doc(&self.doc_handle, false).await?;
+        let write_ticket = self.docs.share_doc(&self.doc_handle, true).await?;
+        Ok((read_ticket.to_string(), write_ticket.to_string()))
+    }
+
+    /// Returns whether this replica may originate writes.
+    pub fn is_writable(&self) -> bool {
+        self.writable
+    }
+
+    /// Fails fast if this replica is read-only, so callers get a clear error instead of
+    /// producing entries that remote peers would silently reject.
+    fn ensure_writable(&self) -> Result<()> {
+        if self.writable {
+            Ok(())
+        } else {
+            Err(GuardianError::Store(
+                "store is read-only: this replica cannot originate writes".to_string(),
+            ))
+        }
+    }
+
+    /// Persists the replica's writability flag (best-effort).
+    async fn persist_writable(cache: &dyn Datastore, writable: bool) {
+        if let Err(e) = cache.put(WRITABLE_CACHE_KEY, &[writable as u8]).await {
+            warn!("Failed to persist writability flag: {:?}", e);
+        }
+    }
+
+    /// Loads the replica's writability flag, defaulting to `true` for legacy stores that
+    /// predate the flag (they were always write-capable).
+    async fn load_writable(cache: &dyn Datastore) -> bool {
+        match cache.get(WRITABLE_CACHE_KEY).await {
+            Ok(Some(bytes)) if !bytes.is_empty() => bytes[0] != 0,
+            _ => true,
+        }
+    }
+
+    /// Returns the AuthorId used for write operations.
     pub fn author_id(&self) -> AuthorId {
         self.author_id
     }
 
-    /// Sincroniza o índice local com o estado atual do documento iroh-docs.
+    /// Synchronizes the local index with the current state of the iroh-docs document.
     ///
-    /// Consulta todas as entradas do documento e reconstrói o índice em memória.
+    /// Queries all document entries and rebuilds the in-memory index.
     pub async fn sync_index_from_docs(&self) -> Result<usize> {
-        let entries = self
-            .docs
-            .get_many(&self.doc_handle, Query::single_latest_per_key().build())
-            .await?;
+        refresh_doc_index(&self.docs, &self.doc_handle, &self.client, &self.index).await
+    }
 
-        let mut count = 0;
-        self.index.clear_all();
+    /// Starts a background task that keeps the in-memory index synchronized with the
+    /// iroh-docs namespace as REMOTE documents arrive via Willow sync.
+    fn spawn_live_index_sync(&self) {
+        let docs = self.docs.clone();
+        let doc = self.doc_handle.clone();
+        let client = self.client.clone();
+        let index = self.index.clone();
 
-        for entry in &entries {
-            let key = String::from_utf8_lossy(entry.key()).to_string();
-
-            if entry.content_len() == 0 {
-                continue;
-            }
-
-            let content_hash = entry.content_hash();
-            let hash_str = content_hash.to_hex();
-            match self.client.cat_bytes(&hash_str).await {
-                Ok(value) => {
-                    self.index.insert(key, value);
-                    count += 1;
-                }
+        tokio::spawn(async move {
+            let mut stream = match doc.subscribe().await {
+                Ok(s) => s,
                 Err(e) => {
-                    warn!("Failed to read content for key from iroh-docs: {:?}", e);
+                    warn!(
+                        "Failed to subscribe to iroh-docs doc events (Document): {:?}",
+                        e
+                    );
+                    return;
+                }
+            };
+
+            use futures::StreamExt;
+            use iroh_docs::engine::LiveEvent;
+            while let Some(event) = stream.next().await {
+                // Rebuild the index ONLY on REMOTE-origin events (peer sync),
+                // avoiding a race with local writes (which already update the index directly).
+                let is_remote = matches!(
+                    event,
+                    Ok(LiveEvent::InsertRemote { .. })
+                        | Ok(LiveEvent::ContentReady { .. })
+                        | Ok(LiveEvent::PendingContentReady)
+                        | Ok(LiveEvent::SyncFinished(_))
+                );
+                if is_remote && let Err(e) = refresh_doc_index(&docs, &doc, &client, &index).await {
+                    warn!("Failed to update Document index via live sync: {:?}", e);
                 }
             }
-        }
-
-        info!(
-            "DocumentStore index synchronized from iroh-docs: {} entries loaded",
-            count
-        );
-
-        Ok(count)
+            debug!("Live index sync terminated for Document store");
+        });
     }
 
     #[instrument(level = "debug", skip(client, identity, options))]
@@ -419,14 +526,14 @@ impl GuardianDBDocumentStore {
         addr: Arc<dyn Address>,
         mut options: NewStoreOptions,
     ) -> Result<Self> {
-        // 1. Se opções específicas da store não forem fornecidas, usa o padrão para
-        //    documentos com uma chave "_id".
+        // 1. If store-specific options are not provided, use the default for
+        //    documents with an "_id" key.
         if options.store_specific_opts.is_none() {
             let default_opts = default_store_opts_for_map("_id");
             options.store_specific_opts = Some(Box::new(default_opts));
         }
 
-        // 2. Faz o "downcast" das opções específicas para o tipo esperado.
+        // 2. Downcast the specific options to the expected type.
         let specific_opts_box = options.store_specific_opts.take().ok_or_else(|| {
             GuardianError::InvalidArgument("StoreSpecificOpts is required".to_string())
         })?;
@@ -434,29 +541,29 @@ impl GuardianDBDocumentStore {
             .downcast::<CreateDocumentDBOptions>()
             .map_err(|_| {
                 GuardianError::InvalidArgument(
-                    "Tipo inválido fornecido para opts.StoreSpecificOpts".to_string(),
+                    "Invalid type provided for opts.StoreSpecificOpts".to_string(),
                 )
             })?;
 
-        // --- 3. Inicializa iroh-docs ---
+        // --- 3. Initialize iroh-docs ---
 
         if !client.has_docs_client().await {
             client.init_docs().await.map_err(|e| {
-                GuardianError::Store(format!("Falha ao inicializar iroh-docs: {}", e))
+                GuardianError::Store(format!("Failed to initialize iroh-docs: {}", e))
             })?;
         }
 
         let mut docs = client.docs_client().await.ok_or_else(|| {
-            GuardianError::Store("iroh-docs não disponível após inicialização".to_string())
+            GuardianError::Store("iroh-docs not available after initialization".to_string())
         })?;
 
-        // --- 4. Obtém AuthorId ---
+        // --- 4. Get the AuthorId ---
 
         let author_id = docs.get_or_init_author().await.map_err(|e| {
-            GuardianError::Store(format!("Falha ao inicializar author iroh-docs: {}", e))
+            GuardianError::Store(format!("Failed to initialize iroh-docs author: {}", e))
         })?;
 
-        // --- 5. Configura componentes ---
+        // --- 5. Configure the components ---
 
         let db_name = addr.get_path().to_string();
         let span = tracing::info_span!("document_store", address = %addr.to_string());
@@ -468,6 +575,16 @@ impl GuardianDBDocumentStore {
             default_access.insert("write".to_string(), vec!["*".to_string()]);
             Arc::new(SimpleAccessController::new(Some(default_access))) as Arc<dyn AccessController>
         });
+        // Clone to register the ticket provider (gate for who can replicate).
+        let access_controller_for_registry = access_controller.clone();
+        // Ticket exchange key = the store NAME (last segment of the address), consistent
+        // across nodes (same as the gossip topic). Captured before `addr` is moved.
+        let store_key = addr
+            .to_string()
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .to_string();
 
         let tracer = options.tracer.unwrap_or_else(|| {
             Arc::new(TracerWrapper::Noop(
@@ -489,55 +606,117 @@ impl GuardianDBDocumentStore {
         let emitter_interface: Arc<dyn crate::events::EmitterInterface + Send + Sync> =
             Arc::new(EventEmitter::new());
 
-        // --- 6. Cria ou abre documento iroh-docs ---
+        // --- 6. Create, open or import the iroh-docs document ---
 
-        let doc_handle = match cache.get(NAMESPACE_CACHE_KEY).await {
-            Ok(Some(namespace_bytes)) if namespace_bytes.len() == 32 => {
-                let mut ns_bytes = [0u8; 32];
-                ns_bytes.copy_from_slice(&namespace_bytes);
-                let namespace_id = iroh_docs::NamespaceId::from(ns_bytes);
+        // A node opened read-only must never create a namespace (it would mint its own write
+        // secret and become an isolated writer). It may only import an existing one.
+        let requested_read_only = options.read_only.unwrap_or(false);
 
-                match docs.open_doc(namespace_id).await? {
-                    Some(doc) => {
-                        info!("Reopened existing iroh-docs document: {:?}", namespace_id);
-                        doc
-                    }
-                    None => {
-                        warn!(
-                            "Cached namespace {:?} not found, creating new document",
-                            namespace_id
-                        );
-                        let doc = docs.create_doc().await?;
-                        let ns_id = doc.id();
-                        cache
-                            .put(NAMESPACE_CACHE_KEY, ns_id.as_bytes())
-                            .await
-                            .map_err(|e| {
-                                GuardianError::Store(format!(
-                                    "Falha ao persistir NamespaceId: {}",
-                                    e
-                                ))
-                            })?;
-                        info!("Created new iroh-docs document: {:?}", ns_id);
-                        doc
+        // Resolve the DocTicket: explicit (options) takes priority; otherwise try AUTOMATIC EXCHANGE
+        // with known peers (joining the shared namespace of an authorized peer).
+        let resolved_ticket: Option<String> = match options.doc_ticket.clone() {
+            Some(t) => Some(t),
+            None => client.backend().resolve_shared_ticket(&store_key).await,
+        };
+
+        // Establish the document, tracking whether this replica holds the namespace write
+        // secret (`doc_is_writable`). If a DocTicket was resolved, import the peer's SHARED
+        // namespace (secure replication via capability). Otherwise, create/reopen locally.
+        let (doc_handle, doc_is_writable) = if let Some(ticket_str) = resolved_ticket.as_ref() {
+            let ticket = ticket_str
+                .parse::<iroh_docs::DocTicket>()
+                .map_err(|e| GuardianError::Store(format!("Invalid DocTicket: {}", e)))?;
+            // The ticket's capability determines whether we receive the write secret.
+            let ticket_writable = matches!(ticket.capability, Capability::Write(_));
+            let doc = docs.import_doc(ticket).await?;
+            let ns_id = doc.id();
+            cache
+                .put(NAMESPACE_CACHE_KEY, ns_id.as_bytes())
+                .await
+                .map_err(|e| {
+                    GuardianError::Store(format!("Failed to persist imported NamespaceId: {}", e))
+                })?;
+            Self::persist_writable(cache.as_ref(), ticket_writable).await;
+            info!(
+                writable = ticket_writable,
+                "Imported shared iroh-docs document via ticket: {:?}", ns_id
+            );
+            (doc, ticket_writable)
+        } else {
+            match cache.get(NAMESPACE_CACHE_KEY).await {
+                Ok(Some(namespace_bytes)) if namespace_bytes.len() == 32 => {
+                    let mut ns_bytes = [0u8; 32];
+                    ns_bytes.copy_from_slice(&namespace_bytes);
+                    let namespace_id = iroh_docs::NamespaceId::from(ns_bytes);
+
+                    match docs.open_doc(namespace_id).await? {
+                        Some(doc) => {
+                            // Writability recorded when the namespace was established; legacy
+                            // stores without the flag are assumed write-capable.
+                            let writable = Self::load_writable(cache.as_ref()).await;
+                            info!(
+                                writable,
+                                "Reopened existing iroh-docs document: {:?}", namespace_id
+                            );
+                            (doc, writable)
+                        }
+                        None if requested_read_only => {
+                            return Err(GuardianError::Store(format!(
+                                "Read-only store '{}' cannot create a namespace and the cached \
+                                 namespace {:?} was not found; no ticket available to import",
+                                store_key, namespace_id
+                            )));
+                        }
+                        None => {
+                            warn!(
+                                "Cached namespace {:?} not found, creating new document",
+                                namespace_id
+                            );
+                            let doc = docs.create_doc().await?;
+                            let ns_id = doc.id();
+                            cache
+                                .put(NAMESPACE_CACHE_KEY, ns_id.as_bytes())
+                                .await
+                                .map_err(|e| {
+                                    GuardianError::Store(format!(
+                                        "Failed to persist NamespaceId: {}",
+                                        e
+                                    ))
+                                })?;
+                            Self::persist_writable(cache.as_ref(), true).await;
+                            info!("Created new iroh-docs document: {:?}", ns_id);
+                            (doc, true)
+                        }
                     }
                 }
-            }
-            _ => {
-                let doc = docs.create_doc().await?;
-                let ns_id = doc.id();
-                cache
-                    .put(NAMESPACE_CACHE_KEY, ns_id.as_bytes())
-                    .await
-                    .map_err(|e| {
-                        GuardianError::Store(format!("Falha ao persistir NamespaceId: {}", e))
-                    })?;
-                info!("Created new iroh-docs document: {:?}", ns_id);
-                doc
+                _ if requested_read_only => {
+                    return Err(GuardianError::Store(format!(
+                        "Read-only store '{}' cannot create a namespace and none was available \
+                         to import (no ticket, no cached namespace)",
+                        store_key
+                    )));
+                }
+                _ => {
+                    let doc = docs.create_doc().await?;
+                    let ns_id = doc.id();
+                    cache
+                        .put(NAMESPACE_CACHE_KEY, ns_id.as_bytes())
+                        .await
+                        .map_err(|e| {
+                            GuardianError::Store(format!("Failed to persist NamespaceId: {}", e))
+                        })?;
+                    Self::persist_writable(cache.as_ref(), true).await;
+                    info!("Created new iroh-docs document: {:?}", ns_id);
+                    (doc, true)
+                }
             }
         };
 
-        // --- 7. Cria Log vazio para compatibilidade com Store trait ---
+        // Effective writability: a node explicitly opened read-only never writes, even if it
+        // happens to hold a write-capable namespace (defense in depth).
+        let writable = doc_is_writable && !requested_read_only;
+
+        // --- 7. Create an empty Log for compatibility with the Store trait ---
 
         let empty_log = {
             use crate::log::{AdHocAccess, Log, LogOptions};
@@ -556,11 +735,11 @@ impl GuardianDBDocumentStore {
             )))
         };
 
-        // --- 8. Inicializa BlobStore (opcional, para attachments grandes) ---
+        // --- 8. Initialize the BlobStore (optional, for large attachments) ---
 
         let blob_store = client.blobs_client().await.map(Arc::new);
 
-        // --- 9. Cria a instância e sincroniza o índice ---
+        // --- 9. Create the instance and synchronize the index ---
 
         let index = Arc::new(DocumentStoreIndex::new());
         // Address trait already requires Send + Sync, so this coercion is safe
@@ -584,9 +763,10 @@ impl GuardianDBDocumentStore {
             emitter_interface,
             empty_log,
             blob_store,
+            writable,
         };
 
-        // Sincroniza o índice local com o estado do documento iroh-docs
+        // Synchronize the local index with the iroh-docs document state.
         match store.sync_index_from_docs().await {
             Ok(count) => {
                 if count > 0 {
@@ -599,6 +779,34 @@ impl GuardianDBDocumentStore {
             Err(e) => {
                 warn!(
                     "Failed to sync index on initialization: {:?}. Store will start empty.",
+                    e
+                );
+            }
+        }
+
+        // Start the reactive live sync: keeps the index updated as remote documents
+        // arrive via Willow sync (essential for P2P replication to reflect in get()/query()).
+        store.spawn_live_index_sync();
+
+        // Register this store as a DocTicket provider for authorized peers (automatic exchange).
+        // The capability is gated per requester by the AccessController: write-authorized peers
+        // get the write ticket (namespace secret), read-only peers get the read ticket.
+        match store.share_tickets().await {
+            Ok((read_ticket, write_ticket)) => {
+                store
+                    .client
+                    .backend()
+                    .register_ticket_provider(
+                        store_key,
+                        read_ticket,
+                        write_ticket,
+                        access_controller_for_registry,
+                    )
+                    .await;
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to generate share tickets, store not registered for exchange: {:?}",
                     e
                 );
             }
@@ -657,7 +865,7 @@ impl GuardianDBDocumentStore {
             if let Some(value_bytes) = self.index.get_value(&index_key) {
                 let doc: Document = serde_json::from_slice(&value_bytes).map_err(|e| {
                     GuardianError::Serialization(format!(
-                        "Impossível desserializar o valor para a chave {}: {}",
+                        "Unable to deserialize the value for key {}: {}",
                         index_key, e
                     ))
                 })?;
@@ -670,12 +878,13 @@ impl GuardianDBDocumentStore {
 
     #[instrument(level = "debug", skip(self, document))]
     pub async fn put(&mut self, document: Document) -> Result<Operation> {
+        self.ensure_writable()?;
         let _entered = self.span.enter();
 
         let key = (self.doc_opts.key_extractor)(&document)?;
         let data = (self.doc_opts.marshal)(&document)?;
 
-        // Escreve diretamente no iroh-docs (Willow handles sync)
+        // Write directly to iroh-docs (Willow handles sync).
         self.docs
             .set_bytes(
                 &self.doc_handle,
@@ -685,13 +894,10 @@ impl GuardianDBDocumentStore {
             )
             .await
             .map_err(|e| {
-                GuardianError::Store(format!(
-                    "Erro ao escrever chave '{}' no iroh-docs: {}",
-                    key, e
-                ))
+                GuardianError::Store(format!("Error writing key '{}' to iroh-docs: {}", key, e))
             })?;
 
-        // Atualiza o índice local imediatamente
+        // Update the local index immediately.
         self.index.insert(key.clone(), data.clone());
 
         debug!("PUT key='{}' ({} bytes) via iroh-docs", key, data.len());
@@ -701,17 +907,18 @@ impl GuardianDBDocumentStore {
 
     #[instrument(level = "debug", skip(self))]
     pub async fn delete(&mut self, document_id: &str) -> Result<Operation> {
+        self.ensure_writable()?;
         let _entered = self.span.enter();
 
-        // Verifica se a entrada existe no índice local
+        // Check whether the entry exists in the local index.
         if self.index.get_value(document_id).is_none() {
             return Err(GuardianError::NotFound(format!(
-                "Nenhuma entrada com a chave '{}' na base de dados",
+                "No entry with key '{}' in the database",
                 document_id
             )));
         }
 
-        // Remove do iroh-docs (Willow handles sync)
+        // Remove from iroh-docs (Willow handles sync).
         let deleted = self
             .docs
             .del(
@@ -722,12 +929,12 @@ impl GuardianDBDocumentStore {
             .await
             .map_err(|e| {
                 GuardianError::Store(format!(
-                    "Erro ao deletar chave '{}' no iroh-docs: {}",
+                    "Error deleting key '{}' in iroh-docs: {}",
                     document_id, e
                 ))
             })?;
 
-        // Atualiza o índice local imediatamente
+        // Update the local index immediately.
         self.index.remove(document_id);
 
         debug!(
@@ -744,9 +951,10 @@ impl GuardianDBDocumentStore {
 
     #[instrument(level = "debug", skip(self, documents))]
     pub async fn put_batch(&mut self, documents: Vec<Document>) -> Result<Vec<Operation>> {
+        self.ensure_writable()?;
         if documents.is_empty() {
             return Err(GuardianError::InvalidArgument(
-                "Nada para adicionar à store".to_string(),
+                "Nothing to add to the store".to_string(),
             ));
         }
 
@@ -762,9 +970,10 @@ impl GuardianDBDocumentStore {
 
     #[instrument(level = "debug", skip(self, documents))]
     pub async fn put_all(&mut self, documents: Vec<Document>) -> Result<Operation> {
+        self.ensure_writable()?;
         if documents.is_empty() {
             return Err(GuardianError::InvalidArgument(
-                "Nada para adicionar à store".to_string(),
+                "Nothing to add to the store".to_string(),
             ));
         }
 
@@ -773,20 +982,20 @@ impl GuardianDBDocumentStore {
         for doc in documents {
             let key = (self.doc_opts.key_extractor)(&doc).map_err(|_| {
                 GuardianError::InvalidArgument(
-                    "Um dos documentos fornecidos não possui chave de índice".to_string(),
+                    "One of the provided documents has no index key".to_string(),
                 )
             })?;
 
             let data = (self.doc_opts.marshal)(&doc).map_err(|_| {
                 GuardianError::Serialization(
-                    "Não foi possível serializar um dos documentos fornecidos".to_string(),
+                    "Could not serialize one of the provided documents".to_string(),
                 )
             })?;
 
             to_add.push((key, data));
         }
 
-        // Cada documento é um set_bytes individual (iroh-docs não tem batch API)
+        // Each document is an individual set_bytes (iroh-docs has no batch API).
         for (key, data) in &to_add {
             self.docs
                 .set_bytes(
@@ -797,19 +1006,16 @@ impl GuardianDBDocumentStore {
                 )
                 .await
                 .map_err(|e| {
-                    GuardianError::Store(format!(
-                        "Erro ao escrever chave '{}' no iroh-docs: {}",
-                        key, e
-                    ))
+                    GuardianError::Store(format!("Error writing key '{}' to iroh-docs: {}", key, e))
                 })?;
 
-            // Atualiza o índice local imediatamente
+            // Update the local index immediately.
             self.index.insert(key.clone(), data.clone());
         }
 
         debug!("PUTALL {} documents via iroh-docs", to_add.len());
 
-        // Retorna uma Operation representando o batch
+        // Return an Operation representing the batch.
         let first_key = to_add.first().map(|(k, _)| k.clone());
         Ok(Operation::new(first_key, "PUTALL".to_string(), None))
     }
@@ -825,7 +1031,7 @@ impl GuardianDBDocumentStore {
             if let Some(doc_bytes) = self.index.get_value(&index_key) {
                 let doc: Document = serde_json::from_slice(&doc_bytes).map_err(|e| {
                     GuardianError::Serialization(format!(
-                        "Não foi possível desserializar o documento: {}",
+                        "Could not deserialize the document: {}",
                         e
                     ))
                 })?;
@@ -843,7 +1049,7 @@ impl GuardianDBDocumentStore {
         "document"
     }
 
-    /// Cria um cache baseado em sled para persistir o NamespaceId
+    /// Creates a sled-based cache to persist the NamespaceId.
     fn create_cache(address: &dyn Address, cache_dir: &str) -> Result<Arc<dyn Datastore>> {
         use crate::cache::level_down::LevelDownCache;
         use crate::cache::{Cache, CacheMode, Options};
@@ -904,38 +1110,38 @@ impl GuardianDBDocumentStore {
     }
 }
 
-/// Retorna uma closure que extrai um campo de um `serde_json::Value::Object`.
+/// Returns a closure that extracts a field from a `serde_json::Value::Object`.
 ///
-/// A closure retornada captura o `key_field` para uso posterior.
+/// The returned closure captures the `key_field` for later use.
 pub fn map_key_extractor(key_field: String) -> impl Fn(&Document) -> Result<String> {
     move |doc: &Document| {
-        // Assegura que o documento é um objeto JSON (mapa)
+        // Ensure the document is a JSON object (map).
         let obj = doc.as_object().ok_or_else(|| {
             GuardianError::InvalidArgument(
-                "A entrada precisa ser um objeto JSON (map[string]interface{{}})".to_string(),
+                "The entry must be a JSON object (map[string]interface{{}})".to_string(),
             )
         })?;
 
-        // Procura pelo campo chave no objeto
+        // Look up the key field in the object.
         let value = obj.get(&key_field).ok_or_else(|| {
             GuardianError::NotFound(format!(
-                "Faltando valor para o campo `{}` na entrada",
+                "Missing value for field `{}` in the entry",
                 key_field
             ))
         })?;
 
-        // Assegura que o valor encontrado é uma string
+        // Ensure the found value is a string.
         let key = value.as_str().ok_or_else(|| {
             GuardianError::InvalidArgument(format!(
-                "O valor para o campo `{}` não é uma string",
+                "The value for field `{}` is not a string",
                 key_field
             ))
         })?;
 
-        // Valida que a chave não está vazia
+        // Validate that the key is not empty.
         if key.is_empty() {
             return Err(GuardianError::InvalidArgument(format!(
-                "O campo `{}` não pode ser uma string vazia",
+                "The field `{}` cannot be an empty string",
                 key_field
             )));
         }
@@ -944,15 +1150,15 @@ pub fn map_key_extractor(key_field: String) -> impl Fn(&Document) -> Result<Stri
     }
 }
 
-/// Cria um conjunto de opções padrão para uma store que lida com documentos
-/// baseados em mapas (JSON Objects), usando um campo específico como chave.
+/// Creates a default set of options for a store that handles map-based documents
+/// (JSON Objects), using a specific field as the key.
 pub fn default_store_opts_for_map(key_field: &str) -> CreateDocumentDBOptions {
     CreateDocumentDBOptions {
         marshal: Arc::new(|doc: &Document| serde_json::to_vec(doc).map_err(GuardianError::from)),
         unmarshal: Arc::new(|bytes: &[u8]| {
             serde_json::from_slice(bytes).map_err(GuardianError::from)
         }),
-        // Usa a função de ordem superior para criar a closure extratora de chave
+        // Use the higher-order function to create the key-extractor closure.
         key_extractor: Arc::new(map_key_extractor(key_field.to_string())),
 
         item_factory: Arc::new(|| Value::Object(Map::new())),

@@ -2,10 +2,10 @@ use crate::guardian::error::Result;
 use crate::log::identity::Identity;
 use async_trait::async_trait;
 use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey};
-use iroh::{NodeId, SecretKey};
+use iroh::{EndpointId as NodeId, SecretKey};
 use std::sync::Arc;
 
-/// Opções para criar uma identidade.
+/// Options for creating an identity.
 pub struct CreateIdentityOptions {
     pub identity_keys_path: String,
     pub id_type: String,
@@ -13,7 +13,7 @@ pub struct CreateIdentityOptions {
     pub id: String,
 }
 
-/// Trait para o Keystore
+/// Trait for the Keystore.
 #[async_trait]
 pub trait Keystore: Send + Sync {
     async fn put(&self, key: &str, value: &[u8]) -> Result<()>;
@@ -22,29 +22,29 @@ pub trait Keystore: Send + Sync {
     async fn delete(&self, key: &str) -> Result<()>;
 }
 
-/// Trait principal do IdentityProvider
+/// Main IdentityProvider trait.
 #[async_trait]
 pub trait IdentityProvider: Send + Sync {
-    /// Retorna o ID da identidade.
+    /// Returns the identity ID.
     async fn get_id(&self, opts: &CreateIdentityOptions) -> Result<String>;
 
-    /// Assina os dados de uma identidade (GuardianDB public key signature).
+    /// Signs an identity's data (GuardianDB public key signature).
     async fn sign_identity(&self, data: &[u8], id: &str) -> Result<Vec<u8>>;
 
-    /// Retorna o tipo do provider (ex: "GuardianDB", "ethereum", etc).
+    /// Returns the provider type (e.g. "GuardianDB", "ethereum", etc.).
     fn get_type(&self) -> String;
 
-    /// Verifica a identidade recebida.
+    /// Verifies the received identity.
     async fn verify_identity(&self, identity: &Identity) -> Result<()>;
 
-    /// Assina um valor genérico com a identidade.
+    /// Signs a generic value with the identity.
     async fn sign(&self, identity: &Identity, bytes: &[u8]) -> Result<Vec<u8>>;
 
-    /// Reconstrói uma chave pública a partir dos bytes.
+    /// Reconstructs a public key from bytes.
     fn unmarshal_public_key(&self, data: &[u8]) -> Result<VerifyingKey>;
 }
 
-/// Implementação concreta do IdentityProvider para GuardianDB
+/// Concrete IdentityProvider implementation for GuardianDB.
 pub struct GuardianDBIdentityProvider {
     secret_key: SecretKey,
     provider_type: String,
@@ -58,9 +58,8 @@ impl Default for GuardianDBIdentityProvider {
 
 impl GuardianDBIdentityProvider {
     pub fn new() -> Self {
-        use rand_core::OsRng;
         Self {
-            secret_key: SecretKey::generate(OsRng),
+            secret_key: SecretKey::generate(),
             provider_type: "GuardianDB".to_string(),
         }
     }
@@ -76,7 +75,7 @@ impl GuardianDBIdentityProvider {
         self.secret_key.public()
     }
 
-    /// Cria uma instância para uso em testes
+    /// Creates an instance for use in tests.
     #[cfg(test)]
     pub fn new_for_testing() -> Self {
         Self::new()
@@ -91,13 +90,13 @@ impl GuardianDBIdentityProvider {
 #[async_trait]
 impl IdentityProvider for GuardianDBIdentityProvider {
     async fn get_id(&self, _opts: &CreateIdentityOptions) -> Result<String> {
-        // Retorna o NodeId como string
+        // Return the NodeId as a string.
         let node_id = self.secret_key.public();
         Ok(node_id.to_string())
     }
 
     async fn sign_identity(&self, data: &[u8], _id: &str) -> Result<Vec<u8>> {
-        // Assina os dados com a chave secreta usando ed25519
+        // Sign the data with the secret key using ed25519.
         let signing_key = self.get_signing_key();
         let signature = signing_key.sign(data);
         Ok(signature.to_bytes().to_vec())
@@ -108,12 +107,12 @@ impl IdentityProvider for GuardianDBIdentityProvider {
     }
 
     async fn verify_identity(&self, identity: &Identity) -> Result<()> {
-        // Verifica se a identidade tem uma assinatura válida
+        // Check whether the identity has a valid signature.
         let public_key = identity.public_key().ok_or_else(|| {
             crate::guardian::error::GuardianError::Store("Identity missing public key".to_string())
         })?;
 
-        // Usa o HashMap de assinaturas ao invés de acessar a struct Signatures diretamente
+        // Use the signatures HashMap instead of accessing the Signatures struct directly.
         let signatures_map = identity.signatures_map();
         let signature_bytes = signatures_map.get("publicKey").ok_or_else(|| {
             crate::guardian::error::GuardianError::Store(
@@ -121,15 +120,15 @@ impl IdentityProvider for GuardianDBIdentityProvider {
             )
         })?;
 
-        // Reconstrói a assinatura
+        // Reconstruct the signature.
         let signature = Signature::from_slice(signature_bytes).map_err(|e| {
             crate::guardian::error::GuardianError::Store(format!("Invalid signature format: {}", e))
         })?;
 
-        // Reconstrói os dados que foram assinados
+        // Reconstruct the data that was signed.
         let signed_data = format!("{}{}", identity.id(), identity.get_type());
 
-        // Verifica a assinatura usando ed25519_dalek
+        // Verify the signature using ed25519_dalek.
         public_key
             .verify(signed_data.as_bytes(), &signature)
             .map_err(|e| {
@@ -141,7 +140,7 @@ impl IdentityProvider for GuardianDBIdentityProvider {
     }
 
     async fn sign(&self, _identity: &Identity, bytes: &[u8]) -> Result<Vec<u8>> {
-        // Assina dados genéricos com a chave secreta
+        // Sign generic data with the secret key.
         let signing_key = self.get_signing_key();
         let signature = signing_key.sign(bytes);
         Ok(signature.to_bytes().to_vec())
@@ -165,7 +164,7 @@ impl IdentityProvider for GuardianDBIdentityProvider {
     }
 }
 
-/// Implementação de Keystore em memória para desenvolvimento e testes
+/// In-memory Keystore implementation for development and testing.
 use std::collections::HashMap;
 use tokio::sync::RwLock;
 

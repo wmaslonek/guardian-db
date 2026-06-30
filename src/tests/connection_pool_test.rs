@@ -13,7 +13,7 @@ use crate::p2p::network::core::connection_pool::{
     CircuitBreaker, CircuitState, ConnectionEvent, ConnectionInfo, ConnectionStatus,
     OptimizedConnectionPool, PeerHealthMetrics, PoolConfig, PoolStats, PooledConnection,
 };
-use iroh::{NodeAddr, NodeId, SecretKey};
+use iroh::{EndpointAddr as NodeAddr, EndpointId as NodeId, SecretKey, TransportAddr};
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
@@ -22,7 +22,7 @@ use tokio::time::sleep;
 fn create_test_node_addr(port: u16) -> NodeAddr {
     let node_id = create_test_node_id(port as u8);
     let socket_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-    NodeAddr::from_parts(node_id, None, vec![socket_addr])
+    NodeAddr::from_parts(node_id, vec![TransportAddr::Ip(socket_addr)])
 }
 
 /// Helper para criar NodeId de teste válido
@@ -523,10 +523,10 @@ async fn test_circuit_breaker_clone() {
 async fn test_node_addr_creation() {
     let node_id = create_test_node_id(9);
     let socket_addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
-    let node_addr = NodeAddr::from_parts(node_id, None, vec![socket_addr]);
+    let node_addr = NodeAddr::from_parts(node_id, vec![TransportAddr::Ip(socket_addr)]);
 
-    assert!(node_addr.direct_addresses().count() > 0);
-    assert_eq!(node_addr.node_id, node_id);
+    assert!(!node_addr.addrs.is_empty());
+    assert_eq!(node_addr.id, node_id);
 }
 
 #[tokio::test]
@@ -534,9 +534,12 @@ async fn test_multiple_direct_addresses() {
     let node_id = create_test_node_id(10);
     let addr1: SocketAddr = "127.0.0.1:8080".parse().unwrap();
     let addr2: SocketAddr = "127.0.0.1:8081".parse().unwrap();
-    let node_addr = NodeAddr::from_parts(node_id, None, vec![addr1, addr2]);
+    let node_addr = NodeAddr::from_parts(
+        node_id,
+        vec![TransportAddr::Ip(addr1), TransportAddr::Ip(addr2)],
+    );
 
-    assert_eq!(node_addr.direct_addresses().count(), 2);
+    assert_eq!(node_addr.addrs.len(), 2);
 }
 
 #[tokio::test]

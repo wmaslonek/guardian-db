@@ -5,7 +5,7 @@ use crate::p2p::network::client::IrohClient;
 use iroh_blobs::Hash;
 use std::collections::HashMap;
 
-/// Trait que representa uma entrada no log iroh.
+/// Trait representing an entry in the iroh log.
 pub trait IrohLogEntry: LogEntry {
     fn new() -> Self
     where
@@ -44,7 +44,7 @@ pub trait IrohLogEntry: LogEntry {
     fn defined(&self) -> bool;
 }
 
-/// Trait que representa um relógio de Lamport para o iroh Log.
+/// Trait representing a Lamport clock for the iroh Log.
 pub trait IrohLogLamportClock {
     fn new() -> Self
     where
@@ -66,7 +66,7 @@ pub trait IrohLogLamportClock {
     fn compare(&self, b: &dyn IrohLogLamportClock) -> i32;
 }
 
-/// Trait que abstrai operações de IO sobre iroh.
+/// Trait abstracting IO operations over iroh.
 pub trait IO {
     fn write(
         &self,
@@ -78,14 +78,14 @@ pub trait IO {
     fn read(&self, iroh: &IrohClient, hash: Hash) -> std::result::Result<Vec<u8>, String>;
 }
 
-/// Representa um log em formato JSON.
+/// Represents a log in JSON format.
 #[derive(Debug, Clone)]
 pub struct JSONLog {
     pub id: String,
     pub heads: Vec<Hash>,
 }
 
-/// Opções para escrita no Log.
+/// Options for writing to the Log.
 #[derive(Debug, Clone)]
 pub struct WriteOpts {
     pub pin: bool,

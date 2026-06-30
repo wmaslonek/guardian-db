@@ -7,14 +7,14 @@ use iroh_blobs::Hash;
 
 pub type CacheGuard<'a> = std::sync::MutexGuard<'a, Box<dyn Datastore + Send + Sync>>;
 
-/// A função é `async` e genérica sobre qualquer tipo `S` que implemente o trait `Store`.
-/// Ela constrói o snapshot em um buffer de bytes e o adiciona ao iroh.
+/// The function is `async` and generic over any type `S` that implements the `Store` trait.
+/// It builds the snapshot into a byte buffer and adds it to iroh.
 pub async fn save_snapshot<S: Store + Send + Sync>(store: &S) -> Result<Hash> {
     let unfinished_queue: Vec<Hash> = Vec::new();
     let oplog = store.op_log();
 
-    // Cria e serializa o cabeçalho do snapshot.
-    // Como oplog é Arc<RwLock<Log>>, precisamos acessar seus métodos através do lock
+    // Create and serialize the snapshot header.
+    // Since oplog is Arc<RwLock<Log>>, we need to access its methods through the lock.
     let snapshot_header = {
         let oplog_guard = oplog.read();
         StoreSnapshot {
@@ -31,15 +31,15 @@ pub async fn save_snapshot<S: Store + Send + Sync>(store: &S) -> Result<Hash> {
     let header_bytes = crate::guardian::serializer::serialize(&snapshot_header)
         .map_err(|e| GuardianError::Store(format!("Unable to serialize snapshot header: {}", e)))?;
 
-    // Inicia a construção do stream de bytes final.
+    // Start building the final byte stream.
     let mut rs: Vec<u8> = Vec::new();
 
-    // Escreve o tamanho do cabeçalho (2 bytes, big-endian) e o cabeçalho.
+    // Write the header size (2 bytes, big-endian) and the header.
     rs.write_u16::<BigEndian>(header_bytes.len() as u16)?;
     rs.extend_from_slice(&header_bytes);
 
-    // Itera sobre as entradas do log, serializando cada uma com seu prefixo de tamanho.
-    // Como oplog é Arc<RwLock<Log>>, acessamos via lock
+    // Iterate over the log entries, serializing each one with its size prefix.
+    // Since oplog is Arc<RwLock<Log>>, we access it via the lock.
     let entries = {
         let oplog_guard = oplog.read();
         oplog_guard.values()
@@ -51,16 +51,16 @@ pub async fn save_snapshot<S: Store + Send + Sync>(store: &S) -> Result<Hash> {
         rs.extend_from_slice(&entry_bytes);
     }
 
-    // Adiciona o byte nulo no final, para compatibilidade.
+    // Add the null byte at the end, for compatibility.
     rs.push(0);
 
-    // Adiciona o arquivo ao Iroh usando o método `add_bytes`.
+    // Add the file to Iroh using the `add_bytes` method.
     let add_response =
         store.client().add_bytes(rs).await.map_err(|e| {
             GuardianError::Store(format!("Unable to save log data on store: {}", e))
         })?;
 
-    // Converte o hash string para Hash
+    // Convert the hash string into a Hash.
     let hash_bytes = hex::decode(&add_response.hash)
         .map_err(|e| GuardianError::Store(format!("Failed to decode hash hex: {}", e)))?;
     if hash_bytes.len() != 32 {
@@ -70,7 +70,7 @@ pub async fn save_snapshot<S: Store + Send + Sync>(store: &S) -> Result<Hash> {
     hash_array.copy_from_slice(&hash_bytes);
     let snapshot_hash = Hash::from(hash_array);
 
-    // Salva o Hash do snapshot e a fila pendente no cache.
+    // Save the snapshot Hash and the pending queue to the cache.
     let cache = store.cache();
     cache
         .put(

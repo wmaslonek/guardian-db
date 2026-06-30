@@ -37,7 +37,7 @@ async fn main() -> Result<()> {
     // Emitir evento
     let test_payload = EventPubSubPayload {
         payload: b"Hello, World!".to_vec(),
-        peer: iroh::SecretKey::generate(rand_core::OsRng).public(),
+        peer: iroh::SecretKey::generate().public(),
     };
     payload_emitter.emit_payload(test_payload)?;
 

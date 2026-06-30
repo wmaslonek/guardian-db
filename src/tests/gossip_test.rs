@@ -239,7 +239,7 @@ mod publication_tests {
         if let Err(e) = result {
             let error_msg = format!("{}", e);
             assert!(
-                error_msg.contains("não encontrado"),
+                error_msg.contains("not found"),
                 "Erro deve indicar tópico não encontrado"
             );
         }

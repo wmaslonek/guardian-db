@@ -5,11 +5,11 @@ use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// KvIndex mantém um índice de chave-valor em memória para a KvStore.
+/// KvIndex maintains an in-memory key-value index for the KvStore.
 ///
-/// Na arquitetura iroh-docs, este índice é um espelho local do estado
-/// do documento iroh-docs. O `update_index` é um no-op pois o índice
-/// é atualizado diretamente pelas operações put/delete.
+/// In the iroh-docs architecture, this index is a local mirror of the
+/// iroh-docs document state. `update_index` is a no-op because the index
+/// is updated directly by the put/delete operations.
 pub struct KvIndex {
     index: Arc<RwLock<HashMap<String, Vec<u8>>>>,
 }
@@ -21,7 +21,7 @@ impl Default for KvIndex {
 }
 
 impl KvIndex {
-    /// Cria uma nova instância de KvIndex.
+    /// Creates a new KvIndex instance.
     pub fn new() -> Self {
         KvIndex {
             index: Arc::new(RwLock::new(HashMap::new())),
@@ -57,8 +57,8 @@ impl StoreIndex for KvIndex {
         Ok(index.is_empty())
     }
 
-    /// No-op para iroh-docs — o índice local é atualizado diretamente
-    /// pelas operações put/delete no GuardianDBKeyValue.
+    /// No-op for iroh-docs — the local index is updated directly
+    /// by the put/delete operations in GuardianDBKeyValue.
     fn update_index(
         &mut self,
         _oplog: &Log,

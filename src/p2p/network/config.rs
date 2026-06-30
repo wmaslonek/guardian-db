@@ -1,42 +1,42 @@
-// Configuração do cliente Iroh
+// Iroh client configuration.
 //
-// Centraliza todas as opções de configuração do cliente Iroh nativo.
-// Foca em iroh-blobs (armazenamento) e iroh-gossip (pubsub).
-// Usa discovery via Pkarr/DNS/mDNS.
+// Centralizes all configuration options for the native Iroh client.
+// Focuses on iroh-blobs (storage) and iroh-gossip (pubsub).
+// Uses discovery via Pkarr/DNS/mDNS.
 
-use iroh::NodeId;
+use iroh::EndpointId as NodeId;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// Configuração completa do cliente Iroh
+/// Complete configuration for the Iroh client.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientConfig {
-    /// Habilita funcionalidades de PubSub (iroh-gossip)
+    /// Enables PubSub functionality (iroh-gossip).
     pub enable_pubsub: bool,
 
-    /// Caminho para armazenar dados do Iroh (blobs + docs)
+    /// Path where Iroh data is stored (blobs + docs).
     pub data_store_path: Option<PathBuf>,
 
-    /// Porta para endpoint Iroh (0 = porta aleatória)
+    /// Port for the Iroh endpoint (0 = random port).
     pub port: u16,
 
-    /// Peers conhecidos para conectar inicialmente
+    /// Known peers to connect to initially.
     pub known_peers: Vec<NodeId>,
 
-    /// Habilita descoberta via n0.computer (Pkarr + DNS)
+    /// Enables discovery via n0.computer (Pkarr + DNS).
     pub enable_discovery_n0: bool,
 
-    /// Habilita descoberta via mDNS (rede local)
+    /// Enables discovery via mDNS (local network).
     pub enable_discovery_mdns: bool,
 
-    /// Configurações de networking do Iroh
+    /// Iroh networking settings.
     pub network: NetworkConfig,
 
-    /// Configurações de armazenamento (iroh-blobs)
+    /// Storage settings (iroh-blobs).
     pub storage: StorageConfig,
 
-    /// Configurações de Gossip (iroh-gossip)
+    /// Gossip settings (iroh-gossip).
     pub gossip: GossipConfig,
 }
 
@@ -45,10 +45,10 @@ impl Default for ClientConfig {
         Self {
             enable_pubsub: true,
             data_store_path: Some(PathBuf::from("./iroh_data")),
-            port: 0, // Porta aleatória
+            port: 0, // Random port.
             known_peers: vec![],
-            enable_discovery_n0: true,   // Discovery via Pkarr/DNS
-            enable_discovery_mdns: true, // Discovery local
+            enable_discovery_n0: true,   // Discovery via Pkarr/DNS.
+            enable_discovery_mdns: true, // Local discovery.
             network: NetworkConfig::default(),
             storage: StorageConfig::default(),
             gossip: GossipConfig::default(),
@@ -57,42 +57,42 @@ impl Default for ClientConfig {
 }
 
 impl ClientConfig {
-    /// Cria configuração mínima para desenvolvimento
+    /// Creates a minimal configuration for development.
     pub fn development() -> Self {
         Self {
             enable_pubsub: true,
             data_store_path: Some("./tmp/iroh_dev".into()),
-            port: 0, // Porta aleatória
+            port: 0, // Random port.
             known_peers: vec![],
-            enable_discovery_n0: false,  // Desabilitado para dev local
-            enable_discovery_mdns: true, // Apenas descoberta local
+            enable_discovery_n0: false,  // Disabled for local dev.
+            enable_discovery_mdns: true, // Local discovery only.
             network: NetworkConfig::development(),
             storage: StorageConfig::development(),
             gossip: GossipConfig::development(),
         }
     }
 
-    /// Cria configuração para produção
+    /// Creates a configuration for production.
     pub fn production() -> Self {
         Self {
             enable_pubsub: true,
             data_store_path: Some("/var/lib/iroh".into()),
-            port: 4001,                  // Porta fixa para produção
-            known_peers: vec![],         // Seria populado com peers
-            enable_discovery_n0: true,   // Discovery global via n0.computer
-            enable_discovery_mdns: true, // Discovery local também
+            port: 4001,                  // Fixed port for production.
+            known_peers: vec![],         // Would be populated with peers.
+            enable_discovery_n0: true,   // Global discovery via n0.computer.
+            enable_discovery_mdns: true, // Local discovery as well.
             network: NetworkConfig::production(),
             storage: StorageConfig::production(),
             gossip: GossipConfig::production(),
         }
     }
 
-    /// Configuração apenas para testes
+    /// Configuration for testing only.
     pub fn testing() -> Self {
         Self {
             enable_pubsub: true,
-            data_store_path: None, // Em memória
-            port: 0,               // Porta aleatória
+            data_store_path: None, // In-memory.
+            port: 0,               // Random port.
             known_peers: vec![],
             enable_discovery_n0: false,
             enable_discovery_mdns: false,
@@ -102,7 +102,7 @@ impl ClientConfig {
         }
     }
 
-    /// Habilita modo offline (sem networking)
+    /// Enables offline mode (no networking).
     pub fn offline() -> Self {
         Self {
             enable_pubsub: false,
@@ -112,74 +112,74 @@ impl ClientConfig {
         }
     }
 
-    /// Adiciona um peer conhecido para conexão inicial
+    /// Adds a known peer for the initial connection.
     pub fn add_known_peer(&mut self, peer: NodeId) {
         if !self.known_peers.contains(&peer) {
             self.known_peers.push(peer);
         }
     }
 
-    /// Define a porta do endpoint Iroh
+    /// Sets the Iroh endpoint port.
     pub fn with_port(mut self, port: u16) -> Self {
         self.port = port;
         self
     }
 
-    /// Define o caminho de armazenamento
+    /// Sets the storage path.
     pub fn with_data_path<P: Into<PathBuf>>(mut self, path: P) -> Self {
         self.data_store_path = Some(path.into());
         self
     }
 
-    /// Valida a configuração
+    /// Validates the configuration.
     pub fn validate(&self) -> Result<(), String> {
-        // Verifica consistência da configuração Iroh
+        // Check the consistency of the Iroh configuration.
 
-        // Valida porta
-        // Porta 0 é válida (aleatória), portas < 1024 requerem privilégios
+        // Validate the port.
+        // Port 0 is valid (random); ports < 1024 require privileges.
         if self.port > 0 && self.port < 1024 {
-            return Err("Porta < 1024 requer privilégios de administrador".to_string());
+            return Err("Port < 1024 requires administrator privileges".to_string());
         }
 
-        // Valida caminho de armazenamento se fornecido
+        // Validate the storage path if provided.
         if let Some(path) = &self.data_store_path
             && path.as_os_str().is_empty()
         {
-            return Err("Caminho de armazenamento não pode estar vazio".to_string());
+            return Err("Storage path cannot be empty".to_string());
         }
 
-        // Valida configurações de storage
+        // Validate the storage settings.
         if self.storage.max_cache_size == 0 {
-            return Err("Tamanho de cache não pode ser zero".to_string());
+            return Err("Cache size cannot be zero".to_string());
         }
 
         Ok(())
     }
 
-    /// Verifica se usa armazenamento persistente (vs. em memória)
+    /// Returns whether persistent storage is used (vs. in-memory).
     pub fn uses_persistent_storage(&self) -> bool {
         self.data_store_path.is_some()
     }
 
-    /// Verifica se algum método de discovery está habilitado
+    /// Returns whether any discovery method is enabled.
     pub fn has_discovery_enabled(&self) -> bool {
         self.enable_discovery_n0 || self.enable_discovery_mdns
     }
 }
 
-/// Configurações específicas de networking do Iroh
+/// Iroh-specific networking settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkConfig {
-    /// Timeout para conexões do endpoint
+    /// Timeout for endpoint connections.
     pub connection_timeout: Duration,
 
-    /// Número máximo de peers simultâneos
+    /// Maximum number of simultaneous peers.
     pub max_peers_per_session: usize,
 
-    /// Tamanho do buffer de I/O de rede (bytes)
+    /// Network I/O buffer size (bytes).
     pub io_buffer_size: usize,
 
-    /// Intervalo de keep-alive para conexões
+    /// Keep-alive interval for connections.
     pub keepalive_interval: Duration,
 }
 
@@ -199,7 +199,7 @@ impl NetworkConfig {
         Self {
             connection_timeout: Duration::from_secs(10),
             max_peers_per_session: 10,
-            io_buffer_size: 16 * 1024, // 16KB
+            io_buffer_size: 16 * 1024, // 16 KB
             keepalive_interval: Duration::from_secs(30),
         }
     }
@@ -208,7 +208,7 @@ impl NetworkConfig {
         Self {
             connection_timeout: Duration::from_secs(60),
             max_peers_per_session: 1000,
-            io_buffer_size: 128 * 1024, // 128KB
+            io_buffer_size: 128 * 1024, // 128 KB
             keepalive_interval: Duration::from_secs(120),
         }
     }
@@ -223,22 +223,22 @@ impl NetworkConfig {
     }
 }
 
-/// Configurações de armazenamento (iroh-blobs) (iroh-blobs)
+/// Storage settings (iroh-blobs).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StorageConfig {
-    /// Habilita cache em memória para blobs
+    /// Enables an in-memory cache for blobs.
     pub enable_memory_cache: bool,
 
-    /// Tamanho máximo do cache em memória (bytes)
+    /// Maximum in-memory cache size (bytes).
     pub max_cache_size: usize,
 
-    /// Tamanho máximo de um blob individual (bytes)
+    /// Maximum size of an individual blob (bytes).
     pub max_blob_size: usize,
 
-    /// Habilita garbage collection automático
+    /// Enables automatic garbage collection.
     pub enable_gc: bool,
 
-    /// Intervalo de garbage collection
+    /// Garbage collection interval.
     pub gc_interval: Duration,
 }
 
@@ -246,10 +246,10 @@ impl Default for StorageConfig {
     fn default() -> Self {
         Self {
             enable_memory_cache: true,
-            max_cache_size: 100 * 1024 * 1024, // 100MB
-            max_blob_size: 10 * 1024 * 1024,   // 10MB por blob
+            max_cache_size: 100 * 1024 * 1024, // 100 MB
+            max_blob_size: 10 * 1024 * 1024,   // 10 MB per blob
             enable_gc: true,
-            gc_interval: Duration::from_secs(3600), // 1 hora
+            gc_interval: Duration::from_secs(3600), // 1 hour
         }
     }
 }
@@ -258,9 +258,9 @@ impl StorageConfig {
     pub fn development() -> Self {
         Self {
             enable_memory_cache: true,
-            max_cache_size: 10 * 1024 * 1024, // 10MB
-            max_blob_size: 5 * 1024 * 1024,   // 5MB por blob
-            enable_gc: false,                 // Desabilitado para debug
+            max_cache_size: 10 * 1024 * 1024, // 10 MB
+            max_blob_size: 5 * 1024 * 1024,   // 5 MB per blob
+            enable_gc: false,                 // Disabled for debugging.
             gc_interval: Duration::from_secs(3600),
         }
     }
@@ -268,40 +268,40 @@ impl StorageConfig {
     pub fn production() -> Self {
         Self {
             enable_memory_cache: true,
-            max_cache_size: 1024 * 1024 * 1024, // 1GB
-            max_blob_size: 100 * 1024 * 1024,   // 100MB por blob
+            max_cache_size: 1024 * 1024 * 1024, // 1 GB
+            max_blob_size: 100 * 1024 * 1024,   // 100 MB per blob
             enable_gc: true,
-            gc_interval: Duration::from_secs(1800), // 30 minutos
+            gc_interval: Duration::from_secs(1800), // 30 minutes
         }
     }
 
     pub fn testing() -> Self {
         Self {
             enable_memory_cache: false,
-            max_cache_size: 1024 * 1024, // 1MB
-            max_blob_size: 512 * 1024,   // 512KB por blob
+            max_cache_size: 1024 * 1024, // 1 MB
+            max_blob_size: 512 * 1024,   // 512 KB per blob
             enable_gc: false,
             gc_interval: Duration::from_secs(3600),
         }
     }
 }
 
-/// Configurações de Gossip (iroh-gossip)
+/// Gossip settings (iroh-gossip).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GossipConfig {
-    /// Tamanho máximo de mensagem gossip (bytes)
+    /// Maximum gossip message size (bytes).
     pub max_message_size: usize,
 
-    /// Buffer size para streams de mensagens
+    /// Buffer size for message streams.
     pub message_buffer_size: usize,
 
-    /// Timeout para operações de gossip
+    /// Timeout for gossip operations.
     pub operation_timeout: Duration,
 
-    /// Intervalo de heartbeat do protocolo gossip
+    /// Heartbeat interval of the gossip protocol.
     pub heartbeat_interval: Duration,
 
-    /// Número máximo de tópicos simultâneos
+    /// Maximum number of simultaneous topics.
     pub max_topics: usize,
 }
 
@@ -340,7 +340,7 @@ impl GossipConfig {
 
     pub fn testing() -> Self {
         Self {
-            max_message_size: 1024 * 1024, // 1MB - precisa suportar múltiplas entries serializadas
+            max_message_size: 1024 * 1024, // 1 MB - must support multiple serialized entries
             message_buffer_size: 10,
             operation_timeout: Duration::from_secs(5),
             heartbeat_interval: Duration::from_secs(5),
@@ -366,9 +366,9 @@ mod tests {
     fn test_development_config() {
         let config = ClientConfig::development();
         assert!(config.enable_pubsub);
-        assert!(!config.enable_discovery_n0); // Desabilitado para dev
+        assert!(!config.enable_discovery_n0); // Disabled for dev.
         assert!(config.enable_discovery_mdns);
-        assert_eq!(config.port, 0); // Porta aleatória
+        assert_eq!(config.port, 0); // Random port.
     }
 
     #[test]
@@ -377,7 +377,7 @@ mod tests {
         assert!(config.enable_pubsub);
         assert!(config.enable_discovery_n0);
         assert!(config.enable_discovery_mdns);
-        assert_eq!(config.port, 4001); // Porta fixa
+        assert_eq!(config.port, 4001); // Fixed port.
     }
 
     #[test]
@@ -401,18 +401,18 @@ mod tests {
     fn test_config_validation() {
         let mut config = ClientConfig::default();
 
-        // Configuração válida
+        // Valid configuration.
         assert!(config.validate().is_ok());
 
-        // Porta privilegiada (< 1024) sem ser 0
+        // Privileged port (< 1024) that is not 0.
         config.port = 80;
         assert!(config.validate().is_err());
 
-        // Porta 0 (aleatória) é válida
+        // Port 0 (random) is valid.
         config.port = 0;
         assert!(config.validate().is_ok());
 
-        // Porta normal é válida
+        // A normal port is valid.
         config.port = 4001;
         assert!(config.validate().is_ok());
     }
@@ -420,16 +420,15 @@ mod tests {
     #[test]
     fn test_add_known_peer() {
         use iroh::SecretKey;
-        use rand_core::OsRng;
 
         let mut config = ClientConfig::default();
-        let secret = SecretKey::generate(OsRng);
+        let secret = SecretKey::generate();
         let peer = secret.public();
 
         config.add_known_peer(peer);
         assert!(config.known_peers.contains(&peer));
 
-        // Não deve duplicar
+        // Should not duplicate.
         config.add_known_peer(peer);
         assert_eq!(config.known_peers.len(), 1);
     }
@@ -448,22 +447,22 @@ mod tests {
 
     #[test]
     fn test_persistent_storage_detection() {
-        // Com armazenamento persistente
+        // With persistent storage.
         let persistent_config = ClientConfig::development();
         assert!(persistent_config.uses_persistent_storage());
 
-        // Em memória
+        // In-memory.
         let memory_config = ClientConfig::testing();
         assert!(!memory_config.uses_persistent_storage());
     }
 
     #[test]
     fn test_discovery_detection() {
-        // Com discovery habilitado
+        // With discovery enabled.
         let with_discovery = ClientConfig::default();
         assert!(with_discovery.has_discovery_enabled());
 
-        // Sem discovery
+        // Without discovery.
         let without_discovery = ClientConfig::offline();
         assert!(!without_discovery.has_discovery_enabled());
     }

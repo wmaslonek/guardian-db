@@ -63,7 +63,7 @@ fn doc(index: usize, payload_bytes: usize) -> Value {
         "counter": index,
         "payload": payload(payload_bytes, index),
         "metadata": {
-            "active": index % 2 == 0,
+            "active": index.is_multiple_of(2),
             "bucket": index % 128,
             "region": format!("region-{}", index % 8)
         }

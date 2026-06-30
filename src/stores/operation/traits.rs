@@ -5,23 +5,23 @@ pub trait OpDoc {
     fn get_value(&self) -> &[u8];
 }
 
-/// Descreve uma operação CRDT.
+/// Describes a CRDT operation.
 pub trait Operation {
-    /// Obtém uma chave, se aplicável (ex: para stores de chave-valor).
+    /// Gets a key, if applicable (e.g. for key-value stores).
     fn get_key(&self) -> Option<&String>;
 
-    /// Retorna o nome da operação (ex: "append", "put", "remove").
+    /// Returns the operation name (e.g. "append", "put", "remove").
     fn get_operation(&self) -> &str;
 
-    /// Retorna o payload (dados) da operação.
+    /// Returns the operation's payload (data).
     fn get_value(&self) -> &[u8];
 
-    /// Obtém a Entry do Log subjacente.
+    /// Gets the underlying Log Entry.
     fn get_entry(&self) -> &Entry;
 
-    /// Obtém a lista de documentos.
+    /// Gets the list of documents.
     fn get_docs(&self) -> Vec<Box<dyn OpDoc>>;
 
-    /// Serializa a operação.
+    /// Serializes the operation.
     fn marshal(&self) -> Result<Vec<u8>, Box<dyn std::error::Error>>;
 }

@@ -12,16 +12,22 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{Span, debug, instrument, warn};
 
+/// CBOR-serializable representation of the write-access list, persisted to Iroh.
 #[derive(Debug, Serialize, Deserialize)]
 struct CborWriteAccess {
     #[serde(rename = "write")]
     write: Vec<String>,
 }
+
+/// In-memory state of the controller: the list of keys allowed to write.
 struct ControllerState {
     write_access: Vec<String>,
 }
 
-/// Estrutura principal do controlador de acesso Iroh.
+/// Main structure of the Iroh access controller.
+///
+/// Permissions consist of a single write-access list. They are kept in memory
+/// and can be persisted to / loaded from Iroh as CBOR blobs.
 pub struct IrohAccessController {
     client: Arc<IrohClient>,
     state: RwLock<ControllerState>,
@@ -29,15 +35,19 @@ pub struct IrohAccessController {
 }
 
 impl IrohAccessController {
+    /// Returns the controller type identifier.
     pub fn get_type(&self) -> &'static str {
         "iroh"
     }
 
-    /// Este controlador não tem um endereço próprio, então retorna None.
+    /// This controller has no address of its own, so it returns `None`.
     pub fn address(&self) -> Option<Box<dyn Address>> {
         None
     }
 
+    /// Decides whether a log entry may be appended: the entry's identity must
+    /// be in the write-access list (or the list must contain the universal
+    /// `"*"` key), in which case the identity is also verified.
     #[instrument(skip(self, entry, identity_provider, _additional_context))]
     pub async fn can_append(
         &self,
@@ -50,7 +60,7 @@ impl IrohAccessController {
 
         for allowed_key in state.write_access.iter() {
             if allowed_key == key || allowed_key == "*" {
-                // Se a chave for autorizada, verifica a identidade
+                // If the key is authorized, verify the identity.
                 return identity_provider
                     .verify_identity(entry.get_identity())
                     .await;
@@ -58,13 +68,16 @@ impl IrohAccessController {
         }
 
         Err(GuardianError::Store(
-            "Chave não tem permissão de escrita".to_string(),
+            "Key does not have write permission".to_string(),
         ))
     }
 
+    /// Returns the keys authorized for the given role. For this controller,
+    /// `admin` and `write` map to the same write-access list; any other role
+    /// returns an empty list.
     pub async fn get_authorized_by_role(&self, role: &str) -> Result<Vec<String>> {
         let state = self.state.read().await;
-        // 'admin' e 'write' são a mesma coisa para este controlador.
+        // 'admin' and 'write' are the same thing for this controller.
         if role == "admin" || role == "write" {
             Ok(state.write_access.clone())
         } else {
@@ -72,6 +85,8 @@ impl IrohAccessController {
         }
     }
 
+    /// Grants write access to `key_id`. Only the `write` capability is
+    /// supported; the key is added only if not already present.
     #[instrument(skip(self))]
     pub async fn grant(&self, capability: &str, key_id: &str) -> Result<()> {
         if capability != "write" {
@@ -100,6 +115,8 @@ impl IrohAccessController {
         Ok(())
     }
 
+    /// Revokes write access from `key_id`. Only the `write` capability is
+    /// supported.
     #[instrument(skip(self))]
     pub async fn revoke(&self, capability: &str, key_id: &str) -> Result<()> {
         if capability != "write" {
@@ -130,19 +147,24 @@ impl IrohAccessController {
         Ok(())
     }
 
+    /// Loads the controller's permissions from Iroh at the given address.
+    ///
+    /// The address is a hex-encoded 32-byte hash pointing to the CBOR manifest;
+    /// the manifest in turn references the CBOR blob holding the write-access
+    /// list, which becomes the new internal state.
     #[instrument(skip(self), fields(address = %address))]
     pub async fn load(&self, address: &str) -> Result<()> {
         let state = self.state.read().await;
-        debug!(target: "iroh_access_controller", address = %address, "Lendo permissões do controlador de acesso Iroh");
-        drop(state); // Liberamos o lock de leitura antes das operações de escrita
+        debug!(target: "iroh_access_controller", address = %address, "Reading permissions from the Iroh access controller");
+        drop(state); // Release the read lock before the write operations.
 
-        // Parse hex string para Hash
+        // Parse the hex string into a Hash.
         let hash_bytes = hex::decode(address)
-            .map_err(|e| GuardianError::InvalidHash(format!("Hash hex inválido: {}", e)))?;
+            .map_err(|e| GuardianError::InvalidHash(format!("Invalid hex hash: {}", e)))?;
 
         if hash_bytes.len() != 32 {
             return Err(GuardianError::InvalidHash(format!(
-                "Hash deve ter 32 bytes, encontrado {}",
+                "Hash must be 32 bytes, found {}",
                 hash_bytes.len()
             )));
         }
@@ -159,7 +181,7 @@ impl IrohAccessController {
             // Use tokio runtime handle to run async code in blocking context
             let rt = tokio::runtime::Handle::current();
             rt.block_on(async move {
-                // 1. Lê o manifesto CBOR principal usando cat_bytes
+                // 1. Read the main CBOR manifest using cat_bytes.
                 let manifest_data = client
                     .cat_bytes(&hash_string)
                     .await
@@ -173,7 +195,7 @@ impl IrohAccessController {
 
         let manifest: Manifest = serde_cbor::from_slice(&manifest_data)?;
 
-        // 2. Lê o conteúdo das permissões usando o endereço do manifesto
+        // 2. Read the permissions content using the manifest's address.
         let access_data_hash = manifest.params.address();
         let client_clone = self.client.clone();
         let access_data_hash_string = access_data_hash.to_string();
@@ -195,23 +217,25 @@ impl IrohAccessController {
 
         let write_access_data: CborWriteAccess = serde_cbor::from_slice(&access_data_bytes)?;
 
-        // 3. Extrai diretamente as permissões do CBOR
+        // 3. Extract the permissions directly from the CBOR.
         let write_access = write_access_data.write;
 
-        // 4. Atualiza o estado interno com as novas permissões
+        // 4. Update the internal state with the new permissions.
         let mut state = self.state.write().await;
         state.write_access = write_access;
 
         Ok(())
     }
 
+    /// Persists the current write-access list to Iroh as a CBOR blob and
+    /// returns the manifest options referencing it.
     #[instrument(skip(self))]
     pub async fn save(&self) -> Result<CreateAccessControllerOptions> {
         let state = self.state.read().await;
         let cbor_data = CborWriteAccess {
             write: state.write_access.clone(),
         };
-        // Serializa a estrutura CBOR em bytes
+        // Serialize the CBOR structure into bytes.
         let cbor_bytes = serde_cbor::to_vec(&cbor_data)?;
 
         let client = self.client.clone();
@@ -220,20 +244,20 @@ impl IrohAccessController {
             // Use tokio runtime handle to run async code in blocking context
             let rt = tokio::runtime::Handle::current();
             rt.block_on(async move {
-                // Salva os bytes usando Iroh
+                // Store the bytes using Iroh.
                 client.add_bytes(cbor_bytes).await
             })
         })
         .await
         .map_err(|e| GuardianError::Store(format!("Task join error: {}", e)))??;
 
-        // Converte hash string (hex) para Hash
+        // Convert the hex hash string into a Hash.
         let hash_bytes = hex::decode(&response.hash)
-            .map_err(|e| GuardianError::InvalidHash(format!("Erro ao decodificar hash: {}", e)))?;
+            .map_err(|e| GuardianError::InvalidHash(format!("Error decoding hash: {}", e)))?;
 
         if hash_bytes.len() != 32 {
             return Err(GuardianError::InvalidHash(format!(
-                "Hash inválido: esperado 32 bytes, encontrado {}",
+                "Invalid hash: expected 32 bytes, found {}",
                 hash_bytes.len()
             )));
         }
@@ -242,8 +266,8 @@ impl IrohAccessController {
         hash_array.copy_from_slice(&hash_bytes);
         let hash = Hash::from_bytes(hash_array);
 
-        debug!(target: "iroh_access_controller", hash = %hex::encode(hash.as_bytes()), "Controlador de acesso Iroh salvo");
-        // Cria e retorna os parâmetros do novo manifesto
+        debug!(target: "iroh_access_controller", hash = %hex::encode(hash.as_bytes()), "Iroh access controller saved");
+        // Build and return the parameters for the new manifest.
         Ok(CreateAccessControllerOptions::new(
             hash,
             false,
@@ -251,10 +275,10 @@ impl IrohAccessController {
         ))
     }
 
+    /// Closes the controller. This is a no-op since it is Iroh-based: the state
+    /// lives in Iroh and there are no local resources to release.
     #[instrument(skip(self))]
     pub async fn close(&self) -> Result<()> {
-        // Para IrohAccessController, close é uma operação no-op já que é baseado em Iroh
-        // O estado é mantido no Iroh e não há recursos locais para fechar
         debug!(target: "iroh_access_controller", "Closing Iroh access controller");
 
         let state = self.state.read().await;
@@ -266,6 +290,8 @@ impl IrohAccessController {
         Ok(())
     }
 
+    /// Creates a new controller. If no `write` access is configured in the
+    /// params, the provided `identity_id` is granted write access by default.
     #[instrument(skip(client, params), fields(identity_id = %identity_id))]
     pub fn new(
         client: Arc<IrohClient>,
@@ -287,12 +313,13 @@ impl IrohAccessController {
         })
     }
 
-    /// Retorna uma referência ao span para contexto de tracing
+    /// Returns a reference to the span used for tracing context.
     pub fn span(&self) -> &Span {
         &self.span
     }
 }
 
+// AccessController trait implementation for IrohAccessController.
 #[async_trait]
 impl crate::access_control::traits::AccessController for IrohAccessController {
     fn get_type(&self) -> &str {
@@ -304,8 +331,8 @@ impl crate::access_control::traits::AccessController for IrohAccessController {
 
         match role {
             "write" => Ok(state.write_access.clone()),
-            "read" => Ok(state.write_access.clone()), // Por padrão, quem pode escrever pode ler
-            "admin" => Ok(state.write_access.clone()), // Por padrão, usa mesmas permissões
+            "read" => Ok(state.write_access.clone()), // By default, whoever can write can read.
+            "admin" => Ok(state.write_access.clone()), // By default, uses the same permissions.
             _ => Ok(Vec::new()),
         }
     }
@@ -361,7 +388,7 @@ impl crate::access_control::traits::AccessController for IrohAccessController {
         let entry_identity = entry.get_identity();
         let entry_id = entry_identity.id();
 
-        // Verifica se a identidade tem permissão de escrita
+        // Check whether the identity has write permission.
         if state.write_access.contains(&"*".to_string())
             || state.write_access.contains(&entry_id.to_string())
         {

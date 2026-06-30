@@ -1,45 +1,45 @@
-/// Wrapper para o protocolo iroh-docs para integração com GuardianDB
+/// Wrapper around the iroh-docs protocol for integration with GuardianDB.
 ///
-/// Este módulo fornece uma camada de abstração sobre o protocolo iroh-docs,
-/// permitindo armazenamento chave-valor distribuído com sincronização automática
-/// e resolução de conflitos Last-Write-Wins.
+/// This module provides an abstraction layer over the iroh-docs protocol,
+/// enabling distributed key-value storage with automatic synchronization
+/// and Last-Write-Wins conflict resolution.
 use crate::guardian::error::{GuardianError, Result};
 use bytes::Bytes;
 use iroh_docs::{AuthorId, NamespaceId, api::Doc, protocol::Docs, store::Query, sync::Entry};
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
-// Import do IrohBackend para acesso ao Docs
+// Import IrohBackend to access Docs.
 use super::IrohBackend;
 
-/// Cliente iroh-docs que gerencia documentos e autores
+/// iroh-docs client that manages documents and authors.
 ///
-/// Este wrapper simplifica o uso do protocolo iroh-docs para KV stores,
-/// encapsulando a lógica de criação de documentos, gerenciamento de autores
-/// e operações básicas de leitura/escrita.
+/// This wrapper simplifies using the iroh-docs protocol for KV stores,
+/// encapsulating document creation, author management, and basic
+/// read/write operations.
 #[derive(Clone)]
 pub struct WillowDocs {
-    /// Instância do protocolo Docs
+    /// Instance of the Docs protocol.
     docs: Arc<Docs>,
-    /// Author padrão usado para todas as operações de escrita
+    /// Default author used for all write operations.
     default_author: Option<AuthorId>,
 }
 
 impl WillowDocs {
-    /// Cria um novo cliente iroh-docs a partir do IrohBackend
+    /// Creates a new iroh-docs client from the IrohBackend.
     ///
-    /// # Argumentos
-    /// * `backend` - Referência ao IrohBackend que contém o Docs configurado
+    /// # Arguments
+    /// * `backend` - Reference to the IrohBackend that holds the configured Docs
     ///
-    /// # Retorna
-    /// Ok(WillowDocs) sem author padrão configurado, Err se Docs não estiver inicializado
+    /// # Returns
+    /// Ok(WillowDocs) with no default author configured, Err if Docs is not initialized
     pub async fn new(backend: Arc<IrohBackend>) -> Result<Self> {
-        // Obtém Docs do backend
+        // Get Docs from the backend.
         let docs_lock_guard = backend.get_docs().await?;
         let docs_lock = docs_lock_guard.read().await;
         let docs = docs_lock
             .as_ref()
-            .ok_or_else(|| GuardianError::Other("Docs não inicializado no backend".into()))?
+            .ok_or_else(|| GuardianError::Other("Docs not initialized in the backend".into()))?
             .clone();
         drop(docs_lock);
 
@@ -49,13 +49,13 @@ impl WillowDocs {
         })
     }
 
-    /// Inicializa o author padrão para este cliente
+    /// Initializes the default author for this client.
     ///
-    /// Tenta usar o author padrão do sistema. Se não existir, cria um novo.
-    /// Este author será usado para todas as operações de escrita.
+    /// Tries to use the system's default author. If none exists, creates a new one.
+    /// This author will be used for all write operations.
     ///
-    /// # Retorna
-    /// Ok(AuthorId) se bem-sucedido, Err se falhar ao criar/obter author
+    /// # Returns
+    /// Ok(AuthorId) on success, Err if creating/getting the author fails
     pub async fn init_default_author(&mut self) -> Result<AuthorId> {
         match self.docs.author_default().await {
             Ok(author_id) => {
@@ -64,11 +64,11 @@ impl WillowDocs {
                 Ok(author_id)
             }
             Err(_) => {
-                // Se não existe author padrão, cria um novo
+                // If no default author exists, create a new one.
                 match self.docs.author_create().await {
                     Ok(author_id) => {
                         info!("Created new default author: {:?}", author_id);
-                        // Tenta definir como padrão
+                        // Try to set it as the default.
                         if let Err(e) = self.docs.author_set_default(author_id).await {
                             warn!("Failed to set default author: {:?}", e);
                         }
@@ -87,10 +87,10 @@ impl WillowDocs {
         }
     }
 
-    /// Retorna o author padrão, inicializando se necessário
+    /// Returns the default author, initializing it if necessary.
     ///
-    /// # Retorna
-    /// Ok(AuthorId) do author padrão, Err se falhar ao inicializar
+    /// # Returns
+    /// Ok(AuthorId) of the default author, Err if initialization fails
     pub async fn get_or_init_author(&mut self) -> Result<AuthorId> {
         if let Some(author) = self.default_author {
             Ok(author)
@@ -99,11 +99,11 @@ impl WillowDocs {
         }
     }
 
-    /// Cria um novo documento (replica)
+    /// Creates a new document (replica).
     ///
-    /// # Retorna
-    /// Ok(Doc) - Handle para o documento criado
-    /// Err(GuardianError) - Se falhar ao criar o documento
+    /// # Returns
+    /// Ok(Doc) - Handle to the created document
+    /// Err(GuardianError) - If creating the document fails
     pub async fn create_doc(&self) -> Result<Doc> {
         match self.docs.create().await {
             Ok(doc) => {
@@ -120,13 +120,59 @@ impl WillowDocs {
         }
     }
 
-    /// Abre um documento existente pelo NamespaceId
+    /// Shares an existing document by generating a `DocTicket` (capability model).
     ///
-    /// # Argumentos
-    /// * `namespace_id` - ID do namespace (documento) a ser aberto
+    /// The ticket carries the namespace key (secret for writing, public for reading)
+    /// and this node's addresses so the peer can connect and synchronize. Only whoever
+    /// receives the ticket can import and synchronize the document — it is the
+    /// replication access-control point.
     ///
-    /// # Retorna
-    /// Ok(Some(Doc)) se o documento existir, Ok(None) se não existir, Err em caso de erro
+    /// # Arguments
+    /// * `doc` - The document to share
+    /// * `write` - `true` grants write capability; `false` read-only
+    pub async fn share_doc(&self, doc: &Doc, write: bool) -> Result<iroh_docs::DocTicket> {
+        use iroh_docs::api::protocol::ShareMode;
+
+        let mode = if write {
+            ShareMode::Write
+        } else {
+            ShareMode::Read
+        };
+
+        // AddrInfoOptions::default() includes the address/relay information needed for dialing.
+        doc.share(mode, Default::default()).await.map_err(|e| {
+            GuardianError::Storage(format!("Failed to share document via ticket: {:?}", e))
+        })
+    }
+
+    /// Imports a document from a `DocTicket`, joining the ticket's peers.
+    ///
+    /// This is the secure counterpart of [`share_doc`]: the node starts using the **same
+    /// namespace** as the creator and begins synchronization (range-based + live) with the
+    /// peers embedded in the ticket.
+    pub async fn import_doc(&self, ticket: iroh_docs::DocTicket) -> Result<Doc> {
+        match self.docs.import(ticket).await {
+            Ok(doc) => {
+                info!("Imported shared document via ticket: {:?}", doc.id());
+                Ok(doc)
+            }
+            Err(e) => {
+                error!("Failed to import document from ticket: {:?}", e);
+                Err(GuardianError::Storage(format!(
+                    "Failed to import document from ticket: {:?}",
+                    e
+                )))
+            }
+        }
+    }
+
+    /// Opens an existing document by its NamespaceId.
+    ///
+    /// # Arguments
+    /// * `namespace_id` - ID of the namespace (document) to open
+    ///
+    /// # Returns
+    /// Ok(Some(Doc)) if the document exists, Ok(None) if it does not, Err on error
     pub async fn open_doc(&self, namespace_id: NamespaceId) -> Result<Option<Doc>> {
         match self.docs.open(namespace_id).await {
             Ok(doc_option) => {
@@ -145,13 +191,13 @@ impl WillowDocs {
         }
     }
 
-    /// Fecha um documento
+    /// Closes a document.
     ///
-    /// # Argumentos
-    /// * `doc` - Referência ao documento a ser fechado
+    /// # Arguments
+    /// * `doc` - Reference to the document to close
     ///
-    /// # Retorna
-    /// Ok(()) se bem-sucedido, Err em caso de erro
+    /// # Returns
+    /// Ok(()) on success, Err on error
     pub async fn close_doc(&self, doc: &Doc) -> Result<()> {
         match doc.close().await {
             Ok(_) => {
@@ -168,13 +214,13 @@ impl WillowDocs {
         }
     }
 
-    /// Remove um documento permanentemente
+    /// Removes a document permanently.
     ///
-    /// # Argumentos
-    /// * `namespace_id` - ID do namespace (documento) a ser removido
+    /// # Arguments
+    /// * `namespace_id` - ID of the namespace (document) to remove
     ///
-    /// # Retorna
-    /// Ok(()) se bem-sucedido, Err em caso de erro
+    /// # Returns
+    /// Ok(()) on success, Err on error
     pub async fn drop_doc(&self, namespace_id: NamespaceId) -> Result<()> {
         match self.docs.drop_doc(namespace_id).await {
             Ok(_) => {
@@ -191,16 +237,16 @@ impl WillowDocs {
         }
     }
 
-    /// Define um valor para uma chave em um documento
+    /// Sets a value for a key in a document.
     ///
-    /// # Argumentos
-    /// * `doc` - Referência ao documento
-    /// * `author_id` - ID do author para esta operação
-    /// * `key` - Chave (será convertida para Bytes)
-    /// * `value` - Valor (será convertido para Bytes)
+    /// # Arguments
+    /// * `doc` - Reference to the document
+    /// * `author_id` - Author ID for this operation
+    /// * `key` - Key (will be converted to Bytes)
+    /// * `value` - Value (will be converted to Bytes)
     ///
-    /// # Retorna
-    /// Ok(Hash) - Hash do conteúdo armazenado, Err em caso de erro
+    /// # Returns
+    /// Ok(Hash) - Hash of the stored content, Err on error
     pub async fn set_bytes(
         &self,
         doc: &Doc,
@@ -211,9 +257,9 @@ impl WillowDocs {
         match doc.set_bytes(author_id, key, value).await {
             Ok(hash) => {
                 debug!("Set bytes in document {:?}: hash={:?}", doc.id(), hash);
-                // Converte de iroh_docs::Hash (0.92.0) para iroh_blobs::Hash (0.94.0)
-                // Ambas compartilham a mesma estrutura de hash (BLAKE3, 32 bytes), então
-                // a conversão é segura através dos bytes
+                // Convert from iroh_docs::Hash (0.92.0) to iroh_blobs::Hash (0.94.0).
+                // Both share the same hash structure (BLAKE3, 32 bytes), so the
+                // conversion through the bytes is safe.
                 let hash_bytes = hash.as_bytes();
                 let result_hash = iroh_blobs::Hash::from_bytes(*hash_bytes);
                 Ok(result_hash)
@@ -228,15 +274,15 @@ impl WillowDocs {
         }
     }
 
-    /// Remove uma chave de um documento
+    /// Removes a key from a document.
     ///
-    /// # Argumentos
-    /// * `doc` - Referência ao documento
-    /// * `author_id` - ID do author para esta operação
-    /// * `key` - Chave a ser removida (prefixo)
+    /// # Arguments
+    /// * `doc` - Reference to the document
+    /// * `author_id` - Author ID for this operation
+    /// * `key` - Key to remove (prefix)
     ///
-    /// # Retorna
-    /// Ok(usize) - Número de entradas deletadas, Err em caso de erro
+    /// # Returns
+    /// Ok(usize) - Number of deleted entries, Err on error
     pub async fn del(
         &self,
         doc: &Doc,
@@ -255,14 +301,14 @@ impl WillowDocs {
         }
     }
 
-    /// Obtém uma única entrada de um documento
+    /// Gets a single entry from a document.
     ///
-    /// # Argumentos
-    /// * `doc` - Referência ao documento
-    /// * `query` - Query para buscar a entrada
+    /// # Arguments
+    /// * `doc` - Reference to the document
+    /// * `query` - Query used to look up the entry
     ///
-    /// # Retorna
-    /// Ok(Some(Entry)) se encontrado, Ok(None) se não encontrado, Err em caso de erro
+    /// # Returns
+    /// Ok(Some(Entry)) if found, Ok(None) if not found, Err on error
     pub async fn get_one(&self, doc: &Doc, query: impl Into<Query>) -> Result<Option<Entry>> {
         match doc.get_one(query).await {
             Ok(entry_option) => {
@@ -285,14 +331,14 @@ impl WillowDocs {
         }
     }
 
-    /// Obtém múltiplas entradas de um documento usando uma query
+    /// Gets multiple entries from a document using a query.
     ///
-    /// # Argumentos
-    /// * `doc` - Referência ao documento
-    /// * `query` - Query para filtrar as entradas
+    /// # Arguments
+    /// * `doc` - Reference to the document
+    /// * `query` - Query used to filter the entries
     ///
-    /// # Retorna
-    /// Ok(Vec<Entry>) - Lista de entradas encontradas, Err em caso de erro
+    /// # Returns
+    /// Ok(Vec<Entry>) - List of matching entries, Err on error
     pub async fn get_many(&self, doc: &Doc, query: impl Into<Query>) -> Result<Vec<Entry>> {
         use futures::StreamExt;
 
@@ -324,20 +370,20 @@ impl WillowDocs {
         }
     }
 
-    /// Retorna a instância Docs subjacente para operações avançadas
+    /// Returns the underlying Docs instance for advanced operations.
     pub fn docs(&self) -> &Arc<Docs> {
         &self.docs
     }
 
-    /// Retorna o AuthorId padrão (sem inicializar se não existir)
+    /// Returns the default AuthorId (without initializing one if it does not exist).
     ///
-    /// # Retorna
-    /// Ok(AuthorId) se existe um author padrão, Err caso contrário
+    /// # Returns
+    /// Ok(AuthorId) if a default author exists, Err otherwise
     pub async fn default_author_id(&self) -> Result<AuthorId> {
         if let Some(author) = self.default_author {
             Ok(author)
         } else {
-            // Tenta obter o author padrão do docs
+            // Try to get the default author from docs.
             self.docs.author_default().await.map_err(|e| {
                 GuardianError::Storage(format!("No default author configured: {:?}", e))
             })
@@ -347,12 +393,12 @@ impl WillowDocs {
 
 #[cfg(test)]
 mod tests {
-    // Note: Testes completos requerem um ambiente Iroh configurado
-    // Estes são testes de unidade básicos para verificar a interface
+    // Note: Full tests require a configured Iroh environment.
+    // These are basic unit tests to verify the interface.
 
     #[tokio::test]
     async fn test_client_creation() {
-        // Teste básico de criação - requer Docs mock ou skip
-        // Este teste serve como documentação da API esperada
+        // Basic creation test - requires a mock Docs or skip.
+        // This test serves as documentation of the expected API.
     }
 }

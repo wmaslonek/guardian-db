@@ -560,18 +560,6 @@ async fn test_eventlog_special_characters() {
 }
 
 #[tokio::test]
-async fn test_eventlog_replication_status() {
-    let (store, _temp_dir) = create_test_store().await.expect("Failed to create store");
-
-    let replication_info = store.replication_status();
-
-    // Verifica que o status de replicação está acessível
-    // ReplicationInfo usa RwLock internamente, então só verificamos que existe
-    let (progress, max) = replication_info.get_progress_and_max().await;
-    assert!(max >= progress, "Max should be >= progress");
-}
-
-#[tokio::test]
 async fn test_eventlog_op_log_access() {
     let (store, _temp_dir) = create_test_store().await.expect("Failed to create store");
 

@@ -1,6 +1,6 @@
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use hex;
-use rand::RngCore;
+use rand::Rng;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
@@ -83,15 +83,15 @@ impl Identity {
         &self.signatures
     }
 
-    /// Retorna o tipo da identidade (compatibilidade com IdentityProvider)
+    /// Returns the identity type (for compatibility with IdentityProvider).
     pub fn get_type(&self) -> &str {
-        "GuardianDB" // Tipo padrão
+        "GuardianDB" // Default type.
     }
 
-    /// Retorna as assinaturas como HashMap para compatibilidade
+    /// Returns the signatures as a HashMap for compatibility.
     pub fn signatures_map(&self) -> HashMap<String, Vec<u8>> {
         let mut map = HashMap::new();
-        // As assinaturas agora são hex strings, então precisamos decodificar
+        // The signatures are now hex strings, so we need to decode them.
         if let Ok(id_bytes) = hex::decode(self.signatures.id()) {
             map.insert("id".to_string(), id_bytes);
         }
@@ -101,9 +101,9 @@ impl Identity {
         map
     }
 
-    /// Retorna a chave pública como VerifyingKey do ed25519_dalek (se possível)
+    /// Returns the public key as an ed25519_dalek VerifyingKey (if possible).
     pub fn public_key(&self) -> Option<VerifyingKey> {
-        // Tenta decodificar a chave pública do formato hex para ed25519
+        // Try to decode the public key from hex into ed25519.
         if let Ok(key_bytes) = hex::decode(&self.pub_key)
             && key_bytes.len() == 32
             && let Ok(bytes_array) = key_bytes.as_slice().try_into()

@@ -15,6 +15,7 @@ pub enum ConsistencyLevel {
     Replicated,
 }
 
+/// Metadata identifying a single ODM transaction (id, start time, consistency).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransactionContext {
     pub id: Uuid,
@@ -23,6 +24,7 @@ pub struct TransactionContext {
 }
 
 impl TransactionContext {
+    /// Creates a new local-atomic transaction context.
     pub fn local() -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -31,6 +33,7 @@ impl TransactionContext {
         }
     }
 
+    /// Creates a transaction context with an explicit consistency level.
     pub fn with_consistency(consistency: ConsistencyLevel) -> Self {
         Self {
             consistency,
@@ -39,6 +42,7 @@ impl TransactionContext {
     }
 }
 
+/// Per-write options; carries an optional transaction context.
 #[derive(Debug, Clone, Default)]
 pub struct WriteOptions {
     pub transaction: Option<TransactionContext>,
