@@ -289,11 +289,13 @@ See [`docs/odm.md`](docs/odm.md) for the full design notes and caveats.
 
 ## PostgreSQL Compatibility (TypeORM, psql, node-postgres)
 
-GuardianDB ships a **PostgreSQL-compatible relational layer** on top of its
+GuardianDB now ships a **PostgreSQL-compatible relational layer** on top of its
 document model. Standard PostgreSQL clients — `psql`, node-postgres, **TypeORM**
 (`type: "postgres"`), DBeaver — connect over the PostgreSQL wire protocol and
 run ordinary SQL (DDL, DML, joins, aggregates, transactions, migrations), with
-no GuardianDB-specific client code.
+no GuardianDB-specific client code. 
+
+**NOTE Locking and other more advanced concepts in Postgres are to be supported**
 
 ```bash
 cargo run -p guardian-pgwire        # PostgreSQL gateway on 127.0.0.1:15432
