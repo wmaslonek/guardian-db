@@ -72,6 +72,18 @@ impl GuardianRelationalStorage {
         self.consistency
     }
 
+    /// Re-synchronize the local document-store index from replicated state.
+    ///
+    /// The relational engine reads the DocumentStore's synchronous local index;
+    /// that index updates on local writes and on `load`/`sync`, but not
+    /// automatically when documents arrive from peers in the background. A
+    /// gateway serving a replicating node should call this (e.g. periodically or
+    /// before a read) to observe remote writes. Returns the number of rows
+    /// re-synced.
+    pub async fn refresh(&self) -> GuardianResult<()> {
+        self.store.load(0).await
+    }
+
     fn gkey(collection: &str, row_id: &str) -> String {
         format!("{collection}{SEP}{row_id}")
     }

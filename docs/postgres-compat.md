@@ -262,6 +262,17 @@ GuardianDB is local-first; SQL does not change that. Two modes are defined.
   reconciliation, LWW per key). The relational layer reads a synchronous,
   locally-mirrored view (exactly like the existing DocumentStore index) and
   re-derives indexes from the live rows on each statement.
+- The local view updates on local writes and on `load`/`sync`, not automatically
+  when documents arrive from peers. `GuardianRelationalStorage::refresh()`
+  re-syncs the index from replicated state; a gateway serving a replicating node
+  should call it periodically or before reads to observe remote writes.
+- Single-node SQL over the GuardianDB document store (including persistence
+  across reopening the backend) is verified by `guardian_db::sql` tests. Making
+  the *relational* view converge **across peers** additionally needs the two
+  `open_sql` stores to share an iroh-docs namespace plus a background refresh;
+  this is the in-progress distributed-coordination work, captured by the
+  `#[ignore]`d `tests/sql_replication.rs` conformance target (raw document
+  replication between peers already works — see `tests/integration_replication.rs`).
 
 ## 10. Index behaviour
 
