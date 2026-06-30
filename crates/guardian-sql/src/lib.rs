@@ -16,6 +16,7 @@ mod dml;
 mod eval;
 mod exec;
 mod funcs;
+pub mod lock;
 mod names;
 mod result;
 mod row;

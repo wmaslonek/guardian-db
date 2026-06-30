@@ -21,6 +21,104 @@ struct OutCol {
 }
 
 impl Exec {
+    /// Apply `SELECT ... FOR UPDATE/FOR SHARE [NOWAIT | SKIP LOCKED]` row locking
+    /// over a single base table. Records the row locks to acquire and, for SKIP
+    /// LOCKED, restricts the result to the rows that were lockable.
+    pub fn prepare_for_update(&mut self, query: &Query) -> Result<()> {
+        use crate::lock::{LockMode, LockObject, LockScope, WaitPolicy};
+        use sqlparser::ast::{LockType, NonBlock};
+        if query.locks.is_empty() {
+            return Ok(());
+        }
+        let clause = &query.locks[0];
+        let mode = match clause.lock_type {
+            LockType::Update => LockMode::ForUpdate,
+            LockType::Share => LockMode::ForShare,
+        };
+        let policy = match clause.nonblock {
+            Some(NonBlock::Nowait) => WaitPolicy::NoWait,
+            Some(NonBlock::SkipLocked) => WaitPolicy::SkipLocked,
+            None => WaitPolicy::Wait,
+        };
+        let select = match query.body.as_ref() {
+            SetExpr::Select(s) => s,
+            _ => {
+                return Err(SqlError::FeatureNotSupported(
+                    "row locks require a single-table SELECT".into(),
+                ))
+            }
+        };
+        if select.from.len() != 1 || !select.from[0].joins.is_empty() {
+            return Err(SqlError::FeatureNotSupported(
+                "FOR UPDATE/SHARE on joins is not supported".into(),
+            ));
+        }
+        let (name, alias) = match &select.from[0].relation {
+            TableFactor::Table { name, alias, .. } => (name, alias),
+            _ => {
+                return Err(SqlError::FeatureNotSupported(
+                    "FOR UPDATE/SHARE requires a base table".into(),
+                ))
+            }
+        };
+        let (schema, tname) = split_schema_table(name);
+        let q = self
+            .catalog
+            .resolve_table_name(schema.as_deref(), &tname)
+            .ok_or_else(|| SqlError::UndefinedTable(tname.clone()))?;
+        let table = self.catalog.require_table(&q)?.clone();
+        let oid = table.oid;
+        let alias_name = alias.as_ref().map(|a| ident_name(&a.name)).unwrap_or(tname);
+        let tschema = crate::dml::table_schema(&table, &alias_name);
+
+        let rows: Vec<(String, _)> = self
+            .tables
+            .get(&q)
+            .map(|l| l.rows.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            .unwrap_or_default();
+
+        let mut allow = std::collections::BTreeSet::new();
+        for (rid, values) in rows {
+            let tuple = crate::dml::row_tuple(&table, &values);
+            let matched = match &select.selection {
+                Some(sel) => {
+                    let frame = Frame { schema: &tschema, row: &tuple };
+                    self.eval(sel, &[frame])?.truthy() == Some(true)
+                }
+                None => true,
+            };
+            if !matched {
+                continue;
+            }
+            let object = LockObject::Row(oid, rid.clone());
+            match policy {
+                WaitPolicy::Wait => {
+                    self.record_pending(object, mode, LockScope::Transaction);
+                    allow.insert(rid);
+                }
+                WaitPolicy::NoWait => {
+                    if self.try_lock(object, mode, LockScope::Transaction) {
+                        allow.insert(rid);
+                    } else {
+                        return Err(SqlError::LockNotAvailable(format!(
+                            "row in relation \"{}\"",
+                            q.name
+                        )));
+                    }
+                }
+                WaitPolicy::SkipLocked => {
+                    if self.try_lock(object, mode, LockScope::Transaction) {
+                        allow.insert(rid);
+                    }
+                }
+            }
+        }
+        if matches!(policy, WaitPolicy::SkipLocked) {
+            self.for_update_filter = Some((q, allow));
+        }
+        Ok(())
+    }
+
     /// Execute a subquery (used by the evaluator), inheriting outer frames.
     pub fn exec_subquery(&self, query: &Query, outer: &[Frame]) -> Result<RowSet> {
         self.exec_select_query(query, outer)
@@ -305,11 +403,22 @@ impl Exec {
                         return Ok(relabel(cte.clone(), &alias_name, alias));
                     }
                 }
-                // Catalog table?
                 let (schema, tname) = split_schema_table(name);
+                // pg_catalog.pg_locks — synthesized from the live lock manager.
+                if tname == "pg_locks"
+                    && (schema.as_deref() == Some("pg_catalog") || schema.is_none())
+                {
+                    return Ok(relabel(self.pg_locks_rows(), &alias_name, alias));
+                }
+                // Catalog table?
                 if let Some(q) = self.catalog.resolve_table_name(schema.as_deref(), &tname) {
                     if let Some(loaded) = self.tables.get(&q) {
-                        return Ok(relabel(loaded_to_rowset(loaded, &alias_name), &alias_name, alias));
+                        let filter = self
+                            .for_update_filter
+                            .as_ref()
+                            .filter(|(fq, _)| fq == &q)
+                            .map(|(_, s)| s);
+                        return Ok(relabel(loaded_to_rowset(loaded, &alias_name, filter), &alias_name, alias));
                     }
                     if let Some(view) = self.catalog.get_view(&q).cloned() {
                         return self.exec_view(&view, &alias_name, alias, outer);
@@ -395,6 +504,32 @@ impl Exec {
         };
         let rs = self.exec_select_query(&query, outer)?;
         Ok(relabel(rs, alias_name, alias))
+    }
+
+    /// Build `pg_catalog.pg_locks` rows from the live lock-manager snapshot.
+    fn pg_locks_rows(&self) -> RowSet {
+        let fields = vec![
+            FieldRef { table: None, name: "locktype".into(), ty: SqlType::Text },
+            FieldRef { table: None, name: "relation".into(), ty: SqlType::Text },
+            FieldRef { table: None, name: "mode".into(), ty: SqlType::Text },
+            FieldRef { table: None, name: "granted".into(), ty: SqlType::Boolean },
+            FieldRef { table: None, name: "pid".into(), ty: SqlType::Integer },
+        ];
+        let rows = self
+            .locks
+            .snapshot()
+            .into_iter()
+            .map(|r| {
+                vec![
+                    SqlValue::Text(r.locktype),
+                    SqlValue::Text(r.object),
+                    SqlValue::Text(r.mode),
+                    SqlValue::Bool(r.granted),
+                    SqlValue::Int4(r.holder as i32),
+                ]
+            })
+            .collect();
+        RowSet { schema: RowSchema::new(fields), rows }
     }
 
     fn exec_join(&self, left: RowSet, join: &Join, outer: &[Frame]) -> Result<RowSet> {
@@ -1314,8 +1449,13 @@ fn cross_join(left: RowSet, right: RowSet) -> RowSet {
     RowSet { schema, rows }
 }
 
-/// Build a RowSet from a loaded table, labelling each field with `alias`.
-fn loaded_to_rowset(loaded: &crate::store::LoadedTable, alias: &str) -> RowSet {
+/// Build a RowSet from a loaded table, labelling each field with `alias`. When
+/// `filter` is given (SKIP LOCKED), only those row ids are included.
+fn loaded_to_rowset(
+    loaded: &crate::store::LoadedTable,
+    alias: &str,
+    filter: Option<&std::collections::BTreeSet<String>>,
+) -> RowSet {
     let fields = loaded
         .meta
         .columns
@@ -1325,8 +1465,9 @@ fn loaded_to_rowset(loaded: &crate::store::LoadedTable, alias: &str) -> RowSet {
     let schema = RowSchema::new(fields);
     let rows = loaded
         .rows
-        .values()
-        .map(|values| {
+        .iter()
+        .filter(|(rid, _)| filter.map(|f| f.contains(*rid)).unwrap_or(true))
+        .map(|(_, values)| {
             loaded
                 .meta
                 .columns

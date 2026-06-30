@@ -379,6 +379,12 @@ impl Exec {
         let mut updated: Vec<RowValues> = Vec::new();
         let mut count = 0;
         for (rid, new_values) in targets {
+            // Take a row-level FOR UPDATE lock (acquired after this statement).
+            self.record_pending(
+                crate::lock::LockObject::Row(table.oid, rid.clone()),
+                crate::lock::LockMode::ForUpdate,
+                crate::lock::LockScope::Transaction,
+            );
             self.check_unique_for(&q, &new_values, Some(&rid))?;
             self.observe_serials(&table, &new_values);
             self.write_update(&q, &collection, &table, &rid, new_values.clone())?;
@@ -456,6 +462,13 @@ impl Exec {
             }
         }
 
+        for rid in &to_delete {
+            self.record_pending(
+                crate::lock::LockObject::Row(table.oid, rid.clone()),
+                crate::lock::LockMode::ForUpdate,
+                crate::lock::LockScope::Transaction,
+            );
+        }
         let count = to_delete.len();
         let loaded = self.tables.get_mut(&q).unwrap();
         for rid in &to_delete {

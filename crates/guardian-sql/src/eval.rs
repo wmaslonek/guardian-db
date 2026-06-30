@@ -576,6 +576,7 @@ impl Exec {
             )));
         }
         let mut args = Vec::new();
+        // (args evaluated below; advisory functions handled after)
         if let FunctionArguments::List(list) = &func.args {
             for arg in &list.args {
                 match arg {
@@ -595,7 +596,74 @@ impl Exec {
                 }
             }
         }
+        if let Some(result) = self.advisory_call(&name, &args) {
+            return Ok(result);
+        }
         funcs::call_scalar(self, &name, args)
+    }
+
+    /// Handle advisory-lock functions by routing to the lock manager. Returns
+    /// `None` for non-advisory functions.
+    fn advisory_call(&self, name: &str, args: &[SqlValue]) -> Option<SqlValue> {
+        use crate::lock::{LockMode, LockObject, LockScope};
+        let key = advisory_key(args);
+        let obj = LockObject::Advisory(key);
+        let out = match name {
+            "pg_advisory_lock" => {
+                self.record_pending(obj, LockMode::AdvisoryExclusive, LockScope::Session);
+                SqlValue::Null
+            }
+            "pg_advisory_lock_shared" => {
+                self.record_pending(obj, LockMode::AdvisoryShared, LockScope::Session);
+                SqlValue::Null
+            }
+            "pg_advisory_xact_lock" => {
+                self.record_pending(obj, LockMode::AdvisoryExclusive, LockScope::Transaction);
+                SqlValue::Null
+            }
+            "pg_advisory_xact_lock_shared" => {
+                self.record_pending(obj, LockMode::AdvisoryShared, LockScope::Transaction);
+                SqlValue::Null
+            }
+            "pg_try_advisory_lock" => {
+                SqlValue::Bool(self.try_lock(obj, LockMode::AdvisoryExclusive, LockScope::Session))
+            }
+            "pg_try_advisory_lock_shared" => {
+                SqlValue::Bool(self.try_lock(obj, LockMode::AdvisoryShared, LockScope::Session))
+            }
+            "pg_try_advisory_xact_lock" => {
+                SqlValue::Bool(self.try_lock(obj, LockMode::AdvisoryExclusive, LockScope::Transaction))
+            }
+            "pg_try_advisory_xact_lock_shared" => {
+                SqlValue::Bool(self.try_lock(obj, LockMode::AdvisoryShared, LockScope::Transaction))
+            }
+            "pg_advisory_unlock" => {
+                SqlValue::Bool(self.unlock_one(obj, LockMode::AdvisoryExclusive))
+            }
+            "pg_advisory_unlock_shared" => {
+                SqlValue::Bool(self.unlock_one(obj, LockMode::AdvisoryShared))
+            }
+            "pg_advisory_unlock_all" => {
+                self.locks.release_session_advisory(self.session_id);
+                SqlValue::Null
+            }
+            _ => return None,
+        };
+        Some(out)
+    }
+}
+
+/// Combine advisory-lock arguments into a 64-bit key (single `bigint`, or two
+/// `int4`s packed high/low, matching PostgreSQL).
+fn advisory_key(args: &[SqlValue]) -> i64 {
+    match args {
+        [a] => a.as_i64().unwrap_or(0),
+        [a, b, ..] => {
+            let hi = a.as_i64().unwrap_or(0) as i32 as i64;
+            let lo = b.as_i64().unwrap_or(0) as i32 as u32 as i64;
+            (hi << 32) | lo
+        }
+        _ => 0,
     }
 }
 

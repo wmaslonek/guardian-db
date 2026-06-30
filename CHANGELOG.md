@@ -24,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `sql` feature of `guardian-db` adds `guardian_db::sql`, a
     `RelationalStorage` adapter over a replicated GuardianDB document store,
     preserving the local-first / P2P model (verified on a real iroh node).
+  - A PostgreSQL-style **lock manager** for the single-node gateway: all eight
+    table-lock modes with the exact conflict matrix, row locks (`FOR UPDATE`/
+    `FOR SHARE` with `NOWAIT`/`SKIP LOCKED`), advisory locks (session/xact,
+    shared, try, two-key), `LOCK TABLE`, blocking waits with `lock_timeout`,
+    deadlock detection (`40P01`), transaction-abort semantics (`25P02`), and
+    `pg_catalog.pg_locks` monitoring.
   - `examples/postgres-typeorm` (runnable TypeORM app with migration/seed/
     queries/transactions), `packages/guardian-typeorm` (`GuardianDataSource`),
     and `tests/postgres-compat` (node-postgres + TypeORM conformance, 16 tests).

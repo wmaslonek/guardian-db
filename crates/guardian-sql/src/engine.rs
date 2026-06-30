@@ -3,6 +3,7 @@
 
 use crate::error::{Result, SqlError};
 use crate::exec::Exec;
+use crate::lock::{LockManager, LockMode, LockObject, LockScope, SessionId, WaitPolicy};
 use crate::result::ExecResult;
 use crate::store::{LoadedTable, Mutation};
 use guardian_relational::catalog::QualifiedName;
@@ -11,20 +12,27 @@ use serde_json::Value as Json;
 use sqlparser::ast::{Query, Statement};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 
 /// A shared, storage-backed relational database.
 pub struct Database<S: RelationalStorage> {
     storage: Arc<S>,
     pub name: String,
+    locks: Arc<LockManager>,
 }
 
 impl<S: RelationalStorage> Database<S> {
     pub fn new(storage: Arc<S>, name: impl Into<String>) -> Self {
-        Self { storage, name: name.into() }
+        Self { storage, name: name.into(), locks: Arc::new(LockManager::new()) }
     }
 
     pub fn storage(&self) -> &Arc<S> {
         &self.storage
+    }
+
+    /// The shared lock manager (single-node coordinator).
+    pub fn locks(&self) -> &Arc<LockManager> {
+        &self.locks
     }
 }
 
@@ -35,6 +43,8 @@ struct Transaction {
     /// collection -> row_id -> Some(doc) (upsert) / None (delete)
     overlay: HashMap<String, HashMap<String, Option<Json>>>,
     truncated: HashSet<String>,
+    /// Set when a statement errors inside the block (PostgreSQL aborts the txn).
+    aborted: bool,
 }
 
 /// A connection-scoped session.
@@ -42,6 +52,16 @@ pub struct Session<S: RelationalStorage> {
     db: Arc<Database<S>>,
     username: String,
     txn: Option<Transaction>,
+    session_id: SessionId,
+    lock_timeout: Option<Duration>,
+}
+
+impl<S: RelationalStorage> Drop for Session<S> {
+    fn drop(&mut self) {
+        // Release any locks still held (e.g. session-level advisory locks) when
+        // the connection goes away.
+        self.db.locks.release_session(self.session_id);
+    }
 }
 
 /// A parsed, reusable prepared statement.
@@ -54,7 +74,8 @@ pub struct Prepared {
 
 impl<S: RelationalStorage> Session<S> {
     pub fn new(db: Arc<Database<S>>, username: impl Into<String>) -> Self {
-        Self { db, username: username.into(), txn: None }
+        let session_id = db.locks.new_session();
+        Self { db, username: username.into(), txn: None, session_id, lock_timeout: None }
     }
 
     pub fn in_transaction(&self) -> bool {
@@ -89,7 +110,7 @@ impl<S: RelationalStorage> Session<S> {
 
     /// Execute one statement with bound parameters.
     pub async fn execute_one(&mut self, stmt: &Statement, params: &[SqlValue]) -> Result<ExecResult> {
-        // Transaction control.
+        // Transaction control bypasses locking/abort handling.
         match stmt {
             Statement::StartTransaction { .. } => return self.begin().await,
             Statement::Commit { .. } => return self.commit().await,
@@ -97,11 +118,46 @@ impl<S: RelationalStorage> Session<S> {
             _ => {}
         }
 
-        // Load the working catalog (from txn snapshot or storage).
+        // A failed transaction ignores commands until it is ended.
+        if self.txn.as_ref().map(|t| t.aborted).unwrap_or(false) {
+            return Err(SqlError::InFailedTransaction);
+        }
+
+        // `SET lock_timeout = ...` is observed here.
+        if matches!(stmt, Statement::Set(_)) {
+            self.apply_set(&stmt.to_string());
+        }
+
+        let outcome = self.execute_inner(stmt, params).await;
+        if outcome.is_err() {
+            // Any error inside an explicit transaction aborts it (PostgreSQL);
+            // an autocommit statement releases the locks it took.
+            match &mut self.txn {
+                Some(txn) => txn.aborted = true,
+                None => self.db.locks.release_transaction(self.session_id),
+            }
+        }
+        outcome
+    }
+
+    async fn execute_inner(&mut self, stmt: &Statement, params: &[SqlValue]) -> Result<ExecResult> {
         let catalog = match &self.txn {
             Some(txn) => txn.catalog.clone(),
             None => self.load_catalog().await?,
         };
+
+        // Explicit `LOCK TABLE ... IN <mode> MODE [NOWAIT]`.
+        if let Statement::Lock(lock) = stmt {
+            return self.exec_lock_table(lock, &catalog).await;
+        }
+
+        // Acquire the implicit table-level locks for this statement.
+        for (oid, mode) in table_lock_plan(stmt, &catalog) {
+            self.db
+                .locks
+                .acquire(self.session_id, LockObject::Table(oid), mode, LockScope::Transaction, WaitPolicy::Wait, self.lock_timeout)
+                .await?;
+        }
 
         // Preload referenced tables.
         let mut names = Vec::new();
@@ -119,7 +175,16 @@ impl<S: RelationalStorage> Session<S> {
 
         // Build the synchronous execution context and run.
         let now = chrono::Utc::now();
-        let mut exec = Exec::new(catalog, tables, params.to_vec(), now, self.db.name.clone(), self.username.clone());
+        let mut exec = Exec::new(
+            catalog,
+            tables,
+            params.to_vec(),
+            now,
+            self.db.name.clone(),
+            self.username.clone(),
+            self.db.locks.clone(),
+            self.session_id,
+        );
         // Pre-materialize top-level CTEs.
         if let Statement::Query(q) = stmt {
             if let Some(with) = &q.with {
@@ -132,6 +197,15 @@ impl<S: RelationalStorage> Session<S> {
             }
         }
         let result = self.dispatch(&mut exec, stmt)?;
+
+        // Acquire row / blocking-advisory locks queued during execution.
+        let pending: Vec<_> = exec.pending_locks.borrow_mut().drain(..).collect();
+        for (object, mode, scope) in pending {
+            self.db
+                .locks
+                .acquire(self.session_id, object, mode, scope, WaitPolicy::Wait, self.lock_timeout)
+                .await?;
+        }
 
         // Commit or stage the produced mutations / catalog changes.
         let mutations = std::mem::take(&mut exec.mutations);
@@ -148,14 +222,56 @@ impl<S: RelationalStorage> Session<S> {
                 if catalog_dirty {
                     self.save_catalog(&new_catalog).await?;
                 }
+                // Autocommit: release the locks this statement acquired.
+                self.db.locks.release_transaction(self.session_id);
             }
         }
         Ok(result)
     }
 
+    async fn exec_lock_table(
+        &mut self,
+        lock: &sqlparser::ast::Lock,
+        catalog: &Catalog,
+    ) -> Result<ExecResult> {
+        let mode = map_lock_table_mode(lock.lock_mode.clone());
+        let wait = if lock.nowait { WaitPolicy::NoWait } else { WaitPolicy::Wait };
+        for target in &lock.tables {
+            let (schema, name) = crate::names::split_schema_table(&target.name);
+            let q = catalog
+                .resolve_table_name(schema.as_deref(), &name)
+                .ok_or_else(|| SqlError::UndefinedTable(name.clone()))?;
+            let oid = catalog.require_table(&q)?.oid;
+            self.db
+                .locks
+                .acquire(self.session_id, LockObject::Table(oid), mode, LockScope::Transaction, wait, self.lock_timeout)
+                .await?;
+        }
+        Ok(ExecResult::empty_command("LOCK TABLE"))
+    }
+
+    /// Parse `SET lock_timeout = ...` (ms, `'Ns'`, or `'Nms'`); 0 disables it.
+    fn apply_set(&mut self, text: &str) {
+        let lower = text.to_ascii_lowercase();
+        if !lower.contains("lock_timeout") {
+            return;
+        }
+        if let Some(eq) = text.find('=') {
+            let raw = text[eq + 1..]
+                .trim()
+                .trim_end_matches(';')
+                .trim()
+                .trim_matches(|c| c == '\'' || c == '"');
+            let ms = parse_timeout_ms(raw);
+            self.lock_timeout = if ms == 0 { None } else { Some(Duration::from_millis(ms)) };
+        }
+    }
+
     fn dispatch(&self, exec: &mut Exec, stmt: &Statement) -> Result<ExecResult> {
         match stmt {
             Statement::Query(q) => {
+                // Row-level locking (FOR UPDATE / FOR SHARE [NOWAIT | SKIP LOCKED]).
+                exec.prepare_for_update(q)?;
                 let rs = exec.exec_select_query(q, &[])?;
                 let fields = rs
                     .schema
@@ -234,6 +350,7 @@ impl<S: RelationalStorage> Session<S> {
                 catalog_dirty: false,
                 overlay: HashMap::new(),
                 truncated: HashSet::new(),
+                aborted: false,
             });
         }
         Ok(ExecResult::empty_command("BEGIN"))
@@ -241,6 +358,11 @@ impl<S: RelationalStorage> Session<S> {
 
     async fn commit(&mut self) -> Result<ExecResult> {
         if let Some(txn) = self.txn.take() {
+            // Committing an aborted transaction rolls it back (PostgreSQL).
+            if txn.aborted {
+                self.db.locks.release_transaction(self.session_id);
+                return Ok(ExecResult::empty_command("ROLLBACK"));
+            }
             for c in &txn.truncated {
                 self.db.storage.truncate(c).await?;
             }
@@ -256,11 +378,13 @@ impl<S: RelationalStorage> Session<S> {
                 self.save_catalog(&txn.catalog).await?;
             }
         }
+        self.db.locks.release_transaction(self.session_id);
         Ok(ExecResult::empty_command("COMMIT"))
     }
 
     async fn rollback(&mut self) -> Result<ExecResult> {
         self.txn = None;
+        self.db.locks.release_transaction(self.session_id);
         Ok(ExecResult::empty_command("ROLLBACK"))
     }
 
@@ -331,6 +455,137 @@ impl<S: RelationalStorage> Session<S> {
             }
         }
         Ok(())
+    }
+}
+
+/// The implicit table-level locks a statement takes, deduplicated to the
+/// strongest mode per table (mirrors PostgreSQL's automatic locking).
+fn table_lock_plan(stmt: &Statement, catalog: &Catalog) -> Vec<(u32, LockMode)> {
+    use sqlparser::ast::{FromTable, ObjectType, TableFactor, TableObject};
+    let resolve = |schema: Option<&str>, name: &str| -> Option<u32> {
+        catalog
+            .resolve_table_name(schema, name)
+            .and_then(|q| catalog.get_table(&q).map(|t| t.oid))
+    };
+    let resolve_name = |out: &mut Vec<(u32, LockMode)>, name: &sqlparser::ast::ObjectName, mode: LockMode| {
+        let (s, n) = crate::names::split_schema_table(name);
+        if let Some(oid) = resolve(s.as_deref(), &n) {
+            out.push((oid, mode));
+        }
+    };
+    let read_names = |out: &mut Vec<(u32, LockMode)>, names: &NameOut, mode: LockMode| {
+        for (s, n) in names {
+            if let Some(oid) = resolve(s.as_deref(), n) {
+                out.push((oid, mode));
+            }
+        }
+    };
+    let mut plan = Vec::new();
+    match stmt {
+        Statement::Query(q) => {
+            let mode = if q.locks.is_empty() { LockMode::AccessShare } else { LockMode::RowShare };
+            let mut names = Vec::new();
+            collect_query(q, &mut names);
+            read_names(&mut plan, &names, mode);
+        }
+        Statement::Insert(i) => {
+            if let TableObject::TableName(name) = &i.table {
+                resolve_name(&mut plan, name, LockMode::RowExclusive);
+            }
+            if let Some(src) = &i.source {
+                let mut names = Vec::new();
+                collect_query(src, &mut names);
+                read_names(&mut plan, &names, LockMode::AccessShare);
+            }
+        }
+        Statement::Update(u) => {
+            if let TableFactor::Table { name, .. } = &u.table.relation {
+                resolve_name(&mut plan, name, LockMode::RowExclusive);
+            }
+            if let Some(sel) = &u.selection {
+                let mut names = Vec::new();
+                collect_expr(sel, &mut names);
+                read_names(&mut plan, &names, LockMode::AccessShare);
+            }
+        }
+        Statement::Delete(d) => {
+            let items = match &d.from {
+                FromTable::WithFromKeyword(items) | FromTable::WithoutKeyword(items) => items,
+            };
+            if let Some(twj) = items.first() {
+                if let TableFactor::Table { name, .. } = &twj.relation {
+                    resolve_name(&mut plan, name, LockMode::RowExclusive);
+                }
+            }
+            if let Some(sel) = &d.selection {
+                let mut names = Vec::new();
+                collect_expr(sel, &mut names);
+                read_names(&mut plan, &names, LockMode::AccessShare);
+            }
+        }
+        Statement::CreateIndex(ci) => resolve_name(&mut plan, &ci.table_name, LockMode::Share),
+        Statement::AlterTable(a) => resolve_name(&mut plan, &a.name, LockMode::AccessExclusive),
+        Statement::Drop { object_type: ObjectType::Table, names, .. } => {
+            for name in names {
+                resolve_name(&mut plan, name, LockMode::AccessExclusive);
+            }
+        }
+        Statement::Truncate(t) => {
+            for target in &t.table_names {
+                resolve_name(&mut plan, &target.name, LockMode::AccessExclusive);
+            }
+        }
+        _ => {}
+    }
+    // Deduplicate to the strongest mode per table (lock in oid order to reduce
+    // deadlocks between statements touching the same set of tables).
+    let mut by_oid: std::collections::BTreeMap<u32, LockMode> = std::collections::BTreeMap::new();
+    for (oid, mode) in plan {
+        let entry = by_oid.entry(oid).or_insert(mode);
+        if table_mode_rank(mode) > table_mode_rank(*entry) {
+            *entry = mode;
+        }
+    }
+    by_oid.into_iter().collect()
+}
+
+fn table_mode_rank(mode: LockMode) -> u8 {
+    match mode {
+        LockMode::AccessShare => 0,
+        LockMode::RowShare => 1,
+        LockMode::RowExclusive => 2,
+        LockMode::ShareUpdateExclusive => 3,
+        LockMode::Share => 4,
+        LockMode::ShareRowExclusive => 5,
+        LockMode::Exclusive => 6,
+        LockMode::AccessExclusive => 7,
+        _ => 0,
+    }
+}
+
+fn map_lock_table_mode(mode: Option<sqlparser::ast::LockTableMode>) -> LockMode {
+    use sqlparser::ast::LockTableMode as M;
+    match mode {
+        Some(M::AccessShare) => LockMode::AccessShare,
+        Some(M::RowShare) => LockMode::RowShare,
+        Some(M::RowExclusive) => LockMode::RowExclusive,
+        Some(M::ShareUpdateExclusive) => LockMode::ShareUpdateExclusive,
+        Some(M::Share) => LockMode::Share,
+        Some(M::ShareRowExclusive) => LockMode::ShareRowExclusive,
+        Some(M::Exclusive) => LockMode::Exclusive,
+        // PostgreSQL's default for LOCK TABLE with no mode is ACCESS EXCLUSIVE.
+        Some(M::AccessExclusive) | None => LockMode::AccessExclusive,
+    }
+}
+
+fn parse_timeout_ms(raw: &str) -> u64 {
+    let raw = raw.trim();
+    if let Some(num) = raw.strip_suffix("ms") {
+        num.trim().parse().unwrap_or(0)
+    } else if let Some(num) = raw.strip_suffix('s') {
+        num.trim().parse::<u64>().map(|n| n * 1000).unwrap_or(0)
+    } else {
+        raw.parse().unwrap_or(0)
     }
 }
 

@@ -5,12 +5,15 @@
 //! execution (see [`crate::engine`]), so execution itself — including subqueries —
 //! is fully synchronous. Only loading and commit touch async storage.
 
+use crate::lock::{LockManager, LockMode, LockObject, LockScope, SessionId};
 use crate::row::RowSet;
 use crate::store::{LoadedTable, Mutation};
 use chrono::{DateTime, Utc};
 use guardian_relational::catalog::QualifiedName;
 use guardian_relational::{Catalog, SqlValue};
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
 
 /// A single name-resolution frame (an intermediate row + its schema).
 pub struct Frame<'a> {
@@ -38,9 +41,20 @@ pub struct Exec {
     pub database: String,
     /// Whether the connected role is a superuser (affects some catalog columns).
     pub username: String,
+    /// Shared lock manager.
+    pub locks: Arc<LockManager>,
+    /// This connection's lock-holder id.
+    pub session_id: SessionId,
+    /// Blocking locks collected during synchronous execution, acquired by the
+    /// engine after the statement runs (row locks, blocking advisory locks).
+    pub pending_locks: RefCell<Vec<(LockObject, LockMode, LockScope)>>,
+    /// For `SELECT ... FOR UPDATE SKIP LOCKED`: restricts a table's scan to the
+    /// rows that were lockable.
+    pub for_update_filter: Option<(QualifiedName, BTreeSet<String>)>,
 }
 
 impl Exec {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         catalog: Catalog,
         tables: HashMap<QualifiedName, LoadedTable>,
@@ -48,6 +62,8 @@ impl Exec {
         now: DateTime<Utc>,
         database: String,
         username: String,
+        locks: Arc<LockManager>,
+        session_id: SessionId,
     ) -> Self {
         Self {
             catalog,
@@ -59,7 +75,26 @@ impl Exec {
             cte: HashMap::new(),
             database,
             username,
+            locks,
+            session_id,
+            pending_locks: RefCell::new(Vec::new()),
+            for_update_filter: None,
         }
+    }
+
+    /// Queue a blocking lock to be acquired after the statement executes.
+    pub fn record_pending(&self, object: LockObject, mode: LockMode, scope: LockScope) {
+        self.pending_locks.borrow_mut().push((object, mode, scope));
+    }
+
+    /// Non-blocking lock acquire (for NOWAIT / SKIP LOCKED / try-advisory).
+    pub fn try_lock(&self, object: LockObject, mode: LockMode, scope: LockScope) -> bool {
+        self.locks.try_acquire(self.session_id, object, mode, scope)
+    }
+
+    /// Release one held lock (for advisory unlock).
+    pub fn unlock_one(&self, object: LockObject, mode: LockMode) -> bool {
+        self.locks.release_one(self.session_id, &object, mode)
     }
 
     /// Look up a bound parameter by its 1-based index from a `$n` placeholder.

@@ -250,6 +250,44 @@ GuardianDB is local-first; SQL does not change that. Two modes are defined.
   statement). Autocommit wraps each statement in its own transaction.
 - Constraint checks (NOT NULL, unique, CHECK) run before the write is staged, so
   a violating statement aborts without partial effects.
+- Any error inside an explicit transaction **aborts** it: further statements
+  fail with `25P02` until `ROLLBACK` (and `COMMIT` on an aborted block rolls
+  back), matching PostgreSQL.
+
+### Locking and concurrency
+
+The single-node gateway is a single coordinator, so it implements a real
+PostgreSQL-style lock manager (`crates/guardian-sql/src/lock.rs`), shared across
+all connections. Locks are held by a session and released at transaction end (or
+session end for session-level advisory locks).
+
+- **Table-level locks** — all eight modes (`ACCESS SHARE`, `ROW SHARE`,
+  `ROW EXCLUSIVE`, `SHARE UPDATE EXCLUSIVE`, `SHARE`, `SHARE ROW EXCLUSIVE`,
+  `EXCLUSIVE`, `ACCESS EXCLUSIVE`) with PostgreSQL's exact conflict matrix.
+  Statements take them automatically (SELECT → `ACCESS SHARE`, INSERT/UPDATE/
+  DELETE → `ROW EXCLUSIVE`, `CREATE INDEX` → `SHARE`, ALTER/DROP/TRUNCATE →
+  `ACCESS EXCLUSIVE`). `LOCK TABLE ... IN <mode> MODE [NOWAIT]` is supported.
+- **Row-level locks** — `SELECT ... FOR UPDATE` / `FOR SHARE` (the parser's
+  granularity; `FOR NO KEY UPDATE`/`FOR KEY SHARE` map onto these), with
+  `NOWAIT` and `SKIP LOCKED`. `UPDATE`/`DELETE` take `FOR UPDATE` row locks.
+- **Advisory locks** — `pg_advisory_lock`/`unlock`, `pg_try_advisory_lock`, the
+  `_xact_` (transaction-scoped) and `_shared` variants, single- and two-key
+  forms, and `pg_advisory_unlock_all`.
+- **Blocking & waiting** — a conflicting request blocks until release; `NOWAIT`
+  fails immediately with `55P03`; `SKIP LOCKED` skips locked rows. `SET
+  lock_timeout = '<n>[ms|s]'` bounds the wait (`55P03` on expiry).
+- **Deadlock detection** — a wait-for-graph cycle aborts a victim with `40P01`.
+- **Monitoring** — `pg_catalog.pg_locks` reports granted and waiting locks.
+
+These are exercised by `crates/guardian-sql/tests/locks.rs` (blocking, deadlock,
+NOWAIT, SKIP LOCKED, advisory, LOCK TABLE, pg_locks, release-on-rollback).
+
+> **Limitations.** Locking is per-node (the gateway is the coordinator); it does
+> not span replicas — cross-replica serialization is the strict-mode work. There
+> is no MVCC: isolation is read-committed, and an `UPDATE` that waits on a row
+> lock does **not** re-read the row after acquiring it (no EvalPlanQual), so a
+> blocked writer can still overwrite based on its original snapshot once it
+> proceeds. `SERIALIZABLE` is not implemented.
 
 ## 9. Replication semantics
 
@@ -305,6 +343,9 @@ Errors carry standard PostgreSQL SQLSTATE codes, surfaced to clients in the
 | `22012`  | division by zero                |
 | `42804`  | datatype mismatch               |
 | `3F000`  | undefined schema                |
+| `40P01`  | deadlock detected               |
+| `55P03`  | lock not available (NOWAIT / lock_timeout) |
+| `25P02`  | in failed SQL transaction       |
 | `0A000`  | feature not supported           |
 
 ## 12. Examples
