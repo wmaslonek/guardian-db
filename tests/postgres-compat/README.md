@@ -30,7 +30,7 @@ if these pass, ordinary PostgreSQL tooling works against GuardianDB.
 
 ```bash
 # from the repo root, build the gateway binary the tests spawn:
-cargo build -p guardian-pgwire
+cargo build --features pgwire --bin guardian-pgwire
 
 cd tests/postgres-compat
 npm install
@@ -41,4 +41,4 @@ Each test file spawns its own fresh in-memory gateway on a free port (override
 the binary with `GUARDIAN_PGWIRE_BIN=/path/to/guardian-pgwire`).
 
 > Documented gaps are tracked in `docs/postgres-compat.md` and as ignored
-> conformance tests in `crates/guardian-sql/tests/conformance.rs`.
+> conformance tests in `tests/sql_conformance.rs`.

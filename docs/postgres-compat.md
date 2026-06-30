@@ -10,33 +10,34 @@ client code.
 TypeORM / node-postgres / psql / DBeaver
         │  PostgreSQL wire protocol (v3)
         ▼
-guardian-pgwire   ── startup/auth, simple + extended query, prepared statements
+guardian_db::pgwire   ── startup/auth, simple + extended query, prepared statements
         │
         ▼
-guardian-sql      ── parser (sqlparser) → planner → executor; DDL/DML;
-        │             transactions; information_schema / pg_catalog
+guardian_db::sql      ── parser (sqlparser) → planner → executor; DDL/DML;
+        │                 transactions; information_schema / pg_catalog
         ▼
-guardian-relational ── types, values, catalog, indexes, RelationalStorage
+guardian_db::relational ── types, values, catalog, indexes, RelationalStorage
         │
         ▼
 GuardianDB document / key-value storage  ──►  Iroh-backed replication
 ```
 
-The relational core (`guardian-relational`, `guardian-sql`, `guardian-pgwire`)
-is independent of the iroh stack and is driven entirely through the
-`RelationalStorage` trait. The default gateway uses an in-memory store; the
-GuardianDB-backed store maps rows onto replicated `iroh-docs` documents while
-preserving the local-first model.
+The relational core lives in the `guardian-db` crate as the feature-gated
+`relational`, `sql`, and `pgwire` modules (under `src/`, enabled by the `sql` /
+`pgwire` features). The engine itself is storage-agnostic — it is driven entirely
+through the `RelationalStorage` trait. The default gateway uses an in-memory
+store; the GuardianDB-backed store maps rows onto replicated `iroh-docs`
+documents while preserving the local-first model.
 
 ---
 
 ## 1. Starting the gateway
 
 ```bash
-cargo run -p guardian-pgwire        # listens on 127.0.0.1:15432, database "app"
+cargo run --features pgwire --bin guardian-pgwire        # listens on 127.0.0.1:15432, database "app"
 
 # options:
-cargo run -p guardian-pgwire -- --addr 127.0.0.1:15432 --database app --username guardian
+cargo run --features pgwire --bin guardian-pgwire -- --addr 127.0.0.1:15432 --database app --username guardian
 ```
 
 | Flag             | Default            | Notes                                            |
@@ -91,11 +92,11 @@ all work. See `examples/postgres-typeorm` for a complete app and
 
 ## 4. Native GuardianDB TypeORM driver (optional)
 
-`@guardiandb/typeorm` provides `GuardianDataSource`, which manages an embedded
+`@guardiandb/postgres-typeorm` provides `GuardianDataSource`, which manages an embedded
 gateway and otherwise behaves like a normal `DataSource`:
 
 ```ts
-import { GuardianDataSource } from "@guardiandb/typeorm";
+import { GuardianDataSource } from "@guardiandb/postgres-typeorm";
 
 const ds = new GuardianDataSource({
   path: "./data",
@@ -190,7 +191,7 @@ node-postgres metadata.
 
 ## 6. Unsupported SQL (documented gaps)
 
-Each gap has a conformance test in `crates/guardian-sql/tests/conformance.rs`
+Each gap has a conformance test in `tests/sql_conformance.rs`
 (clean-failure tests pass; intended-future features are `#[ignore]`d).
 
 | Feature                              | Status | Behaviour                              |
@@ -257,7 +258,7 @@ GuardianDB is local-first; SQL does not change that. Two modes are defined.
 ### Locking and concurrency
 
 The single-node gateway is a single coordinator, so it implements a real
-PostgreSQL-style lock manager (`crates/guardian-sql/src/lock.rs`), shared across
+PostgreSQL-style lock manager (`src/sql/lock.rs`), shared across
 all connections. Locks are held by a session and released at transaction end (or
 session end for session-level advisory locks).
 
@@ -279,7 +280,7 @@ session end for session-level advisory locks).
 - **Deadlock detection** — a wait-for-graph cycle aborts a victim with `40P01`.
 - **Monitoring** — `pg_catalog.pg_locks` reports granted and waiting locks.
 
-These are exercised by `crates/guardian-sql/tests/locks.rs` (blocking, deadlock,
+These are exercised by `tests/sql_locks.rs` (blocking, deadlock,
 NOWAIT, SKIP LOCKED, advisory, LOCK TABLE, pg_locks, release-on-rollback).
 
 > **Limitations.** Locking is per-node (the gateway is the coordinator); it does
@@ -353,14 +354,14 @@ Errors carry standard PostgreSQL SQLSTATE codes, surfaced to clients in the
 - `examples/postgres-typeorm` — a complete TypeORM app (entities, migration,
   seed, queries, transactions). Run `npm run demo`.
 - `tests/postgres-compat` — node-postgres and TypeORM conformance tests.
-- `crates/guardian-pgwire/tests/wire.rs` — a `tokio-postgres` client driving the
+- `tests/pgwire_wire.rs` — a `tokio-postgres` client driving the
   gateway over TCP.
 
 ## 13. Testing summary
 
 | Layer                | Tests                                                  |
 | -------------------- | ------------------------------------------------------ |
-| `guardian-relational`| types, values, encoding, catalog, indexes, storage     |
-| `guardian-sql`       | engine (DDL/DML/SELECT/joins/aggregates/txn/index) + conformance gaps |
-| `guardian-pgwire`    | `tokio-postgres` over TCP (startup, query, errors, txn)|
+| `src/relational`     | types, values, encoding, catalog, indexes, storage     |
+| `src/sql`            | engine (DDL/DML/SELECT/joins/aggregates/txn/index) + conformance gaps |
+| `src/pgwire`         | `tokio-postgres` over TCP (startup, query, errors, txn)|
 | `tests/postgres-compat` | node-postgres + TypeORM (synchronize, migrations, relations, QueryBuilder, transactions) |

@@ -12,15 +12,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   node-postgres, **TypeORM** with `type: "postgres"`, DBeaver) connect to
   GuardianDB over the PostgreSQL wire protocol and run ordinary SQL with no
   GuardianDB-specific client code.
-  - New workspace crates (independent of the iroh stack): `guardian-relational`
-    (PostgreSQL type system, value model, serializable catalog, storage trait,
-    BTree indexes, SQLSTATE errors), `guardian-sql` (sqlparser-based
-    parser/planner/executor for DDL, DML with RETURNING/ON CONFLICT, SELECT with
-    joins/aggregates/subqueries/CTEs/set-ops, expressions, local-atomic
-    transactions, parameter binding, and `information_schema`/`pg_catalog`
-    introspection), and `guardian-pgwire` (wire-protocol server on
-    `127.0.0.1:15432` with simple + extended query, prepared statements and
-    SQLSTATE errors).
+  - New feature-gated modules inside `guardian-db` (the engine is
+    storage-agnostic, driven through the `RelationalStorage` trait):
+    `guardian_db::relational` (PostgreSQL type system, value model, serializable
+    catalog, storage trait, BTree indexes, SQLSTATE errors) and
+    `guardian_db::sql` (sqlparser-based parser/planner/executor for DDL, DML with
+    RETURNING/ON CONFLICT, SELECT with joins/aggregates/subqueries/CTEs/set-ops,
+    expressions, local-atomic transactions, parameter binding, and
+    `information_schema`/`pg_catalog` introspection) behind the `sql` feature;
+    `guardian_db::pgwire` (wire-protocol server on `127.0.0.1:15432` with simple
+    + extended query, prepared statements and SQLSTATE errors) plus the
+    `guardian-pgwire` binary behind the `pgwire` feature.
   - `sql` feature of `guardian-db` adds `guardian_db::sql`, a
     `RelationalStorage` adapter over a replicated GuardianDB document store,
     preserving the local-first / P2P model (verified on a real iroh node).
@@ -31,10 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     deadlock detection (`40P01`), transaction-abort semantics (`25P02`), and
     `pg_catalog.pg_locks` monitoring.
   - `examples/postgres-typeorm` (runnable TypeORM app with migration/seed/
-    queries/transactions), `packages/guardian-typeorm` (`GuardianDataSource`),
+    queries/transactions), `packages/guardiandb-postgres-typeorm` (`GuardianDataSource`),
     and `tests/postgres-compat` (node-postgres + TypeORM conformance, 16 tests).
   - `docs/postgres-compat.md` with consistency/transaction/replication semantics
-    and a compatibility matrix; `crates/guardian-sql/tests/conformance.rs`
+    and a compatibility matrix; `tests/sql_conformance.rs`
     pins documented gaps (clean-failure and `#[ignore]` tests).
 
 
@@ -45,7 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added local validation for required fields, nullability, field types, strict schemas, immutable primary keys, primary-key uniqueness, unique constraints, and secondary indexes.
   - Added `GuardianDB::init_collection`, `GuardianDB::list_collections`, and `GuardianDB::model_collection::<T>()` helpers under the ODM feature.
   - Added local transaction/consistency API scaffolding (`TransactionContext`, `ConsistencyLevel`) that explicitly rejects unsupported replicated transaction semantics until a distributed coordinator exists.
-- **TypeScript ODM SDK scaffold** in `sdk/typescript` exposing `GuardianDB.init`, `GuardianDB.listDatabases`, `initCollection`, `listCollections`, and Mongoose-style collection CRUD through a `GuardianTransport` boundary.
+- **TypeScript ODM SDK scaffold** in `packages/guardiandb-odm` exposing `GuardianDB.init`, `GuardianDB.listDatabases`, `initCollection`, `listCollections`, and Mongoose-style collection CRUD through a `GuardianTransport` boundary.
   - Includes a process-local reference transport for deterministic SDK tests and future native Node/WASM/mobile bridge development.
 - **ODM documentation and tests**, including `docs/odm.md`, Rust ODM integration tests, and TypeScript SDK tests covering the issue #17 usage flow, uniqueness rollback, update operators, collection listing, and version-conflict behavior.
 

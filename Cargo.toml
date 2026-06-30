@@ -16,8 +16,11 @@ categories = ["database-implementations", "network-programming", "web-programmin
 [features]
 default = []
 odm = ["dep:guardian-db-derive", "uuid/v4"]
-# PostgreSQL-compatible SQL on top of GuardianDB's replicated document storage.
-sql = ["dep:guardian-relational", "dep:guardian-sql"]
+# PostgreSQL-compatible SQL on top of GuardianDB's replicated document storage
+# (the `relational` + `sql` modules).
+sql = ["dep:sqlparser", "dep:rust_decimal", "uuid/v4"]
+# PostgreSQL wire-protocol server (the `pgwire` module + `guardian-pgwire` binary).
+pgwire = ["sql", "dep:pgwire"]
 
 [dependencies]
 async-trait = "0.1.89"
@@ -58,8 +61,11 @@ postcard = { version = "1.1.3", features = ["use-std"] }
 ratatui = "0.30.0"
 redb = "3.1.0"
 guardian-db-derive = { version = "0.16.0", path = "guardian-db-derive", optional = true }
-guardian-relational = { version = "0.1.0", path = "crates/guardian-relational", optional = true }
-guardian-sql = { version = "0.1.0", path = "crates/guardian-sql", optional = true }
+# PostgreSQL compatibility layer (folded into `src/{relational,sql,pgwire}`),
+# pulled in only by the `sql` / `pgwire` features.
+sqlparser = { version = "0.62", optional = true }
+rust_decimal = { version = "1.37", features = ["serde"], optional = true }
+pgwire = { version = "0.40", optional = true }
 
 [dev-dependencies]
 tokio-test = "0.4"
@@ -69,6 +75,35 @@ console = "0.16.2"
 chrono = "0.4"
 crossterm = "0.29.0"
 base64 = "0.22.1"
+# Real PostgreSQL client used by the `pgwire` wire-protocol tests.
+tokio-postgres = "0.7"
+
+# PostgreSQL gateway binary; only built when the `pgwire` feature is enabled.
+[[bin]]
+name = "guardian-pgwire"
+path = "src/bin/guardian-pgwire.rs"
+required-features = ["pgwire"]
+
+# Integration tests for the PostgreSQL compatibility layer, gated by feature.
+[[test]]
+name = "sql_conformance"
+path = "tests/sql_conformance.rs"
+required-features = ["sql"]
+
+[[test]]
+name = "sql_locks"
+path = "tests/sql_locks.rs"
+required-features = ["sql"]
+
+[[test]]
+name = "sql_replication"
+path = "tests/sql_replication.rs"
+required-features = ["sql"]
+
+[[test]]
+name = "pgwire_wire"
+path = "tests/pgwire_wire.rs"
+required-features = ["pgwire"]
 
 [[bench]]
 name = "iroh_gossipsub_performance"
@@ -82,8 +117,5 @@ required-features = ["odm"]
 [workspace]
 members = [
     "guardian-db-derive",
-    "crates/guardian-relational",
-    "crates/guardian-sql",
-    "crates/guardian-pgwire",
 ]
 resolver = "2"

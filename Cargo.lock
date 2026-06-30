@@ -1772,8 +1772,6 @@ dependencies = [
  "futures",
  "futures-lite",
  "guardian-db-derive",
- "guardian-relational",
- "guardian-sql",
  "hex",
  "iroh",
  "iroh-blobs",
@@ -1783,17 +1781,21 @@ dependencies = [
  "lru 0.16.4",
  "opentelemetry",
  "parking_lot",
+ "pgwire",
  "postcard",
  "rand 0.9.4",
  "rand_core 0.6.4",
  "ratatui",
  "redb 3.1.3",
+ "rust_decimal",
  "serde",
  "serde_cbor",
  "serde_json",
+ "sqlparser",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-postgres",
  "tokio-stream",
  "tokio-test",
  "tokio-util",
@@ -1810,58 +1812,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.118",
-]
-
-[[package]]
-name = "guardian-pgwire"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "bytes",
- "chrono",
- "futures",
- "guardian-relational",
- "guardian-sql",
- "pgwire",
- "rust_decimal",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tokio-postgres",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "guardian-relational"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "base64",
- "chrono",
- "rust_decimal",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "guardian-sql"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "guardian-relational",
- "rust_decimal",
- "serde",
- "serde_json",
- "sqlparser",
- "thiserror 2.0.18",
- "tokio",
- "uuid",
 ]
 
 [[package]]

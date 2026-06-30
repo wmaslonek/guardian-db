@@ -243,10 +243,10 @@ Supported derive attributes include `#[primary_key]`, `#[unique]`, `#[index]`, `
 
 ### JavaScript/TypeScript SDK shape
 
-The TypeScript SDK in `sdk/typescript` exposes the collection API requested in the ODM RFC. The included process-local transport is for SDK development and tests; production Node/WASM/mobile bindings should implement `GuardianTransport` against the Rust/Iroh backend.
+The TypeScript SDK in `packages/guardiandb-odm` exposes the collection API requested in the ODM RFC. The included process-local transport is for SDK development and tests; production Node/WASM/mobile bindings should implement `GuardianTransport` against the Rust/Iroh backend.
 
 ```javascript
-import GuardianDB from "guardiandb";
+import GuardianDB from "@guardiandb/odm";
 import Iroh from "iroh";
 
 const iroh = await Iroh.create();
@@ -298,7 +298,7 @@ no GuardianDB-specific client code.
 **NOTE Locking and other more advanced concepts in Postgres are to be supported**
 
 ```bash
-cargo run -p guardian-pgwire        # PostgreSQL gateway on 127.0.0.1:15432
+cargo run --features pgwire --bin guardian-pgwire        # PostgreSQL gateway on 127.0.0.1:15432
 psql 'postgres://guardian:guardian@127.0.0.1:15432/app'
 ```
 
@@ -312,16 +312,17 @@ const ds = new DataSource({
 await ds.initialize();   // schema sync, migrations, repositories, QueryBuilder, transactions
 ```
 
-Three new crates implement this (independent of the iroh stack, so they compile
-and test fast): `guardian-relational` (types, catalog, storage trait),
-`guardian-sql` (parser/planner/executor, `information_schema`/`pg_catalog`), and
-`guardian-pgwire` (wire-protocol server). The `sql` feature of this crate maps
-the relational storage onto a replicated GuardianDB document store, preserving
-the local-first / P2P model.
+This lives inside the `guardian-db` crate as feature-gated modules:
+`relational` (types, catalog, storage trait), `sql`
+(parser/planner/executor, `information_schema`/`pg_catalog`), and `pgwire`
+(wire-protocol server). Enable the **`sql`** feature for the embedded engine —
+which maps relational storage onto a replicated GuardianDB document store,
+preserving the local-first / P2P model — or the **`pgwire`** feature (which
+implies `sql`) to also build the `guardian-pgwire` server binary.
 
 - Full guide & compatibility matrix: [`docs/postgres-compat.md`](docs/postgres-compat.md)
 - Example TypeORM app: [`examples/postgres-typeorm`](examples/postgres-typeorm)
-- Native driver: [`packages/guardian-typeorm`](packages/guardian-typeorm)
+- Native driver: [`packages/guardiandb-postgres-typeorm`](packages/guardiandb-postgres-typeorm)
 - Conformance tests: [`tests/postgres-compat`](tests/postgres-compat)
 
 ## Store Types
@@ -789,7 +790,7 @@ cargo test --features odm --test odm_benchmark_reliability
 cargo bench --features odm --bench odm_benchmark
 
 # Check the TypeScript ODM SDK
-cd sdk/typescript
+cd packages/guardiandb-odm
 npm test
 cd ../..
 
@@ -797,7 +798,7 @@ cd ../..
 set GUARDIANDB_ODM_LARGE_DOC_MB 
 
 # Benchmark features with Typescript SSDK
-cd sdk/typescript
+cd packages/guardiandb-odm
 npm run bench -- --mode=runAll --docs=10000 --batch-size=1000 --queries=2500 --updates=2500
 npm run bench -- --mode=large --large-mb=17
 

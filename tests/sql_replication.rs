@@ -9,8 +9,8 @@ mod common;
 
 use common::{connect_nodes, wait_for_propagation, TestNode};
 use guardian_db::sql::open_sql;
-use guardian_sql::engine::Session;
-use guardian_sql::ExecResult;
+use guardian_db::sql::engine::Session;
+use guardian_db::sql::ExecResult;
 
 fn rows(r: ExecResult) -> Vec<Vec<String>> {
     match r {

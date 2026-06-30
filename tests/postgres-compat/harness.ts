@@ -19,7 +19,7 @@ function binaryPath(): string {
     if (fs.existsSync(full)) return full;
   }
   throw new Error(
-    "guardian-pgwire binary not found. Build it first: `cargo build -p guardian-pgwire`",
+    "guardian-pgwire binary not found. Build it first: `cargo build --features pgwire --bin guardian-pgwire`",
   );
 }
 

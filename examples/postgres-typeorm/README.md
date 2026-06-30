@@ -13,7 +13,7 @@ columns, timestamp columns, unique constraints and indexes.
 
 ```bash
 # 1. Build the gateway (from the repo root)
-cargo build -p guardian-pgwire
+cargo build --features pgwire --bin guardian-pgwire
 
 # 2. Run the self-contained demo (spawns the gateway, migrates, seeds, queries)
 cd examples/postgres-typeorm
@@ -43,7 +43,7 @@ Demo complete ✅
 In a real deployment, start the gateway separately and point TypeORM at it:
 
 ```bash
-cargo run -p guardian-pgwire            # listens on 127.0.0.1:15432
+cargo run --features pgwire --bin guardian-pgwire            # listens on 127.0.0.1:15432
 ```
 
 ```ts
@@ -67,6 +67,6 @@ PGPORT=15432 npm run migration:run
 
 ## Native GuardianDB driver (optional)
 
-The `@guardiandb/typeorm` package (`packages/guardian-typeorm`) offers a
+The `@guardiandb/postgres-typeorm` package (`packages/guardiandb-postgres-typeorm`) offers a
 `GuardianDataSource` convenience that manages an embedded gateway for you. See
 its README. The PostgreSQL wire path shown here is the primary, required path.

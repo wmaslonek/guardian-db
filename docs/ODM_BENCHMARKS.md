@@ -55,7 +55,7 @@ cargo test --features odm --test odm_benchmark_reliability explicit_large_docume
 The TypeScript runner targets the SDK API and its deterministic `MemoryTransport` reference backend. It is useful for client-surface regression checks before a native Iroh/WASM transport is wired in.
 
 ```bash
-cd sdk/typescript
+cd packages/guardiandb-odm
 npm run bench -- --mode=runAll --docs=10000 --batch-size=1000 --queries=2500 --updates=2500
 ```
 

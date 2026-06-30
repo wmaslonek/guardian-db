@@ -3,7 +3,7 @@
 // examples — then tears the gateway down. Run with `npm run demo`.
 //
 // In a real deployment you would start the gateway separately
-// (`cargo run -p guardian-pgwire`) and just point TypeORM at it.
+// (`cargo run --features pgwire --bin guardian-pgwire`) and just point TypeORM at it.
 
 import "reflect-metadata";
 import { spawn, ChildProcess } from "node:child_process";
@@ -22,7 +22,7 @@ function gatewayBinary(): string {
     const full = path.join(root, rel);
     if (fs.existsSync(full)) return full;
   }
-  throw new Error("Build the gateway first: cargo build -p guardian-pgwire");
+  throw new Error("Build the gateway first: cargo build --features pgwire --bin guardian-pgwire");
 }
 
 function freePort(): Promise<number> {
