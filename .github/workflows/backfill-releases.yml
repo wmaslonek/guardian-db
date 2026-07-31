@@ -91,8 +91,11 @@ jobs:
           # Only ask GitHub to append commit-derived notes when the CHANGELOG had nothing
           $generate = if ($source -eq 'fallback') { 'true' } else { 'false' }
 
+          # A missing release makes this probe exit 1; that is the expected answer,
+          # not a failure, so clear the code before it reaches the end of the step.
           gh release view $tag --repo $env:REPO 2>$null | Out-Null
           $exists = $LASTEXITCODE -eq 0
+          $global:LASTEXITCODE = 0
 
           if ($exists -and -not $updateExisting) {
             Write-Host "release already exists - skipping (enable update_existing to overwrite)"
@@ -103,7 +106,10 @@ jobs:
           if ($dryRun) {
             Write-Host "would $(if ($exists) { 'update' } else { 'create' }) release: title='Guardian-DB $tag' prerelease=$isPrerelease make_latest=$makeLatest generate_notes=$generate"
             Write-Host "first lines of notes:"
-            Get-Content notes.md -TotalCount 5 | ForEach-Object { "    $_" }
+            Get-Content notes.md -TotalCount 3 | ForEach-Object {
+              $line = if ($_.Length -gt 140) { $_.Substring(0, 140) + '...' } else { $_ }
+              Write-Host "    $line"
+            }
             continue
           }
 
@@ -134,3 +140,6 @@ jobs:
 
         Write-Host ""
         Write-Host "Done: $created created, $updated updated, $skipped skipped"
+
+        # Explicit success: the runner uses the trailing $LASTEXITCODE as the step result
+        exit 0
