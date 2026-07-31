@@ -333,6 +333,6 @@ mod tests {
         l2_normalize(&mut v);
         let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!((norm - 1.0).abs() < 1e-6);
-        l2_normalize(&mut vec![0.0, 0.0]); // must not divide by zero
+        l2_normalize(&mut [0.0, 0.0]); // must not divide by zero
     }
 }
