@@ -190,9 +190,9 @@ reqwest = { version = "0.13.4", optional = true, default-features = false, featu
 ] }
 
 # Guardian Compute (WASM): `compute*`
-wasmtime = { version = "47.0.2", default-features = false, features = ["runtime", "cranelift"], optional = true }
+wasmtime = { version = "47.0.3", default-features = false, features = ["runtime", "cranelift"], optional = true }
 sysinfo = { version = "0.39.6", optional = true }       # capacity telemetry
-wasmtime-wasi-nn = { version = "47.0.2", default-features = false, features = ["onnx-download"], optional = true } # `compute-nn`
+wasmtime-wasi-nn = { version = "47.0.3", default-features = false, features = ["onnx-download"], optional = true } # `compute-nn`
 ort = { version = "=2.0.0-rc.10", default-features = false, optional = true }  # `compute-nn` (ONNX Runtime; pinned, see wasi-nn)
 tokenizers = { version = "0.23.1", default-features = false, features = ["onig"], optional = true } # `embedding-onnx`
 
