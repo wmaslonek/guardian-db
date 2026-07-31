@@ -14,11 +14,31 @@ jobs:
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
+    # Required to create the release; the default token is read-only.
+    permissions:
+      contents: write
     outputs:
       upload_url: ${{ steps.create_release.outputs.upload_url }}
     steps:
     - name: Checkout repository
       uses: actions/checkout@v5
+
+    - name: Build release notes from CHANGELOG
+      id: notes
+      shell: pwsh
+      env:
+        TAG: ${{ github.ref_name }}
+        REPO: ${{ github.repository }}
+      run: |
+        $source = ./scripts/build-release-notes.ps1 -Tag $env:TAG -OutFile release-notes.md -Repo $env:REPO
+        if ($LASTEXITCODE -ne 0) { exit 1 }
+        if ($source -eq "fallback") {
+          Write-Host "::warning::No CHANGELOG section for $env:TAG - appending auto-generated notes instead"
+        }
+        # Let GitHub append its generated notes only when the CHANGELOG had nothing.
+        # Must be lowercase: the action compares the raw input against 'true'.
+        $generate = if ($source -eq 'fallback') { 'true' } else { 'false' }
+        "generate=$generate" >> $env:GITHUB_OUTPUT
 
     - name: Create Release
       id: create_release
@@ -28,21 +48,8 @@ jobs:
       with:
         tag_name: ${{ github.ref_name }}
         name: Guardian-DB ${{ github.ref_name }}
-        body: |
-          Guardian-DB Release ${{ github.ref_name }}
-          
-          ## Changes
-          - See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details
-          
-          ## Installation
-          ```toml
-          [dependencies]
-          guardian-db = "${{ github.ref_name }}"
-          ```
-          
-          ## Documentation
-          - [API Documentation](https://docs.rs/guardian-db/${{ github.ref_name }})
-          - [Repository](https://github.com/${{ github.repository }})
+        body_path: release-notes.md
+        generate_release_notes: ${{ steps.notes.outputs.generate }}
         draft: false
         prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
 
@@ -64,6 +71,9 @@ jobs:
         toolchain: ${{ matrix.rust }}
 
     - name: Install Protocol Buffers compiler
+      # Explicit bash: the default shell on the Windows runner is pwsh,
+      # where this script is a syntax error.
+      shell: bash
       run: |
         if [ "$RUNNER_OS" == "Linux" ]; then
           sudo apt-get update && sudo apt-get install -y protobuf-compiler

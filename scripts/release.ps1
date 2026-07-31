@@ -6,6 +6,18 @@ param(
     [string]$Version
 )
 
+# Run a git command and abort the release if it fails
+function Invoke-Git {
+    param([string[]]$Arguments)
+
+    & git @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Error: 'git $($Arguments -join ' ')' failed with exit code $LASTEXITCODE." -ForegroundColor Red
+        Write-Host "Release aborted. Repository may be in a partial state - check 'git log' and 'git tag'." -ForegroundColor Yellow
+        exit 1
+    }
+}
+
 # Validate version format
 if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9]+(\.[0-9]+)?)?$') {
     Write-Host "Error: Invalid version format. Use semantic versioning (e.g., 1.0.0, 1.0.0-alpha.1)" -ForegroundColor Red
@@ -49,7 +61,8 @@ $readmeContent = $readmeContent -replace '\!\[Version\]\(https://img\.shields\.i
 $readmeContent | Set-Content README.md
 
 # Update Rust version badge if needed (optional - checks Cargo.toml rust-version)
-$rustVersion = (Select-String -Path Cargo.toml -Pattern 'rust-version = "(.*)"').Matches.Groups[1].Value
+$rustVersionMatch = Select-String -Path Cargo.toml -Pattern 'rust-version = "(.*)"'
+$rustVersion = if ($rustVersionMatch) { $rustVersionMatch.Matches.Groups[1].Value } else { $null }
 if ($rustVersion) {
     Write-Host "Updating Rust version badge to $rustVersion..." -ForegroundColor Cyan
     $readmeContent = Get-Content README.md
@@ -57,9 +70,17 @@ if ($rustVersion) {
     $readmeContent | Set-Content README.md
 }
 
-# Update other badges using the update-badges script
+# Update other badges using the update-badges script (cosmetic - non-fatal on failure)
 Write-Host "Updating other badges..." -ForegroundColor Cyan
-powershell -ExecutionPolicy Bypass -File ".\scripts\update-badges.ps1" -ErrorAction SilentlyContinue
+$updateBadges = Join-Path $PSScriptRoot "update-badges.ps1"
+if (Test-Path $updateBadges) {
+    powershell -ExecutionPolicy Bypass -File $updateBadges
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Warning: update-badges.ps1 exited with code $LASTEXITCODE. Continuing." -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "Warning: update-badges.ps1 not found at $updateBadges. Skipping." -ForegroundColor Yellow
+}
 
 # Update CHANGELOG.md
 Write-Host "Updating CHANGELOG.md..." -ForegroundColor Cyan
@@ -76,16 +97,16 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-# Commit changes
+# Commit changes (Cargo.lock is tracked and gets rewritten by cargo check)
 Write-Host "Committing changes..." -ForegroundColor Cyan
-git add Cargo.toml CHANGELOG.md README.md
-git commit -m "chore: release v$Version"
+Invoke-Git @("add", "Cargo.toml", "Cargo.lock", "CHANGELOG.md", "README.md")
+Invoke-Git @("commit", "-m", "chore: release v$Version")
 
-# Create and push tag
+# Create tag, then publish commit and tag
 Write-Host "Creating and pushing tag v$Version..." -ForegroundColor Cyan
-git tag "v$Version"
-git push origin main
-git push origin "v$Version"
+Invoke-Git @("tag", "v$Version")
+Invoke-Git @("push", "origin", "main")
+Invoke-Git @("push", "origin", "v$Version")
 
 Write-Host "Release v$Version has been created!" -ForegroundColor Green
 Write-Host ""

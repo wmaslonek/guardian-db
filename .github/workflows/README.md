@@ -29,7 +29,22 @@ This directory contains GitHub Actions workflows for the Guardian-DB project.
 - Multi-platform testing (Ubuntu, Windows, macOS)
 - Automatic GitHub release creation
 - crates.io publishing (stable releases only)
-- Release notes generation
+- Release notes taken from the tag's `CHANGELOG.md` section, via
+  [`scripts/build-release-notes.ps1`](../../scripts/build-release-notes.ps1);
+  if the section is missing or empty, GitHub's auto-generated notes are used instead
+
+### [`backfill-releases.yml`](./backfill-releases.yml) - Backfill Releases
+**Triggers:** Manual (`workflow_dispatch`)
+Creates GitHub releases for tags that never got one, with notes from `CHANGELOG.md`.
+Inputs: `tags` (`all` or a space-separated list), `dry_run` (default `true`), and
+`update_existing` (rewrite the notes of releases that already exist).
+Run it with `dry_run: true` first to review what would be published.
+
+Preview the notes for a tag locally, without touching GitHub:
+
+```powershell
+pwsh -File ./scripts/build-release-notes.ps1 -Tag v0.20.26 -OutFile notes.md
+```
 
 ## Setup Requirements
 

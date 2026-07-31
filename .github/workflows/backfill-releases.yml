@@ -1,0 +1,136 @@
+name: Backfill Releases
+
+# Manually creates GitHub releases for tags that never got one (the release
+# workflow used to fail before it could create them), using the matching
+# CHANGELOG section as the release notes. Also re-runnable for a single tag.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tags:
+        description: 'Tags to process: "all" or a space-separated list (e.g. "v0.19.0 v0.18.0")'
+        required: true
+        default: 'all'
+      dry_run:
+        description: 'Only print what would be created, without touching GitHub'
+        type: boolean
+        required: true
+        default: true
+      update_existing:
+        description: 'Overwrite the notes of releases that already exist'
+        type: boolean
+        required: true
+        default: false
+
+jobs:
+  backfill:
+    name: Backfill releases from CHANGELOG
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v5
+      with:
+        # Full history + tags: the job iterates tags and reads main's CHANGELOG,
+        # which is the most complete copy of the release notes.
+        fetch-depth: 0
+
+    - name: Create releases
+      shell: pwsh
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        REPO: ${{ github.repository }}
+        INPUT_TAGS: ${{ inputs.tags }}
+        DRY_RUN: ${{ inputs.dry_run }}
+        UPDATE_EXISTING: ${{ inputs.update_existing }}
+      run: |
+        $dryRun = $env:DRY_RUN -eq 'true'
+        $updateExisting = $env:UPDATE_EXISTING -eq 'true'
+
+        # Ascending version order, so the newest tag is created last and ends up
+        # marked as "Latest" on the releases page.
+        $allTags = @(git tag --sort=v:refname)
+        if ($env:INPUT_TAGS -eq 'all') {
+          $tags = $allTags
+        } else {
+          $requested = $env:INPUT_TAGS -split '\s+' | Where-Object { $_ }
+          $unknown = $requested | Where-Object { $allTags -notcontains $_ }
+          if ($unknown) {
+            Write-Host "::error::Unknown tags: $($unknown -join ', ')"
+            exit 1
+          }
+          $tags = $allTags | Where-Object { $requested -contains $_ }
+        }
+
+        if (-not $tags) {
+          Write-Host "::error::No tags to process"
+          exit 1
+        }
+
+        Write-Host "Processing $($tags.Count) tag(s): $($tags -join ', ')"
+        if ($dryRun) { Write-Host "DRY RUN - nothing will be created" }
+
+        $newest = $tags[-1]
+        $created = 0; $updated = 0; $skipped = 0
+
+        foreach ($tag in $tags) {
+          Write-Host "--- $tag ---"
+
+          $source = ./scripts/build-release-notes.ps1 -Tag $tag -OutFile notes.md -Repo $env:REPO
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::Failed to build notes for $tag"
+            exit 1
+          }
+          $size = (Get-Item notes.md).Length
+          Write-Host "notes source: $source ($size bytes)"
+
+          # Lowercase strings: 'gh api -F' would send PowerShell's "True"/"False" verbatim
+          $isPrerelease = if ($tag -match 'alpha|beta|rc') { 'true' } else { 'false' }
+          $makeLatest = if ($tag -eq $newest -and $isPrerelease -eq 'false') { 'true' } else { 'false' }
+          # Only ask GitHub to append commit-derived notes when the CHANGELOG had nothing
+          $generate = if ($source -eq 'fallback') { 'true' } else { 'false' }
+
+          gh release view $tag --repo $env:REPO 2>$null | Out-Null
+          $exists = $LASTEXITCODE -eq 0
+
+          if ($exists -and -not $updateExisting) {
+            Write-Host "release already exists - skipping (enable update_existing to overwrite)"
+            $skipped++
+            continue
+          }
+
+          if ($dryRun) {
+            Write-Host "would $(if ($exists) { 'update' } else { 'create' }) release: title='Guardian-DB $tag' prerelease=$isPrerelease make_latest=$makeLatest generate_notes=$generate"
+            Write-Host "first lines of notes:"
+            Get-Content notes.md -TotalCount 5 | ForEach-Object { "    $_" }
+            continue
+          }
+
+          if ($exists) {
+            $id = gh api "repos/$($env:REPO)/releases/tags/$tag" --jq '.id'
+            gh api --method PATCH "repos/$($env:REPO)/releases/$id" `
+              -f name="Guardian-DB $tag" `
+              -F body=@notes.md `
+              -f make_latest=$makeLatest `
+              -F prerelease=$isPrerelease | Out-Null
+            if ($LASTEXITCODE -ne 0) { Write-Host "::error::Failed to update release for $tag"; exit 1 }
+            Write-Host "updated"
+            $updated++
+          } else {
+            gh api --method POST "repos/$($env:REPO)/releases" `
+              -f tag_name=$tag `
+              -f name="Guardian-DB $tag" `
+              -F body=@notes.md `
+              -F draft=false `
+              -F prerelease=$isPrerelease `
+              -F generate_release_notes=$generate `
+              -f make_latest=$makeLatest | Out-Null
+            if ($LASTEXITCODE -ne 0) { Write-Host "::error::Failed to create release for $tag"; exit 1 }
+            Write-Host "created"
+            $created++
+          }
+        }
+
+        Write-Host ""
+        Write-Host "Done: $created created, $updated updated, $skipped skipped"
