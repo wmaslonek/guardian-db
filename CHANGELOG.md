@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.26] - 2026-07-31
+
 ### Added
 - **Vector search, auto-embedding, and RAG over the SQL engine (RFC 0005).** The three-phase "data → embed → retrieve → generate" stack, built entirely on replicated GuardianDB data, behind opt-in features; default builds are unaffected. Design and as-built record in `docs/rfcs/0005-vector-search.md`.
   - **Phase 1 — engine-native HNSW ANN index** (`vector-index` feature = `["sql", "dep:hnsw_rs"]`). `CREATE INDEX ... USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64)` — the pgvector surface, exact: the `vector_l2_ops` / `vector_ip_ops` / `vector_cosine_ops` / `vector_l1_ops` opclasses, the `hnsw.ef_search` GUC (plus `hnsw.ef_growth_cap` / `hnsw.selectivity_threshold`), and a top-k planner hook that accelerates `ORDER BY <col> <dist-op> <query> LIMIT k` while any other shape falls through to the exact scan unchanged. `SET enable_indexscan = off` forces exact results; `EXPLAIN` (execute-and-report, EXPLAIN-ANALYZE-style) shows the chosen path. The HNSW graph is **per-node derived state, never replicated** — rebuilt from the replicated rows, mirroring `SecondaryIndex`; a rebuild is always safe, only slow.
