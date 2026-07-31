@@ -148,7 +148,11 @@ pub struct Exec {
     /// Working copy of the catalog (mutated by DDL; flushed on commit if dirty).
     pub catalog: Catalog,
     /// Tables loaded for this statement, keyed by qualified name.
-    pub tables: HashMap<QualifiedName, LoadedTable>,
+    /// Tables loaded for this statement, keyed by qualified name. Held behind
+    /// `Arc` so read-only statements share the `Database`'s cached, already-
+    /// decoded view with zero copy; a statement that mutates a table pays a
+    /// single copy-on-write clone via `Arc::make_mut` at the write site.
+    pub tables: HashMap<QualifiedName, Arc<LoadedTable>>,
     /// Bound positional parameters (`$1`-based).
     pub params: Vec<SqlValue>,
     /// Statement timestamp used by `now()` / `current_timestamp`.
@@ -218,13 +222,22 @@ pub struct Exec {
     /// statement runs and collected into the transaction's deferred trigger
     /// queue; fired at `COMMIT` (see `engine::Transaction::deferred_triggers`).
     pub deferred_triggers: Vec<crate::sql::trigger::DeferredTriggerFiring>,
+    /// Shared ANN index runtime (RFC 0005), set by the engine right after
+    /// construction alongside `vars`; `None` in sub-`Exec`s that never plan
+    /// vector scans and in unit-test contexts.
+    #[cfg(feature = "vector-index")]
+    pub ann: Option<std::sync::Arc<crate::sql::ann::AnnRuntime>>,
+    /// Plan decisions recorded during execution (e.g. the ANN scan the
+    /// planner chose), surfaced by `EXPLAIN`.
+    #[cfg(feature = "vector-index")]
+    pub plan_notes: RefCell<Vec<String>>,
 }
 
 impl Exec {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         catalog: Catalog,
-        tables: HashMap<QualifiedName, LoadedTable>,
+        tables: HashMap<QualifiedName, Arc<LoadedTable>>,
         params: Vec<SqlValue>,
         now: DateTime<Utc>,
         database: String,
@@ -253,6 +266,10 @@ impl Exec {
             constraint_modes: None,
             deferred_checks: RefCell::new(Vec::new()),
             deferred_triggers: Vec::new(),
+            #[cfg(feature = "vector-index")]
+            ann: None,
+            #[cfg(feature = "vector-index")]
+            plan_notes: RefCell::new(Vec::new()),
         }
     }
 

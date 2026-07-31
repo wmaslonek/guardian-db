@@ -14,6 +14,10 @@
 //! tables replicate as ordinary GuardianDB documents. Use [`open_sql`] /
 //! [`open_sql_with`] to obtain a [`Database`] backed by a live GuardianDB node.
 
+/// Engine-level ANN (HNSW) index runtime — RFC 0005 phase 1. Enabled by the
+/// `vector-index` feature.
+#[cfg(feature = "vector-index")]
+pub mod ann;
 mod catalog_views;
 mod conv;
 mod ddl;

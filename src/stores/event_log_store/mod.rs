@@ -1,7 +1,7 @@
 use crate::data_store::Datastore;
+use crate::events::EventBus;
 use crate::guardian::error::{GuardianError, Result};
 use crate::log::{entry::Entry, identity::Identity};
-use crate::p2p::EventBus;
 use crate::p2p::network::client::IrohClient;
 use crate::stores::base_store::BaseStore;
 use crate::stores::operation::{self, Operation};

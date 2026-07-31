@@ -29,7 +29,10 @@ use crate::sql::engine::Database;
 use crate::traits::{Document, DocumentStore};
 use async_trait::async_trait;
 use serde_json::{Map, Value as Json};
+use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::RwLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Separator between a collection prefix and a row id in the GuardianDB key.
 /// `0x1f` (unit separator) does not occur in the engine's row ids.
@@ -56,6 +59,14 @@ pub enum Consistency {
 pub struct GuardianRelationalStorage {
     store: Arc<dyn DocumentStore<Error = GuardianError>>,
     consistency: Consistency,
+    /// Per-collection change counters (see [`RelationalStorage::generation`]).
+    /// Local writes bump the affected collection; a `refresh()` that may have
+    /// pulled remote writes bumps every known collection via `epoch`.
+    generations: RwLock<BTreeMap<String, u64>>,
+    /// Bumped on every `refresh()`. Folded into every collection's reported
+    /// generation so a refresh conservatively invalidates all cached views —
+    /// a replicated write for an unknown collection can never be served stale.
+    epoch: AtomicU64,
 }
 
 impl GuardianRelationalStorage {
@@ -63,7 +74,19 @@ impl GuardianRelationalStorage {
         Self {
             store,
             consistency: Consistency::LocalFirst,
+            generations: RwLock::new(BTreeMap::new()),
+            epoch: AtomicU64::new(0),
         }
+    }
+
+    /// Bump a collection's local change counter.
+    fn bump(&self, collection: &str) {
+        *self
+            .generations
+            .write()
+            .unwrap()
+            .entry(collection.to_string())
+            .or_insert(0) += 1;
     }
 
     pub fn with_consistency(mut self, consistency: Consistency) -> Self {
@@ -75,16 +98,20 @@ impl GuardianRelationalStorage {
         self.consistency
     }
 
-    /// Re-synchronize the local document-store index from replicated state.
+    /// Force a synchronous re-sync of the local document-store index from
+    /// replicated state.
     ///
-    /// The relational engine reads the DocumentStore's synchronous local index;
-    /// that index updates on local writes and on `load`/`sync`, but not
-    /// automatically when documents arrive from peers in the background. A
-    /// gateway serving a replicating node should call this (e.g. periodically or
-    /// before a read) to observe remote writes. Returns the number of rows
-    /// re-synced.
+    /// The DocumentStore already keeps its local index current with remote
+    /// writes via a background live-sync task, so an explicit refresh is not
+    /// required for correctness; it is a way to *pull now* rather than wait
+    /// for the next sync event.
     pub async fn refresh(&self) -> GuardianResult<()> {
-        self.store.load(0).await
+        let r = self.store.load(0).await;
+        // Advisory only: the decoded-table cache is disabled for this backend
+        // (see `generation`), so nothing keys off this epoch. Kept for
+        // in-process observability.
+        self.epoch.fetch_add(1, Ordering::Relaxed);
+        r
     }
 
     fn gkey(collection: &str, row_id: &str) -> String {
@@ -147,12 +174,15 @@ impl RelationalStorage for GuardianRelationalStorage {
 
     async fn put(&self, collection: &str, row_id: &str, doc: &Json) -> RelResult<()> {
         self.write_wrapped(Self::gkey(collection, row_id), collection, doc)
-            .await
+            .await?;
+        self.bump(collection);
+        Ok(())
     }
 
     async fn delete(&self, collection: &str, row_id: &str) -> RelResult<()> {
         // Deleting a missing row is not an error.
         let _ = self.store.delete(&Self::gkey(collection, row_id)).await;
+        self.bump(collection);
         Ok(())
     }
 
@@ -164,6 +194,7 @@ impl RelationalStorage for GuardianRelationalStorage {
                 let _ = self.store.delete(&key).await;
             }
         }
+        self.bump(collection);
         Ok(())
     }
 
@@ -173,6 +204,27 @@ impl RelationalStorage for GuardianRelationalStorage {
 
     async fn save_catalog(&self, catalog: &Json) -> RelResult<()> {
         self.put(CATALOG_COLLECTION, "catalog", catalog).await
+    }
+
+    fn generation(&self, _collection: &str) -> Option<u64> {
+        // `None` disables the engine's decoded-table cache for this backend —
+        // deliberately. The DocumentStore keeps its local index up to date with
+        // **remote** (replicated) writes from a background live-sync task
+        // (`spawn_live_index_sync`), so `scan()` can start returning peer rows
+        // at any time *without* any call this adapter mediates. The
+        // `RelationalStorage::generation` contract requires a counter that
+        // strictly increases on every change visible to `scan()`, replication
+        // included; this adapter cannot cheaply produce one (the per-collection
+        // counter and the `refresh` epoch only see writes that go *through*
+        // it), so it opts out rather than risk serving a replicated write
+        // stale. Correctness over the cache: a stale read in a P2P database is
+        // not an acceptable trade. (Re-enabling caching here needs an O(1)
+        // replication-inclusive version exposed by the DocumentStore itself.)
+        //
+        // The local per-collection counter is still maintained (`bump`) for
+        // observability and for any future in-process consumer; it is simply
+        // not surfaced as a cache key.
+        None
     }
 }
 

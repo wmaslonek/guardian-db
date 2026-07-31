@@ -1,10 +1,14 @@
+//! High-level P2P messaging: the default [`crate::traits::DirectChannel`]
+//! transport between peers — one-on-one channels built on the backend's
+//! shared gossip layer ([`crate::p2p::network::core::gossip::EpidemicPubSub`]).
+
+use crate::events::new_event_payload;
 use crate::guardian::error::{GuardianError, Result};
 use crate::p2p::network::IrohClient;
 use crate::p2p::network::core::gossip::EpidemicPubSub;
-use crate::p2p::new_event_payload;
 use crate::traits::{
-    DirectChannel, DirectChannelEmitter, DirectChannelFactory, DirectChannelOptions,
-    PubSubInterface, PubSubTopic,
+    DirectChannel, DirectChannelEmitter, DirectChannelFactory, DirectChannelOptions, PubSub,
+    PubSubTopic,
 };
 use async_trait::async_trait;
 use futures::stream::StreamExt;
@@ -45,9 +49,8 @@ impl DirectChannel for Channels {
             // Subscribe to the topic via EpidemicPubSub.
             let topic = self.epidemic_pubsub.topic_subscribe(&id).await?;
 
-            // Store the token and topic.
+            // Store the topic.
             let sub_info = SubscriptionInfo {
-                token: child_token.clone(),
                 topic: topic.clone(),
             };
             e.insert(sub_info);
@@ -146,8 +149,6 @@ impl DirectChannel for Channels {
 
 // Subscription information for each peer.
 struct SubscriptionInfo {
-    #[allow(dead_code)] // Kept for lifecycle control.
-    token: CancellationToken,
     topic: Arc<dyn PubSubTopic<Error = GuardianError>>,
 }
 
@@ -167,68 +168,6 @@ impl Channels {
     /// Returns a reference to the tracing span used for instrumentation.
     pub fn span(&self) -> &Span {
         &self.span
-    }
-
-    #[instrument(level = "debug", skip(self))]
-    pub async fn connect(&self, target: NodeId) -> Result<()> {
-        let _entered = self.span.enter();
-        let id = self.get_channel_id(&target);
-        let mut subs = self.subs.write().await;
-
-        if let std::collections::hash_map::Entry::Vacant(e) = subs.entry(target) {
-            debug!(topic = %id, "subscribing to the topic via iroh-gossip (P2P)");
-
-            // Subscribe to the topic via EpidemicPubSub.
-            let topic = self.epidemic_pubsub.topic_subscribe(&id).await?;
-
-            let cancel_token = CancellationToken::new();
-
-            let sub_info = SubscriptionInfo {
-                token: cancel_token.clone(),
-                topic: topic.clone(),
-            };
-            e.insert(sub_info);
-
-            // Spawn the task to monitor the topic.
-            let self_clone = self.clone();
-            tokio::spawn(async move {
-                self_clone.monitor_topic(topic, target, cancel_token).await;
-
-                // When monitor_topic ends, remove the peer from the cache.
-                let mut subs = self_clone.subs.write().await;
-                subs.remove(&target);
-            });
-        }
-        // Release the write lock before the network calls.
-        drop(subs);
-
-        // Note: In Iroh, P2P connections are established automatically via discovery.
-        debug!(peer = %target, "P2P channel configured via iroh-gossip. The connection will be established automatically.");
-
-        self.wait_for_peers(target, &id).await
-    }
-
-    #[instrument(level = "debug", skip(self, head))]
-    pub async fn send(&self, p: NodeId, head: &[u8]) -> Result<()> {
-        let _entered = self.span.enter();
-
-        // Get the topic of the active subscription.
-        let topic = {
-            let subs = self.subs.read().await;
-            subs.get(&p).map(|info| info.topic.clone()).ok_or_else(|| {
-                GuardianError::Other(format!(
-                    "Peer {} is not connected. Call connect() first.",
-                    p
-                ))
-            })?
-        };
-
-        // Publish via iroh-gossip.
-        topic.publish(head.to_vec()).await.map_err(|e| {
-            GuardianError::Other(format!("failed to publish data via iroh-gossip: {}", e))
-        })?;
-
-        Ok(())
     }
 
     #[instrument(level = "debug", skip(self))]
@@ -300,6 +239,46 @@ impl Channels {
             }
         }
     }
+}
+
+/// Creates the default [`DirectChannelFactory`] used by `GuardianDB::new`.
+///
+/// The channels are built on the backend's shared gossip layer
+/// ([`EpidemicPubSub`]), which reuses the Gossip instance registered on the
+/// iroh Router — so inbound gossip connections reach the same instance the
+/// channels subscribe on.
+pub fn init_direct_channel_factory(
+    self_id: NodeId,
+    backend: Arc<crate::p2p::network::core::IrohBackend>,
+) -> DirectChannelFactory {
+    Arc::new(
+        move |emitter: Arc<dyn DirectChannelEmitter<Error = GuardianError>>,
+              _opts: Option<DirectChannelOptions>| {
+            let backend = backend.clone();
+            Box::pin(async move {
+                // EpidemicPubSub::new only clones the backend's shared Gossip,
+                // so building one per factory call is cheap.
+                let epidemic_pubsub = Arc::new(
+                    EpidemicPubSub::new(backend)
+                        .await
+                        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?,
+                );
+
+                let span = tracing::info_span!("direct_channel_p2p", self_id = %self_id);
+
+                let ch = Arc::new(Channels {
+                    emitter,
+                    subs: Arc::new(RwLock::new(HashMap::new())),
+                    self_id,
+                    epidemic_pubsub,
+                    span,
+                    token: CancellationToken::new(),
+                });
+
+                Ok(ch as Arc<dyn DirectChannel<Error = GuardianError>>)
+            })
+        },
+    )
 }
 
 #[instrument(level = "debug", skip(client))]

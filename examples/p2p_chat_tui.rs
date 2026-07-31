@@ -164,7 +164,7 @@
 //! ## 6. EventBus — Reactive Sync Notifications
 //!
 //! **Import:** `guardian_db::guardian::core::EventExchangeHeads`
-//! **Import:** `guardian_db::reactive_synchronizer::SyncEvent`
+//! **Import:** `guardian_db::stores::sync_observer::SyncEvent`
 //!
 //! The `EventBus` (`db.event_bus()`) provides a pub/sub mechanism for
 //! internal DB events. Two event types are subscribed to in
@@ -246,7 +246,7 @@ use guardian_db::{
         config::{ClientConfig, GossipConfig},
         core::BlobStore,
     },
-    reactive_synchronizer::SyncEvent,
+    stores::sync_observer::SyncEvent,
     traits::{BaseGuardianDB, CreateDBOptions, EventLogStore, KeyValueStore},
 };
 use iroh::EndpointId as NodeId;

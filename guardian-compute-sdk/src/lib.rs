@@ -208,6 +208,13 @@ pub mod host {
         fn gdb_log(ptr: i32, len: i32);
         #[link_name = "store_get"]
         fn gdb_store_get(key_ptr: i32, key_len: i32, dest_ptr: i32, dest_cap: i32) -> i32;
+        #[link_name = "llm_generate"]
+        fn gdb_llm_generate(
+            model_ptr: i32,
+            model_len: i32,
+            prompt_ptr: i32,
+            prompt_len: i32,
+        ) -> i64;
     }
 
     /// Emits a message into the executor's tracing (capability `gdb.log`).
@@ -265,6 +272,49 @@ pub mod host {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let _ = key;
+            None
+        }
+    }
+
+    /// Generates text with an LLM model served by the executor (capability
+    /// `gdb.llm_generate`, RFC 0004 phase 5). Buffered: returns once the
+    /// generation finishes; `None` on failure (model not served, backend
+    /// down, response over the executor's cap budget…).
+    ///
+    /// Calling this makes the module import `gdb.llm_generate`, so it only
+    /// instantiates on executors serving LLM models (`Inference` class).
+    /// Generation is non-deterministic — tasks using it are ineligible for
+    /// k-of-n redundant execution — and can be slow: size the task's
+    /// `ResourceLimits::timeout_ms` to cover it, since the wall clock keeps
+    /// ticking during the host call.
+    pub fn llm_generate(model: &str, prompt: &str) -> Option<String> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let packed = unsafe {
+                gdb_llm_generate(
+                    model.as_ptr() as usize as i32,
+                    model.len() as i32,
+                    prompt.as_ptr() as usize as i32,
+                    prompt.len() as i32,
+                )
+            };
+            if packed < 0 {
+                return None;
+            }
+            let (ptr, len) = crate::abi::unpack(packed);
+            if len == 0 {
+                return Some(String::new());
+            }
+            // The host wrote the response into a buffer it obtained from this
+            // instance's own `gdb_alloc`; like the input buffer, it lives for
+            // the rest of the (single-run) instance.
+            let bytes =
+                unsafe { core::slice::from_raw_parts(ptr as usize as *const u8, len as usize) };
+            Some(String::from_utf8_lossy(bytes).into_owned())
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let _ = (model, prompt);
             None
         }
     }

@@ -3,10 +3,10 @@ use crate::access_control::{
 };
 use crate::address::Address;
 use crate::data_store::Datastore;
+use crate::events::EventBus;
 use crate::events::{self, EmitterInterface};
 use crate::guardian::error::GuardianError;
 use crate::log::{Log, entry::Entry, identity::Identity};
-use crate::p2p::EventBus;
 use crate::p2p::network::client::IrohClient;
 use crate::stores::operation::Operation;
 use futures::stream::Stream;
@@ -308,6 +308,12 @@ pub struct CreateDBOptions {
     /// an existing one (from `doc_ticket` or a peer). This enforces, at the node level, that a
     /// designated reader cannot originate writes even if the namespace write secret is present.
     pub read_only: Option<bool>,
+    /// Transforms record payloads between the store API and iroh-docs — the hook for
+    /// application-supplied payload encryption. `None` (the default) means payloads are
+    /// stored verbatim, which is the historical behaviour. Every replica of a store must use
+    /// a codec able to decode what the others produce. See
+    /// [`crate::stores::payload_codec`] for what this does and does not cover.
+    pub payload_codec: Option<crate::stores::payload_codec::SharedPayloadCodec>,
 }
 
 impl Clone for CreateDBOptions {
@@ -333,6 +339,7 @@ impl Clone for CreateDBOptions {
             store_specific_opts: None, // Cannot clone Box<dyn Any>
             doc_ticket: self.doc_ticket.clone(),
             read_only: self.read_only,
+            payload_codec: self.payload_codec.clone(),
         }
     }
 }
@@ -716,6 +723,18 @@ pub trait KeyValueStore: Store {
     /// `Some(Vec<u8>)` if the key exists, `None` if it does not, or an error if access fails
     async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Self::Error>;
 
+    /// Returns every record key, without decoding any value.
+    ///
+    /// Distinct from `all().keys()` on purpose: `all()` applies the payload
+    /// codec and **drops records it cannot decode**, so its key set answers
+    /// "what can I read", not "what is stored". A replica holding records
+    /// encrypted for someone else would see an empty map and conclude nothing
+    /// had replicated.
+    ///
+    /// Record keys are never transformed by a codec, so this always reflects the
+    /// full contents.
+    fn keys(&self) -> Vec<String>;
+
     /// Generates a (serialized) `DocTicket` that grants a peer access to synchronize this store.
     ///
     /// The ticket is a capability: only whoever receives it can import the underlying
@@ -770,7 +789,6 @@ pub trait DocumentStore: Store {
 
     /// Finds documents using a filter function (predicate).
     async fn query(&self, filter: AsyncDocumentFilter) -> Result<Vec<Document>, Self::Error>;
-
     /// Generates a (serialized) `DocTicket` that grants a peer access to synchronize this store.
     ///
     /// Replication capability: the peer must open the store passing the ticket in
@@ -911,7 +929,7 @@ pub struct NewStoreOptions {
     pub node_id: NodeId,
 
     /// PubSub interface for distributed communication.
-    pub pubsub: Option<Arc<dyn PubSubInterface<Error = GuardianError>>>,
+    pub pubsub: Option<Arc<dyn PubSub<Error = GuardianError>>>,
 
     /// Direct channel for peer-to-peer communication.
     pub direct_channel: Option<Arc<dyn DirectChannel<Error = GuardianError>>>,
@@ -963,6 +981,11 @@ pub struct NewStoreOptions {
     /// Marks this store as a read-only replica: refuses local writes and never creates a
     /// namespace (it must import an existing one). See [`CreateDBOptions::read_only`].
     pub read_only: Option<bool>,
+
+    /// Transforms record payloads between the store API and iroh-docs.
+    /// `None` keeps the historical behaviour of storing payloads verbatim.
+    /// See [`CreateDBOptions::payload_codec`] and [`crate::stores::payload_codec`].
+    pub payload_codec: Option<crate::stores::payload_codec::SharedPayloadCodec>,
 }
 
 impl Default for NewStoreOptions {
@@ -991,6 +1014,7 @@ impl Default for NewStoreOptions {
             store_specific_opts: None,
             doc_ticket: None,
             read_only: None,
+            payload_codec: None,
         }
     }
 }
@@ -1124,7 +1148,7 @@ pub trait PubSubTopic: Send + Sync {
 
 /// Main trait of the pub/sub system.
 #[async_trait::async_trait]
-pub trait PubSubInterface: Send + Sync + std::any::Any {
+pub trait PubSub: Send + Sync + std::any::Any {
     type Error: Error + Send + Sync + 'static;
 
     /// Subscribes to a topic.
@@ -1132,6 +1156,28 @@ pub trait PubSubInterface: Send + Sync + std::any::Any {
         &self,
         topic: &str,
     ) -> Result<Arc<dyn PubSubTopic<Error = GuardianError>>, Self::Error>;
+
+    /// (Re-)subscribes to `topic` using `peers` as bootstrap so the gossip
+    /// mesh forms direct connections to them before publishing.
+    async fn subscribe_with_peers(
+        &self,
+        topic: &str,
+        peers: Vec<NodeId>,
+    ) -> Result<(), Self::Error>;
+
+    /// Ensures `topic` exists, bootstrapping the mesh with `peers`.
+    async fn get_or_create_topic_with_peers(
+        &self,
+        topic: &str,
+        peers: Vec<NodeId>,
+    ) -> Result<(), Self::Error>;
+
+    /// Publishes `data` on an already-subscribed `topic`.
+    async fn publish_to_topic(&self, topic: &str, data: &[u8]) -> Result<(), Self::Error>;
+
+    /// Lists the peers currently connected on `topic`, or `None` if the
+    /// topic is not subscribed.
+    async fn topic_peers(&self, topic: &str) -> Option<Vec<NodeId>>;
 
     /// Helper method for downcasting.
     fn as_any(&self) -> &dyn std::any::Any;

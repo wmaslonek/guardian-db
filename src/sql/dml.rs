@@ -295,7 +295,7 @@ impl Exec {
             self.check_unique_for(&q, &values, None)?;
             self.fk_check_child(&table, &values, None)?;
             self.observe_serials(&table, &values);
-            let loaded = self.tables.get_mut(&q).unwrap();
+            let loaded = std::sync::Arc::make_mut(self.tables.get_mut(&q).unwrap());
             let version = loaded.version_of(&row_id);
             loaded.apply_insert(row_id.clone(), values.clone());
             let doc = encode_row(&table, &row_id, &values, version);
@@ -738,7 +738,7 @@ impl Exec {
         new_values: RowValues,
     ) -> Result<()> {
         let new_id = derive_row_id(table, &new_values).unwrap_or_else(|| row_id.to_string());
-        let loaded = self.tables.get_mut(q).unwrap();
+        let loaded = std::sync::Arc::make_mut(self.tables.get_mut(q).unwrap());
         if new_id != row_id {
             loaded.apply_delete(row_id);
             self.mutations.lock().unwrap().push(Mutation::Delete {
@@ -844,7 +844,7 @@ impl Exec {
             );
         }
         let count = to_delete.len();
-        let loaded = self.tables.get_mut(&q).unwrap();
+        let loaded = std::sync::Arc::make_mut(self.tables.get_mut(&q).unwrap());
         for rid in &to_delete {
             loaded.apply_delete(rid);
             self.mutations.lock().unwrap().push(Mutation::Delete {

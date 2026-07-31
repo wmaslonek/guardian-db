@@ -324,7 +324,7 @@ impl TriggerEngine {
     /// Abort the handle to detach.
     pub fn attach_event_bus(
         self: &Arc<Self>,
-        event_bus: Arc<crate::p2p::EventBus>,
+        event_bus: Arc<crate::events::EventBus>,
     ) -> tokio::task::JoinHandle<()> {
         let engine = self.clone();
         tokio::spawn(async move {

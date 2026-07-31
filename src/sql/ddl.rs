@@ -7,7 +7,7 @@ use crate::relational::catalog::{
 };
 use crate::sql::error::{Result, SqlError};
 use crate::sql::exec::Exec;
-use crate::sql::names::{ident_name, split_schema_table};
+use crate::sql::names::{ident_name, object_name_parts, split_schema_table};
 use crate::sql::result::ExecResult;
 use crate::sql::store::{Mutation, encode_row};
 use sqlparser::ast::{
@@ -115,6 +115,8 @@ impl Exec {
                 unique: true,
                 primary: true,
                 method: "btree".into(),
+                opclasses: Vec::new(),
+                with_options: Vec::new(),
             })?;
         }
         // Create unique indexes.
@@ -134,6 +136,8 @@ impl Exec {
                 unique: true,
                 primary: false,
                 method: "btree".into(),
+                opclasses: Vec::new(),
+                with_options: Vec::new(),
             })?;
         }
 
@@ -371,6 +375,12 @@ impl Exec {
             .ok_or_else(|| SqlError::UndefinedTable(table.clone()))?;
         let columns: Result<Vec<String>> = ci.columns.iter().map(index_column_name).collect();
         let columns = columns?;
+        // `USING <method>`: lower-cased method name; absent means btree.
+        let method = ci
+            .using
+            .as_ref()
+            .map(|u| u.to_string().to_ascii_lowercase())
+            .unwrap_or_else(|| "btree".into());
         let name = match &ci.name {
             Some(n) => split_schema_table(n).1,
             None => format!("{}_{}_idx", q.name, columns.join("_")),
@@ -385,6 +395,39 @@ impl Exec {
             }
             return Err(SqlError::DuplicateIndex(name));
         }
+        // ANN access method (RFC 0005): validated here, built lazily by the
+        // engine-level runtime on first use. Every other method keeps the
+        // engine's ordered-btree semantics unchanged.
+        let (opclasses, with_options) = if method == "hnsw" {
+            #[cfg(feature = "vector-index")]
+            {
+                self.validate_hnsw_index(ci, &q, &columns)?
+            }
+            #[cfg(not(feature = "vector-index"))]
+            {
+                return Err(SqlError::FeatureNotSupported(
+                    "access method \"hnsw\" requires the `vector-index` build feature".into(),
+                ));
+            }
+        } else {
+            // Record any explicit opclasses verbatim for introspection.
+            let ops = ci
+                .columns
+                .iter()
+                .map(|c| {
+                    c.operator_class
+                        .as_ref()
+                        .map(|o| o.to_string().to_ascii_lowercase())
+                        .unwrap_or_default()
+                })
+                .collect::<Vec<_>>();
+            let ops = if ops.iter().all(String::is_empty) {
+                Vec::new()
+            } else {
+                ops
+            };
+            (ops, Vec::new())
+        };
         let oid = self.catalog.allocate_oid();
         self.catalog.insert_index(Index {
             oid,
@@ -394,7 +437,9 @@ impl Exec {
             columns,
             unique: ci.unique,
             primary: false,
-            method: "btree".into(),
+            method,
+            opclasses,
+            with_options,
         })?;
         // Unique index: validate existing rows do not already violate it.
         if ci.unique
@@ -419,6 +464,226 @@ impl Exec {
         }
         self.catalog_dirty = true;
         Ok(ExecResult::empty_command("CREATE INDEX"))
+    }
+
+    /// Validate a `CREATE INDEX ... USING hnsw` statement (RFC 0005 §3.1) and
+    /// return the `(opclasses, with_options)` to record in the catalog.
+    ///
+    /// Mirrors pgvector's rules: the `vector` extension must be installed,
+    /// exactly one key column of a *dimensioned* `vector` type (≤ 2000 dims),
+    /// one of the four `vector_*_ops` opclasses (default `vector_l2_ops`),
+    /// `WITH (m, ef_construction)` within pgvector's ranges, and no
+    /// unique/INCLUDE variants. Partial (`WHERE`) hnsw indexes are an honest
+    /// phase-1 carve-out.
+    #[cfg(feature = "vector-index")]
+    fn validate_hnsw_index(
+        &self,
+        ci: &CreateIndex,
+        q: &QualifiedName,
+        columns: &[String],
+    ) -> Result<(Vec<String>, IndexWithOptions)> {
+        use crate::relational::hnsw::{HnswOptions, MAX_INDEXED_DIMS, VectorOpClass};
+        if !self.catalog.extension_installed("vector") {
+            return Err(SqlError::UndefinedObject(
+                "access method \"hnsw\" (install the \"vector\" extension first; \
+                 see pg_available_extensions)"
+                    .into(),
+            ));
+        }
+        if ci.unique {
+            return Err(SqlError::FeatureNotSupported(
+                "access method \"hnsw\" does not support unique indexes".into(),
+            ));
+        }
+        if !ci.include.is_empty() {
+            return Err(SqlError::FeatureNotSupported(
+                "access method \"hnsw\" does not support included columns".into(),
+            ));
+        }
+        if ci.predicate.is_some() {
+            return Err(SqlError::FeatureNotSupported(
+                "partial hnsw indexes are not supported".into(),
+            ));
+        }
+        if columns.len() != 1 {
+            return Err(SqlError::FeatureNotSupported(
+                "hnsw indexes support exactly one column".into(),
+            ));
+        }
+        let table = self
+            .catalog
+            .get_table(q)
+            .ok_or_else(|| SqlError::UndefinedTable(q.to_string_qualified()))?;
+        let col = table
+            .column(&columns[0])
+            .ok_or_else(|| SqlError::UndefinedColumn(columns[0].clone()))?;
+        let dims = match &col.ty {
+            SqlType::Vector(Some(d)) => *d,
+            SqlType::Vector(None) => {
+                return Err(SqlError::InvalidObjectDefinition(
+                    "column does not have dimensions".into(),
+                ));
+            }
+            other => {
+                return Err(SqlError::InvalidObjectDefinition(format!(
+                    "access method \"hnsw\" does not support column type {other}"
+                )));
+            }
+        };
+        if dims > MAX_INDEXED_DIMS {
+            return Err(SqlError::InvalidObjectDefinition(format!(
+                "column cannot have more than {MAX_INDEXED_DIMS} dimensions for hnsw index"
+            )));
+        }
+        let opclass = match &ci.columns[0].operator_class {
+            None => VectorOpClass::L2,
+            Some(name) => {
+                let n = name.to_string().to_ascii_lowercase();
+                VectorOpClass::from_name(&n).ok_or_else(|| {
+                    SqlError::UndefinedObject(format!(
+                        "operator class \"{n}\" for access method \"hnsw\""
+                    ))
+                })?
+            }
+        };
+        let mut options = HnswOptions::default();
+        for expr in &ci.with {
+            let (key, value) = index_with_option(expr)?;
+            let parsed: u32 = value.parse().map_err(|_| {
+                SqlError::InvalidParameter(format!(
+                    "invalid value for parameter \"{key}\": {value}"
+                ))
+            })?;
+            match key.as_str() {
+                "m" => options.m = parsed,
+                "ef_construction" => options.ef_construction = parsed,
+                other => {
+                    return Err(SqlError::InvalidParameter(format!(
+                        "unrecognized parameter \"{other}\""
+                    )));
+                }
+            }
+        }
+        options.validate().map_err(SqlError::InvalidParameter)?;
+        Ok((
+            vec![opclass.name().to_string()],
+            vec![
+                ("m".into(), options.m.to_string()),
+                (
+                    "ef_construction".into(),
+                    options.ef_construction.to_string(),
+                ),
+            ],
+        ))
+    }
+
+    /// The SQL declaration surface for auto-embedding rules (RFC 0005 §6.3).
+    ///
+    /// Because `sqlparser` cannot parse string-literal arguments in
+    /// `CREATE TRIGGER ... EXECUTE FUNCTION f('a','b')`, the surface is a pair
+    /// of engine-recognized function calls, which parse cleanly:
+    ///
+    /// ```sql
+    /// SELECT guardian_embed('docs', 'body', 'embedding', 'model' [, 'local'|'delegated']);
+    /// SELECT guardian_unembed('docs', 'embedding');
+    /// ```
+    ///
+    /// A schema-qualified table (`'app.docs'`) is accepted; the default schema
+    /// is `public`. The rule is stored in the catalog (so it replicates and
+    /// persists) and read by the async embedding service. Returns `None` when
+    /// `q` is an ordinary query — the caller then runs it normally.
+    pub fn try_embedding_command(
+        &mut self,
+        q: &sqlparser::ast::Query,
+    ) -> Option<Result<ExecResult>> {
+        let (func, args) = embedding_call(q)?;
+        Some(self.run_embedding_command(&func, &args))
+    }
+
+    fn run_embedding_command(&mut self, func: &str, args: &[String]) -> Result<ExecResult> {
+        use crate::relational::EmbeddingRuleDef;
+        let split_table = |t: &str| -> (String, String) {
+            match t.split_once('.') {
+                Some((s, n)) => (s.to_string(), n.to_string()),
+                None => ("public".to_string(), t.to_string()),
+            }
+        };
+        match func {
+            "guardian_embed" => {
+                if !(4..=5).contains(&args.len()) {
+                    return Err(SqlError::InvalidFunctionDefinition(
+                        "guardian_embed(table, text_col, vector_col, model [, policy])".into(),
+                    ));
+                }
+                let (schema, table) = split_table(&args[0]);
+                let q = self
+                    .catalog
+                    .resolve_table_name(Some(&schema), &table)
+                    .ok_or_else(|| SqlError::UndefinedTable(table.clone()))?;
+                let tdef = self.catalog.require_table(&q)?;
+                // The vector column must exist and be a dimensioned vector; the
+                // source-hash sidecar must exist too (the service needs it).
+                let vcol = tdef
+                    .column(&args[2])
+                    .ok_or_else(|| SqlError::UndefinedColumn(args[2].clone()))?;
+                if !matches!(vcol.ty, SqlType::Vector(Some(_))) {
+                    return Err(SqlError::InvalidObjectDefinition(format!(
+                        "column \"{}\" is not a dimensioned vector",
+                        args[2]
+                    )));
+                }
+                if tdef.column(&args[1]).is_none() {
+                    return Err(SqlError::UndefinedColumn(args[1].clone()));
+                }
+                let sidecar = format!("_{}_srchash", args[2]);
+                if tdef.column(&sidecar).is_none() {
+                    return Err(SqlError::InvalidObjectDefinition(format!(
+                        "table is missing the required sidecar column \"{sidecar}\" (add it as TEXT)"
+                    )));
+                }
+                let policy = args
+                    .get(4)
+                    .map(|p| p.to_ascii_lowercase())
+                    .unwrap_or_else(|| "local".into());
+                if !matches!(policy.as_str(), "local" | "delegated") {
+                    return Err(SqlError::InvalidParameter(format!(
+                        "embedding policy must be 'local' or 'delegated', got '{policy}'"
+                    )));
+                }
+                self.catalog.put_embedding_rule(EmbeddingRuleDef {
+                    schema: q.schema.clone(),
+                    table: q.name.clone(),
+                    text_column: args[1].clone(),
+                    vector_column: args[2].clone(),
+                    model: args[3].clone(),
+                    policy,
+                });
+                self.catalog_dirty = true;
+                Ok(status_row("embedding rule created"))
+            }
+            "guardian_unembed" => {
+                if args.len() != 2 {
+                    return Err(SqlError::InvalidFunctionDefinition(
+                        "guardian_unembed(table, vector_col)".into(),
+                    ));
+                }
+                let (schema, table) = split_table(&args[0]);
+                let q = self
+                    .catalog
+                    .resolve_table_name(Some(&schema), &table)
+                    .ok_or_else(|| SqlError::UndefinedTable(table.clone()))?;
+                let removed = self
+                    .catalog
+                    .drop_embedding_rule(&q.schema, &q.name, &args[1]);
+                self.catalog_dirty = true;
+                Ok(status_row(if removed {
+                    "embedding rule dropped"
+                } else {
+                    "no such embedding rule"
+                }))
+            }
+            _ => unreachable!("embedding_call only matches the two names"),
+        }
     }
 
     pub fn exec_create_view(&mut self, cv: &sqlparser::ast::CreateView) -> Result<ExecResult> {
@@ -574,6 +839,7 @@ impl Exec {
                     .unwrap()
                     .push(Mutation::Truncate { collection });
                 if let Some(loaded) = self.tables.get_mut(q) {
+                    let loaded = std::sync::Arc::make_mut(loaded);
                     loaded.rows.clear();
                     loaded.rebuild_indexes();
                 }
@@ -741,6 +1007,8 @@ impl Exec {
                         unique: true,
                         primary: true,
                         method: "btree".into(),
+                        opclasses: Vec::new(),
+                        with_options: Vec::new(),
                     });
                 }
                 for u in uniques {
@@ -754,6 +1022,8 @@ impl Exec {
                         unique: true,
                         primary: false,
                         method: "btree".into(),
+                        opclasses: Vec::new(),
+                        with_options: Vec::new(),
                     });
                 }
             }
@@ -792,6 +1062,8 @@ impl Exec {
                         unique: true,
                         primary: true,
                         method: "btree".into(),
+                        opclasses: Vec::new(),
+                        with_options: Vec::new(),
                     });
                 }
                 for u in uniques {
@@ -810,6 +1082,8 @@ impl Exec {
                         unique: true,
                         primary: false,
                         method: "btree".into(),
+                        opclasses: Vec::new(),
+                        with_options: Vec::new(),
                     });
                 }
             }
@@ -1029,6 +1303,7 @@ impl Exec {
         }
         // Rewrite stored rows: rename the key in each row document.
         if let Some(loaded) = self.tables.get_mut(q) {
+            let loaded = std::sync::Arc::make_mut(loaded);
             let collection = loaded.meta.storage_collection.clone();
             let table_meta = self.catalog.require_table(q)?.clone();
             let mut renamed_rows = Vec::new();
@@ -1060,6 +1335,28 @@ fn policy_expr_text(expr: &sqlparser::ast::Expr) -> Result<String> {
     crate::sql::parser::parse_expr(&text)
         .map_err(|e| SqlError::Syntax(format!("invalid policy expression ({text}): {e}")))?;
     Ok(text)
+}
+
+/// `WITH (...)` storage parameters as recorded in the catalog.
+#[cfg(feature = "vector-index")]
+type IndexWithOptions = Vec<(String, String)>;
+
+/// Extract one `WITH (key = value)` storage parameter from a `CREATE INDEX`
+/// option expression. Key is lower-cased; value must be a literal number.
+#[cfg(feature = "vector-index")]
+fn index_with_option(expr: &sqlparser::ast::Expr) -> Result<(String, String)> {
+    use sqlparser::ast::{BinaryOperator, Expr, Value};
+    if let Expr::BinaryOp { left, op, right } = expr
+        && matches!(op, BinaryOperator::Eq)
+        && let Expr::Identifier(key) = left.as_ref()
+        && let Expr::Value(v) = right.as_ref()
+        && let Value::Number(n, _) = &v.value
+    {
+        return Ok((ident_name(key).to_ascii_lowercase(), n.clone()));
+    }
+    Err(SqlError::Syntax(format!(
+        "invalid index storage parameter: {expr}"
+    )))
 }
 
 /// Extract a column name from an index column (must be a plain identifier).
@@ -1291,3 +1588,63 @@ impl UniqueKind for sqlparser::ast::UniqueConstraint {
 // SQL compatibility note 7: preserves documented behavior for window functions, recursive CTE validation, SQLSTATE mapping, and aggregate correctness without changing runtime semantics.
 
 // SQL compatibility note 23: preserves documented behavior for window functions, recursive CTE validation, SQLSTATE mapping, and aggregate correctness without changing runtime semantics.
+
+/// Build a single-row, single-text-column result reporting a command status
+/// (used by the `guardian_embed`/`guardian_unembed` SQL surface).
+fn status_row(msg: &str) -> ExecResult {
+    use crate::relational::{SqlType, SqlValue};
+    ExecResult::Rows {
+        fields: vec![crate::sql::result::OutField::new(
+            "guardian_embed".to_string(),
+            SqlType::Text,
+        )],
+        rows: vec![vec![SqlValue::Text(msg.to_string())]],
+    }
+}
+
+/// Recognize a top-level `SELECT guardian_embed(...)` /
+/// `guardian_unembed(...)` call and extract `(function_name, string_args)`.
+/// Returns `None` for any other query, or when an argument is not a string
+/// literal (so a genuine user function of the same name would fall through —
+/// though these names are reserved). RFC 0005 §6.3.
+fn embedding_call(q: &sqlparser::ast::Query) -> Option<(String, Vec<String>)> {
+    use sqlparser::ast::{
+        Expr, FunctionArg, FunctionArgExpr, FunctionArguments, SelectItem, SetExpr, Value,
+    };
+    let SetExpr::Select(select) = q.body.as_ref() else {
+        return None;
+    };
+    // A bare `SELECT f(...)` with no FROM and exactly one projection.
+    if !select.from.is_empty() || select.projection.len() != 1 {
+        return None;
+    }
+    let expr = match &select.projection[0] {
+        SelectItem::UnnamedExpr(e) => e,
+        SelectItem::ExprWithAlias { expr, .. } => expr,
+        _ => return None,
+    };
+    let Expr::Function(func) = expr else {
+        return None;
+    };
+    let name = object_name_parts(&func.name)
+        .last()
+        .cloned()?
+        .to_ascii_lowercase();
+    if name != "guardian_embed" && name != "guardian_unembed" {
+        return None;
+    }
+    let FunctionArguments::List(list) = &func.args else {
+        return Some((name, Vec::new()));
+    };
+    let mut args = Vec::with_capacity(list.args.len());
+    for a in &list.args {
+        let FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Value(v))) = a else {
+            return None;
+        };
+        match &v.value {
+            Value::SingleQuotedString(s) | Value::DoubleQuotedString(s) => args.push(s.clone()),
+            _ => return None,
+        }
+    }
+    Some((name, args))
+}

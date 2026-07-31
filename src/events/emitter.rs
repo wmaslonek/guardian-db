@@ -1,5 +1,9 @@
-use crate::guardian::error::{GuardianError, Result};
-use crate::p2p::{Emitter, EventBus};
+//! Type-erased event emitter: the `events()` interface stores expose.
+//!
+//! Events travel as [`Event`] (`Arc<dyn Any>`) boxed into [`EventBox`] over
+//! the typed [`EventBus`], so heterogeneous listeners can share one channel.
+
+use super::{Emitter, EventBus};
 use async_trait::async_trait;
 use std::any::Any;
 use std::collections::VecDeque;
@@ -46,78 +50,23 @@ pub trait EmitterInterface {
     async fn global_channel(&self) -> broadcast::Receiver<Event>;
 }
 
-// The implementation of the public methods is now done inside the `impl EmitterInterface` block.
+// The trait implementation delegates to the inherent methods below.
 #[async_trait]
 impl EmitterInterface for EventEmitter {
     async fn emit(&self, evt: Event) {
-        let mut guard = self.internal.lock().await;
-        if guard.emitter.is_none() {
-            let bus = guard.get_bus_mut();
-            let emitter = bus
-                .emitter::<EventBox>()
-                .await
-                .expect("could not initialize the emitter for EventBox");
-            guard.emitter = Some(emitter);
-        }
-        if let Some(emitter) = guard.emitter.as_ref() {
-            let event_box = EventBox { evt };
-            let _ = emitter.emit(event_box);
-        }
+        EventEmitter::emit(self, evt).await
     }
 
     async fn subscribe(&self) -> (mpsc::Receiver<Event>, CancellationToken) {
-        let mut guard = self.internal.lock().await;
-        let bus = guard.get_bus_mut();
-        let sub = bus
-            .subscribe::<EventBox>()
-            .await
-            .expect("could not subscribe");
-        let cancellation_token = CancellationToken::new();
-        guard.cancellations.push(cancellation_token.clone());
-        drop(guard);
-        let receiver = self
-            .handle_subscriber(cancellation_token.clone(), sub)
-            .await;
-        (receiver, cancellation_token)
+        EventEmitter::subscribe(self).await
     }
 
     async fn unsubscribe_all(&self) {
-        let guard = self.internal.lock().await;
-        for token in &guard.cancellations {
-            token.cancel();
-        }
+        EventEmitter::unsubscribe_all(self).await
     }
 
     async fn global_channel(&self) -> broadcast::Receiver<Event> {
-        let mut guard = self.internal.lock().await;
-        if let Some(sender) = &guard.cglobal {
-            return sender.subscribe();
-        }
-        let bus = guard.get_bus_mut();
-        let mut sub = bus
-            .subscribe::<EventBox>()
-            .await
-            .expect("unable to subscribe");
-        let token = CancellationToken::new();
-        guard.cancellations.push(token.clone());
-        let (tx, rx) = broadcast::channel(16);
-        guard.cglobal = Some(tx.clone());
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    biased;
-                    _ = token.cancelled() => break,
-                    maybe_event = sub.recv() => {
-                        let event_box = match maybe_event {
-                            Ok(e) => e,
-                            Err(_) => break
-                        };
-                        let _ = tx.send(event_box.evt);
-                    }
-                }
-            }
-        });
-        rx
+        EventEmitter::global_channel(self).await
     }
 }
 
@@ -322,30 +271,6 @@ impl EventEmitter {
         });
 
         rx
-    }
-
-    /// Returns the new event bus instance, initializing it if necessary.
-    pub async fn get_bus(&self) -> EventBus {
-        let mut guard = self.internal.lock().await;
-        // Since EventBus does not implement Clone, we return a new instance.
-        if guard.bus.is_none() {
-            guard.bus = Some(EventBus::new());
-        }
-        EventBus::new() // Return a new instance for compatibility.
-    }
-
-    /// Sets the event bus instance, returning an error if it is already initialized.
-    pub async fn set_bus(&self, bus: EventBus) -> Result<()> {
-        let mut guard = self.internal.lock().await;
-
-        if guard.bus.is_some() {
-            Err(GuardianError::Other(
-                "the bus has already been initialized".to_string(),
-            ))
-        } else {
-            guard.bus = Some(bus);
-            Ok(())
-        }
     }
 }
 

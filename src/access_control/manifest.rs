@@ -286,7 +286,7 @@ pub async fn create(
     };
 
     // Serialize the manifest to CBOR.
-    let cbor_data = serde_cbor::to_vec(&manifest)
+    let cbor_data = crate::guardian::cbor::to_vec(&manifest)
         .map_err(|e| GuardianError::Store(format!("Failed to serialize manifest: {}", e)))?;
 
     // Validate that the serialized data is not empty.
@@ -376,7 +376,7 @@ pub async fn resolve(
     }
 
     // Deserialize the manifest from the CBOR data.
-    let manifest: Manifest = serde_cbor::from_slice(&data_bytes)
+    let manifest: Manifest = crate::guardian::cbor::from_slice(&data_bytes)
         .map_err(|e| GuardianError::Store(format!("Failed to deserialize manifest: {}", e)))?;
 
     // Additional manifest validation.

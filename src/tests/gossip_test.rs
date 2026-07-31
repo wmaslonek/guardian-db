@@ -11,7 +11,7 @@ use crate::guardian::error::Result;
 use crate::p2p::network::config::ClientConfig;
 use crate::p2p::network::core::IrohBackend;
 use crate::p2p::network::core::gossip::EpidemicPubSub;
-use crate::traits::PubSubInterface;
+use crate::traits::PubSub;
 use futures::StreamExt;
 use std::sync::Arc;
 use std::time::Duration;

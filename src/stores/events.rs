@@ -4,20 +4,6 @@ use iroh::EndpointId as NodeId;
 use iroh_blobs::Hash;
 use std::sync::Arc;
 
-/// Store lifecycle events emitted through the store's event bus.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Event {
-    Write(EventWrite),
-    Ready(EventReady),
-    ReplicateProgress(EventReplicateProgress),
-    Load(EventLoad),
-    LoadProgress(EventLoadProgress),
-    Replicated(EventReplicated),
-    Replicate(EventReplicate),
-    NewPeer(EventNewPeer),
-    Reset(EventReset),
-}
-
 /// An event emitted when replication of an entry starts.
 #[derive(Clone)]
 pub struct EventReplicate {
@@ -365,19 +351,5 @@ mod tests {
         assert_eq!(a, same);
         assert_ne!(a, diff_ts);
         assert_ne!(a, diff_addr);
-    }
-
-    #[test]
-    fn event_enum_wraps_variants() {
-        let ev = Event::Replicate(EventReplicate::new(addr("/db/s"), Hash::new(b"h")));
-        assert!(matches!(ev, Event::Replicate(_)));
-
-        let peer_ev = Event::NewPeer(EventNewPeer::new(node_id()));
-        assert!(matches!(peer_ev, Event::NewPeer(_)));
-
-        // PartialEq derived for the enum.
-        let r1 = Event::Reset(EventReset::new(addr("/db/s"), 1));
-        let r2 = Event::Reset(EventReset::new(addr("/db/s"), 1));
-        assert_eq!(r1, r2);
     }
 }

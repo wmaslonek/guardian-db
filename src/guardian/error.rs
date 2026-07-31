@@ -123,12 +123,6 @@ impl From<serde_json::Error> for GuardianError {
     }
 }
 
-impl From<serde_cbor::Error> for GuardianError {
-    fn from(err: serde_cbor::Error) -> Self {
-        GuardianError::Cbor(err.to_string())
-    }
-}
-
 impl From<Box<dyn std::error::Error + Send + Sync>> for GuardianError {
     fn from(err: Box<dyn std::error::Error + Send + Sync>) -> Self {
         GuardianError::Other(err.to_string())

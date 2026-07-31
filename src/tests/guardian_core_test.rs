@@ -10,13 +10,13 @@
 
 #[cfg(test)]
 mod guardian_core_tests {
+    use crate::events::EventBus;
     use crate::guardian::core::{
         Emitters, EventExchangeHeads, EventGuardianDBReady, GuardianDB, NewGuardianDBOptions,
     };
     use crate::guardian::error::{GuardianError, Result};
     use crate::log::entry::Entry;
     use crate::log::identity::{Identity, Signatures};
-    use crate::p2p::EventBus;
     use crate::p2p::network::client::IrohClient;
     use crate::p2p::network::config::ClientConfig;
     use crate::p2p::network::core::IrohBackend;

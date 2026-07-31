@@ -463,8 +463,8 @@ async fn test_cbor_serialization_simple() {
         write: vec!["user1".to_string(), "user2".to_string()],
     };
 
-    let serialized = serde_cbor::to_vec(&data).unwrap();
-    let deserialized: CborWriteAccess = serde_cbor::from_slice(&serialized).unwrap();
+    let serialized = crate::guardian::cbor::to_vec(&data).unwrap();
+    let deserialized: CborWriteAccess = crate::guardian::cbor::from_slice(&serialized).unwrap();
 
     assert_eq!(data, deserialized);
 }
@@ -480,8 +480,8 @@ async fn test_cbor_serialization_empty() {
 
     let data = CborWriteAccess { write: vec![] };
 
-    let serialized = serde_cbor::to_vec(&data).unwrap();
-    let deserialized: CborWriteAccess = serde_cbor::from_slice(&serialized).unwrap();
+    let serialized = crate::guardian::cbor::to_vec(&data).unwrap();
+    let deserialized: CborWriteAccess = crate::guardian::cbor::from_slice(&serialized).unwrap();
 
     assert_eq!(data, deserialized);
 }
@@ -505,8 +505,8 @@ async fn test_cbor_serialization_special_chars() {
         ],
     };
 
-    let serialized = serde_cbor::to_vec(&data).unwrap();
-    let deserialized: CborWriteAccess = serde_cbor::from_slice(&serialized).unwrap();
+    let serialized = crate::guardian::cbor::to_vec(&data).unwrap();
+    let deserialized: CborWriteAccess = crate::guardian::cbor::from_slice(&serialized).unwrap();
 
     assert_eq!(data, deserialized);
 }

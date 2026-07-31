@@ -435,6 +435,8 @@ async fn scheduler_fails_over_to_the_next_candidate() {
         max_concurrent: 8,
         accepts: vec![TaskClass::General],
         nn_models: vec![],
+        llm_models: vec![],
+        embed_models: vec![],
         issued_at: 0,
     });
     directory.upsert(guardian_db::compute::CapabilityVector {
@@ -451,6 +453,8 @@ async fn scheduler_fails_over_to_the_next_candidate() {
         max_concurrent: 2,
         accepts: vec![TaskClass::General],
         nn_models: vec![],
+        llm_models: vec![],
+        embed_models: vec![],
         issued_at: 0,
     });
 
@@ -605,6 +609,8 @@ async fn replication_event_triggers_processing_on_the_best_node() {
         max_concurrent: 2,
         accepts: vec![TaskClass::General, TaskClass::Media],
         nn_models: vec![],
+        llm_models: vec![],
+        embed_models: vec![],
         issued_at: 0,
     });
     let scheduler = ComputeScheduler::new(
@@ -720,6 +726,8 @@ fn feed_vector(directory: &CapabilityDirectory, node: iroh::EndpointId, cores: u
         max_concurrent: slots,
         accepts: vec![TaskClass::General, TaskClass::Media],
         nn_models: vec![],
+        llm_models: vec![],
+        embed_models: vec![],
         issued_at: 0,
     });
 }
@@ -1255,6 +1263,8 @@ mod nn_delegation {
                 max_concurrent: 2,
                 accepts: vec![TaskClass::General, TaskClass::Inference],
                 nn_models: models,
+                llm_models: vec![],
+                embed_models: vec![],
                 issued_at: 0,
             }
         };
@@ -1297,5 +1307,238 @@ mod nn_delegation {
             err,
             ComputeCallError::Rejected(RejectReason::ModelNotAvailable("outro".into()))
         );
+    }
+}
+
+/// RFC 0004 phase 4: streamed LLM generation over `COMPUTE_ALPN` between two
+/// real iroh endpoints (§6.2), and the router's peer-delegation tier.
+#[cfg(feature = "compute-llm")]
+mod llm_streaming {
+    use super::*;
+    use async_trait::async_trait;
+    use futures::StreamExt;
+    use guardian_db::compute::llm::{
+        ChatMessage, FinishReason, GenerateEvent, GenerateRequest, GenerateStream, LlmBackend,
+        LlmError, Locality, ModelInfo, SamplingParams, Usage,
+    };
+    use guardian_db::compute::{
+        LlmGenerateRequest, LlmRegistry, LlmRouter, PeerDelegation, RouterConfig,
+    };
+
+    /// Local backend on the executor: streams two deltas then End — or one
+    /// delta then a crash, to exercise the truncation reporting rule.
+    struct TokenBackend {
+        crash_mid_stream: bool,
+    }
+
+    #[async_trait]
+    impl LlmBackend for TokenBackend {
+        async fn models(&self) -> Result<Vec<ModelInfo>, LlmError> {
+            Ok(vec![ModelInfo {
+                name: "test-model".into(),
+                content_hash: None,
+            }])
+        }
+
+        async fn generate(&self, _req: GenerateRequest) -> Result<GenerateStream, LlmError> {
+            let events: Vec<Result<GenerateEvent, LlmError>> = if self.crash_mid_stream {
+                vec![
+                    Ok(GenerateEvent::Delta {
+                        content: "Hel".into(),
+                    }),
+                    Err(LlmError::BackendCrashed("engine died".into())),
+                ]
+            } else {
+                vec![
+                    Ok(GenerateEvent::Delta {
+                        content: "Hel".into(),
+                    }),
+                    Ok(GenerateEvent::Delta {
+                        content: "lo".into(),
+                    }),
+                    Ok(GenerateEvent::End {
+                        finish_reason: FinishReason::Stop,
+                        usage: Usage {
+                            prompt_tokens: 3,
+                            completion_tokens: 2,
+                        },
+                    }),
+                ]
+            };
+            Ok(futures::stream::iter(events).boxed())
+        }
+
+        fn locality(&self) -> Locality {
+            Locality::Local
+        }
+    }
+
+    fn generate_request(model: &str) -> GenerateRequest {
+        GenerateRequest {
+            model: model.into(),
+            messages: vec![ChatMessage::user("hello")],
+            params: SamplingParams::default(),
+            deadline: Some(Duration::from_secs(30)),
+        }
+    }
+
+    /// Registers a probed LLM registry on the node's handler.
+    async fn serve_llm(node: &TestNode, crash_mid_stream: bool) -> Arc<LlmRegistry> {
+        let registry = Arc::new(LlmRegistry::default());
+        registry.register_backend("test", Arc::new(TokenBackend { crash_mid_stream }));
+        registry.probe_once().await;
+        node.handler.set_llm_registry(registry.clone());
+        registry
+    }
+
+    #[tokio::test]
+    async fn generation_streams_deltas_across_real_endpoints() {
+        let executor = spawn_node(ExecutorPolicy::default()).await;
+        let requester = spawn_node(ExecutorPolicy::default()).await;
+        serve_llm(&executor, false).await;
+        assert_eq!(executor.handler.llm_model_names(), vec!["test-model"]);
+
+        let client = ComputeClient::new(requester.endpoint.clone());
+        let stream = client
+            .generate_on(
+                executor.addr.clone(),
+                LlmGenerateRequest {
+                    task_id: Uuid::new_v4(),
+                    request: generate_request("test-model"),
+                },
+                Duration::from_secs(10),
+            )
+            .await
+            .expect("accepted");
+
+        let events: Vec<GenerateEvent> = stream.map(|e| e.expect("stream event")).collect().await;
+        assert_eq!(
+            events,
+            vec![
+                GenerateEvent::Delta {
+                    content: "Hel".into()
+                },
+                GenerateEvent::Delta {
+                    content: "lo".into()
+                },
+                GenerateEvent::End {
+                    finish_reason: FinishReason::Stop,
+                    usage: Usage {
+                        prompt_tokens: 3,
+                        completion_tokens: 2
+                    },
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_model_is_rejected_at_admission() {
+        let executor = spawn_node(ExecutorPolicy::default()).await;
+        let requester = spawn_node(ExecutorPolicy::default()).await;
+        serve_llm(&executor, false).await;
+
+        let client = ComputeClient::new(requester.endpoint.clone());
+        let result = client
+            .generate_on(
+                executor.addr.clone(),
+                LlmGenerateRequest {
+                    task_id: Uuid::new_v4(),
+                    request: generate_request("ghost-model"),
+                },
+                Duration::from_secs(10),
+            )
+            .await;
+        match result {
+            Err(ComputeCallError::Rejected(RejectReason::ModelNotAvailable(_))) => {}
+            Err(other) => panic!("expected ModelNotAvailable rejection, got {other:?}"),
+            Ok(_) => panic!("expected rejection, got an accepted stream"),
+        }
+    }
+
+    #[tokio::test]
+    async fn mid_stream_backend_crash_reaches_the_requester_as_error() {
+        let executor = spawn_node(ExecutorPolicy::default()).await;
+        let requester = spawn_node(ExecutorPolicy::default()).await;
+        serve_llm(&executor, true).await;
+
+        let client = ComputeClient::new(requester.endpoint.clone());
+        let stream = client
+            .generate_on(
+                executor.addr.clone(),
+                LlmGenerateRequest {
+                    task_id: Uuid::new_v4(),
+                    request: generate_request("test-model"),
+                },
+                Duration::from_secs(10),
+            )
+            .await
+            .expect("accepted");
+
+        let events: Vec<Result<GenerateEvent, LlmError>> = stream.collect().await;
+        // The delta that made it through arrives, then the truncation is
+        // reported as an error — never silently retried (RFC 0004 §6.2).
+        assert!(matches!(
+            events.first(),
+            Some(Ok(GenerateEvent::Delta { .. }))
+        ));
+        assert!(matches!(events.last(), Some(Err(_))));
+    }
+
+    /// Tier 2 end-to-end: the requester serves no local backend, discovers
+    /// the executor through a capability vector advertising `llm_models`,
+    /// and the router delegates the stream over the wire.
+    #[tokio::test]
+    async fn router_delegates_to_a_peer_advertising_the_model() {
+        let executor = spawn_node(ExecutorPolicy::default()).await;
+        let requester = spawn_node(ExecutorPolicy::default()).await;
+        serve_llm(&executor, false).await;
+        seed_peer_addr(&requester.endpoint, executor.addr.clone());
+
+        let directory = Arc::new(CapabilityDirectory::new());
+        directory.upsert(guardian_db::compute::CapabilityVector {
+            node_id: executor.endpoint.id(),
+            cpu_cores: 8,
+            cpu_arch: guardian_db::compute::CpuArch::X86_64,
+            ram_total_mb: 16_000,
+            accelerators: vec![],
+            cpu_load_pct: 10,
+            ram_free_mb: 8_000,
+            on_battery: false,
+            battery_pct: None,
+            tasks_running: 0,
+            max_concurrent: 2,
+            accepts: vec![TaskClass::Inference],
+            nn_models: vec![],
+            llm_models: vec!["test-model".into()],
+            embed_models: vec![],
+            issued_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        });
+
+        // The requester's registry is empty: tiers 1 and 3 have nothing.
+        let empty_registry = Arc::new(LlmRegistry::default());
+        let router =
+            LlmRouter::new(empty_registry, RouterConfig::default()).with_peers(PeerDelegation {
+                client: ComputeClient::new(requester.endpoint.clone()),
+                directory,
+                local: requester.endpoint.id(),
+            });
+
+        let stream = router
+            .route(generate_request("test-model"))
+            .await
+            .expect("routed to peer");
+        let events: Vec<GenerateEvent> = stream.map(|e| e.expect("stream event")).collect().await;
+        assert_eq!(events.len(), 3);
+        assert!(matches!(
+            events.last(),
+            Some(GenerateEvent::End {
+                finish_reason: FinishReason::Stop,
+                ..
+            })
+        ));
     }
 }

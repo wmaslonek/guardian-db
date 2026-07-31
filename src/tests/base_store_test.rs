@@ -8,10 +8,10 @@ use crate::address::Address;
 /// 3. Index synchronization
 /// 4. Persistência de operações
 use crate::address::GuardianDBAddress;
+use crate::events::EventBus;
 use crate::log::identity::{Identity, Signatures};
 use crate::message_marshaler::PostcardMarshaler;
-use crate::p2p::EventBus;
-use crate::p2p::messaging::one_on_one_channel::new_channel_factory;
+use crate::messaging::new_channel_factory;
 use crate::p2p::network::client::IrohClient;
 use crate::p2p::network::config::ClientConfig;
 use crate::stores::base_store::BaseStore;
@@ -75,7 +75,7 @@ async fn create_test_base_store() -> Result<(Arc<BaseStore>, TempDir), Box<dyn s
 
     // Cria DirectChannel
     let channel_factory = new_channel_factory(client.clone()).await?;
-    let payload_emitter = crate::p2p::PayloadEmitter::new(&event_bus).await?;
+    let payload_emitter = crate::events::PayloadEmitter::new(&event_bus).await?;
     let direct_channel = channel_factory(Arc::new(payload_emitter), None)
         .await
         .map_err(|e| format!("Failed to create DirectChannel: {}", e))?;

@@ -3,8 +3,8 @@ use crate::address::Address;
 ///
 /// Valida todas as operações principais do KV store usando IrohClient (iroh-docs backend)
 use crate::address::GuardianDBAddress;
+use crate::events::EventBus;
 use crate::log::identity::{Identity, Signatures};
-use crate::p2p::EventBus;
 use crate::p2p::network::client::IrohClient;
 use crate::p2p::network::config::ClientConfig;
 use crate::stores::kv_store::GuardianDBKeyValue;
@@ -71,6 +71,61 @@ async fn create_test_store() -> Result<(GuardianDBKeyValue, TempDir), Box<dyn st
     let store = GuardianDBKeyValue::new(client, identity, address, Some(options)).await?;
 
     Ok((store, temp_dir))
+}
+
+/// Helper para criar um KeyValueStore de teste com um `PayloadCodec` configurado.
+async fn create_test_store_with_codec(
+    codec: crate::stores::payload_codec::SharedPayloadCodec,
+) -> Result<(GuardianDBKeyValue, TempDir), Box<dyn std::error::Error>> {
+    let temp_dir = TempDir::new()?;
+    let client_config = ClientConfig {
+        data_store_path: Some(temp_dir.path().to_path_buf()),
+        ..ClientConfig::development()
+    };
+
+    let client = Arc::new(IrohClient::new(client_config).await?);
+    let options = NewStoreOptions {
+        event_bus: Some(EventBus::new()),
+        directory: temp_dir.path().join("cache").to_string_lossy().to_string(),
+        payload_codec: Some(codec),
+        ..Default::default()
+    };
+
+    let store =
+        GuardianDBKeyValue::new(client, test_identity(), test_address().await, Some(options))
+            .await?;
+
+    Ok((store, temp_dir))
+}
+
+/// Codec de teste reversível e sem dependências: inverte todos os bits.
+///
+/// Não é criptografia — existe para exercitar o encaminhamento (`encode` na
+/// escrita, `decode` na leitura) com as features padrão, sem exigir a feature
+/// `encryption`.
+#[derive(Debug)]
+struct BitFlipCodec;
+
+impl crate::stores::payload_codec::PayloadCodec for BitFlipCodec {
+    fn encode(
+        &self,
+        _ctx: &crate::stores::payload_codec::RecordCtx<'_>,
+        plaintext: &[u8],
+    ) -> crate::guardian::error::Result<Vec<u8>> {
+        Ok(plaintext.iter().map(|b| !b).collect())
+    }
+
+    fn decode(
+        &self,
+        _ctx: &crate::stores::payload_codec::RecordCtx<'_>,
+        stored: &[u8],
+    ) -> crate::guardian::error::Result<Vec<u8>> {
+        Ok(stored.iter().map(|b| !b).collect())
+    }
+
+    fn codec_id(&self) -> &str {
+        "test-bitflip"
+    }
 }
 
 // ============= TESTES =============
@@ -743,5 +798,205 @@ mod tests {
             result.is_err(),
             "rotation into a read-only destination must fail"
         );
+    }
+
+    // ============= PAYLOAD CODEC VIA WRAPPER =============
+    //
+    // `GuardianDB::key_value()` hands callers a `KeyValueStoreWrapper`, not the
+    // concrete store. An earlier version of the wrapper read the in-memory index
+    // directly in `get`/`all` — and the index holds records in *stored* form, so
+    // with a codec configured, writes were encrypted and reads returned raw
+    // ciphertext.
+    //
+    // Every codec test below this point exercised `GuardianDBKeyValue` directly
+    // and therefore could not see it. These go through the public path.
+
+    #[tokio::test]
+    async fn wrapper_applies_the_codec_on_read() {
+        use crate::traits::CreateDBOptions;
+
+        let temp_dir = TempDir::new().expect("temp dir");
+        let client_config = ClientConfig {
+            data_store_path: Some(temp_dir.path().to_path_buf()),
+            ..ClientConfig::development()
+        };
+        let client = Arc::new(IrohClient::new(client_config).await.expect("client"));
+
+        let db = crate::guardian::GuardianDB::new(
+            (*client).clone(),
+            Some(crate::guardian::core::NewGuardianDBOptions {
+                directory: Some(temp_dir.path().join("guardian")),
+                backend: Some(client.backend().clone()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .expect("guardian db");
+
+        let options = CreateDBOptions {
+            create: Some(true),
+            store_type: Some("keyvalue".to_string()),
+            payload_codec: Some(Arc::new(BitFlipCodec)),
+            ..Default::default()
+        };
+        let store = db
+            .key_value("codec-wrapper-test", Some(options))
+            .await
+            .expect("kv store");
+
+        store.put("k", b"texto claro".to_vec()).await.expect("put");
+
+        // Both read paths must return plaintext, not the encoded form.
+        assert_eq!(
+            store.get("k").await.expect("get").as_deref(),
+            Some(&b"texto claro"[..]),
+            "get() pelo wrapper devolveu bytes não decodificados"
+        );
+        assert_eq!(
+            store.all().get("k").map(|v| &v[..]),
+            Some(&b"texto claro"[..]),
+            "all() pelo wrapper devolveu bytes não decodificados"
+        );
+    }
+
+    // ============= PAYLOAD CODEC =============
+
+    #[tokio::test]
+    async fn test_default_store_holds_payloads_verbatim() {
+        // The regression guard for every existing deployment: with no codec
+        // configured, stored bytes must be byte-for-byte the application's.
+        let (store, _dir) = create_test_store().await.expect("store");
+        store
+            .put_impl("k", b"payload em claro".to_vec())
+            .await
+            .expect("put");
+
+        assert_eq!(
+            store.stored_value_for_test("k").as_deref(),
+            Some(&b"payload em claro"[..])
+        );
+        assert_eq!(
+            store.get_impl("k").await.unwrap().as_deref(),
+            Some(&b"payload em claro"[..])
+        );
+    }
+
+    #[tokio::test]
+    async fn test_codec_is_applied_on_write_and_reversed_on_read() {
+        let (store, _dir) = create_test_store_with_codec(Arc::new(BitFlipCodec))
+            .await
+            .expect("store");
+
+        let plaintext = b"mensagem".to_vec();
+        store.put_impl("k", plaintext.clone()).await.expect("put");
+
+        // What reaches storage is encoded...
+        let stored = store.stored_value_for_test("k").expect("stored");
+        assert_ne!(stored, plaintext);
+        assert_eq!(stored, plaintext.iter().map(|b| !b).collect::<Vec<_>>());
+
+        // ...but the API stays in plaintext, through get() and all() alike.
+        assert_eq!(store.get_impl("k").await.unwrap(), Some(plaintext.clone()));
+        assert_eq!(store.all().get("k"), Some(&plaintext));
+    }
+
+    #[tokio::test]
+    async fn test_codec_keeps_keys_in_the_clear() {
+        // Keys must stay readable so enumeration and range scans keep working.
+        let (store, _dir) = create_test_store_with_codec(Arc::new(BitFlipCodec))
+            .await
+            .expect("store");
+        store
+            .put_impl("chave-visivel", b"v".to_vec())
+            .await
+            .expect("put");
+
+        assert!(store.contains_key("chave-visivel"));
+        assert!(store.keys().contains(&"chave-visivel".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_codec_applies_to_add_operation_path() {
+        // add_operation is a second write path; it must not bypass the codec.
+        use crate::stores::operation::Operation;
+        use crate::traits::Store;
+
+        let (store, _dir) = create_test_store_with_codec(Arc::new(BitFlipCodec))
+            .await
+            .expect("store");
+
+        let op = Operation::new(
+            Some("k".to_string()),
+            "PUT".to_string(),
+            Some(b"via-operation".to_vec()),
+        );
+        store.add_operation(op, None).await.expect("add_operation");
+
+        assert_ne!(
+            store.stored_value_for_test("k").as_deref(),
+            Some(&b"via-operation"[..]),
+            "add_operation must encode like put_impl"
+        );
+        assert_eq!(
+            store.get_impl("k").await.unwrap().as_deref(),
+            Some(&b"via-operation"[..])
+        );
+    }
+
+    #[cfg(feature = "encryption")]
+    #[tokio::test]
+    async fn test_aead_codec_end_to_end_in_the_store() {
+        use crate::stores::payload_codec::XChaCha20Poly1305Codec;
+
+        let (store, _dir) =
+            create_test_store_with_codec(Arc::new(XChaCha20Poly1305Codec::new([3u8; 32])))
+                .await
+                .expect("store");
+
+        let secret = b"conteudo confidencial".to_vec();
+        store.put_impl("m/1", secret.clone()).await.expect("put");
+
+        // Stored form must not contain the plaintext anywhere.
+        let stored = store.stored_value_for_test("m/1").expect("stored");
+        assert!(
+            !stored.windows(secret.len()).any(|w| w == &secret[..]),
+            "plaintext must not survive into storage"
+        );
+
+        // The application still reads plaintext.
+        assert_eq!(store.get_impl("m/1").await.unwrap(), Some(secret));
+    }
+
+    #[cfg(feature = "encryption")]
+    #[tokio::test]
+    async fn test_undecodable_records_are_skipped_not_fatal() {
+        use crate::stores::payload_codec::{PayloadCodec, RecordCtx, XChaCha20Poly1305Codec};
+
+        // A store holding one record this replica can read and one it cannot,
+        // simulating a namespace shared with a peer using different key material.
+        let readable = Arc::new(XChaCha20Poly1305Codec::new([3u8; 32]));
+        let (store, _dir) = create_test_store_with_codec(readable.clone())
+            .await
+            .expect("store");
+
+        store
+            .put_impl("mine", b"legivel".to_vec())
+            .await
+            .expect("put");
+
+        // Write a record sealed with a different key, straight into storage.
+        let foreign = XChaCha20Poly1305Codec::new([9u8; 32]);
+        let ctx = RecordCtx::new("irrelevant", "theirs");
+        let opaque = foreign.encode(&ctx, b"ilegivel").unwrap();
+        store.put_raw_for_test("theirs", opaque);
+
+        // all() degrades gracefully: the readable record survives, the other is dropped.
+        let all = store.all();
+        assert_eq!(all.get("mine").map(|v| &v[..]), Some(&b"legivel"[..]));
+        assert!(!all.contains_key("theirs"));
+
+        // ...while get() on the unreadable record reports the failure rather than
+        // silently returning None, so a caller can tell "absent" from "unreadable".
+        assert!(store.get_impl("theirs").await.is_err());
     }
 }

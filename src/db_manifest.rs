@@ -40,7 +40,7 @@ pub async fn create_db_manifest(
     };
 
     // Serialize the manifest to CBOR.
-    let cbor_data = serde_cbor::to_vec(&manifest).map_err(|e| {
+    let cbor_data = crate::guardian::cbor::to_vec(&manifest).map_err(|e| {
         GuardianError::Other(format!("Could not write the manifest data to CBOR: {}", e))
     })?;
 
@@ -82,7 +82,7 @@ pub async fn read_db_manifest(
         .map_err(|e| GuardianError::Other(format!("Could not fetch the manifest: {}", e)))?;
 
     // Deserialize the CBOR data into the Manifest struct.
-    let manifest: Manifest = serde_cbor::from_slice(&data)
+    let manifest: Manifest = crate::guardian::cbor::from_slice(&data)
         .map_err(|e| GuardianError::Other(format!("Could not decode the CBOR manifest: {}", e)))?;
 
     Ok(manifest)

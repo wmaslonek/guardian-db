@@ -146,6 +146,11 @@ pub trait HostStoreReader: Send + Sync + 'static {
 ///   value for the key into the destination buffer, returning the value's
 ///   full length (`-1` when absent); the guest re-calls with a bigger buffer
 ///   if the value was truncated.
+/// - `llm_generate(model_ptr, model_len, prompt_ptr, prompt_len) -> i64`
+///   (feature `compute-llm`, RFC 0004 phase 5) — buffered LLM generation:
+///   the response is written into a guest buffer obtained by re-entrantly
+///   calling the guest's own `gdb_alloc`, and its location is returned
+///   packed as `(ptr << 32) | len`; `-1` on failure.
 ///
 /// With the `compute-nn` feature, [`HostGrants::nn`] additionally links the
 /// `wasi_ephemeral_nn` API (Edge AI, RFC 0003 Part A).
@@ -158,6 +163,9 @@ pub struct HostGrants {
     /// Grant the `wasi_ephemeral_nn` imports, serving these named models.
     #[cfg(feature = "compute-nn")]
     pub nn: Option<Arc<NnGrant>>,
+    /// Grant the `gdb.llm_generate` import (RFC 0004 phase 5).
+    #[cfg(feature = "compute-llm")]
+    pub llm: Option<Arc<LlmGrant>>,
 }
 
 impl std::fmt::Debug for HostGrants {
@@ -167,7 +175,119 @@ impl std::fmt::Debug for HostGrants {
             .field("store", &self.store.is_some());
         #[cfg(feature = "compute-nn")]
         dbg.field("nn", &self.nn.is_some());
+        #[cfg(feature = "compute-llm")]
+        dbg.field("llm", &self.llm.is_some());
         dbg.finish()
+    }
+}
+
+/// The LLM grant (feature `compute-llm`, RFC 0004 phase 5): guests reach the
+/// executor's [`LlmRegistry`](crate::compute::llm::LlmRegistry) through
+/// `gdb.llm_generate`.
+///
+/// Deliberate constraints:
+/// - **Buffered.** Guests are synchronous; the host collects the token
+///   stream and hands the complete response back in one call. Streaming to
+///   *requesters* is the protocol's job (RFC 0004 §6.2), not the guest's.
+/// - **Non-deterministic.** Tasks importing this are ineligible for k-of-n
+///   redundant execution, like any `Inference`-class work.
+/// - Generation blocks inside a native host call, which fuel does not meter
+///   and epoch interruption cannot abort mid-call; the grant's own
+///   [`deadline`](Self::with_limits) bounds it, and the protocol layer's
+///   response deadline is the outer net. Tasks calling this should set
+///   `ResourceLimits::timeout_ms` generously — the epoch clock keeps ticking
+///   while the host call runs.
+#[cfg(feature = "compute-llm")]
+pub struct LlmGrant {
+    registry: Arc<crate::compute::llm::LlmRegistry>,
+    /// Bridges the async registry into the synchronous host call. Captured
+    /// at construction; the blocking `execute_with_host` thread must NOT be
+    /// a tokio worker (the protocol layer runs it in `spawn_blocking`).
+    handle: tokio::runtime::Handle,
+    /// Per-call generation deadline.
+    deadline: Duration,
+    /// Cap on response bytes written into the guest; generation past it is
+    /// cancelled (dropping the stream) and the text truncated at a char
+    /// boundary.
+    max_response_bytes: usize,
+}
+
+#[cfg(feature = "compute-llm")]
+impl LlmGrant {
+    /// Grant over `registry` with the defaults (5 min deadline, 1 MiB
+    /// response cap). Must be called from async context (captures the
+    /// current tokio runtime handle).
+    pub fn new(registry: Arc<crate::compute::llm::LlmRegistry>) -> Self {
+        Self::with_limits(registry, Duration::from_secs(5 * 60), 1024 * 1024)
+    }
+
+    /// [`new`](Self::new) with explicit per-call limits.
+    pub fn with_limits(
+        registry: Arc<crate::compute::llm::LlmRegistry>,
+        deadline: Duration,
+        max_response_bytes: usize,
+    ) -> Self {
+        Self {
+            registry,
+            handle: tokio::runtime::Handle::current(),
+            deadline,
+            max_response_bytes,
+        }
+    }
+
+    /// Runs one buffered generation, blocking the calling (non-async) thread.
+    fn generate_blocking(
+        &self,
+        model: String,
+        prompt: String,
+    ) -> Result<String, crate::compute::llm::LlmError> {
+        use crate::compute::llm::{ChatMessage, GenerateEvent, GenerateRequest, SamplingParams};
+        use futures::StreamExt;
+
+        let registry = self.registry.clone();
+        let deadline = self.deadline;
+        let max = self.max_response_bytes;
+        self.handle.block_on(async move {
+            let request = GenerateRequest {
+                model: model.into(),
+                messages: vec![ChatMessage::user(prompt)],
+                params: SamplingParams::default(),
+                deadline: Some(deadline),
+            };
+            let mut stream = registry.generate(request).await?;
+            let mut text = String::new();
+            while let Some(event) = stream.next().await {
+                match event? {
+                    GenerateEvent::Delta { content } => {
+                        text.push_str(&content);
+                        if text.len() >= max {
+                            // Cap reached: dropping the stream cancels the
+                            // generation (§6.4); truncate on a boundary.
+                            let mut cut = max.min(text.len());
+                            while !text.is_char_boundary(cut) {
+                                cut -= 1;
+                            }
+                            text.truncate(cut);
+                            return Ok(text);
+                        }
+                    }
+                    GenerateEvent::End { .. } => return Ok(text),
+                }
+            }
+            Err(crate::compute::llm::LlmError::Protocol(
+                "stream ended without terminal frame".into(),
+            ))
+        })
+    }
+}
+
+#[cfg(feature = "compute-llm")]
+impl std::fmt::Debug for LlmGrant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LlmGrant")
+            .field("registry", &self.registry)
+            .field("deadline", &self.deadline)
+            .finish()
     }
 }
 
@@ -507,6 +627,45 @@ impl WasmRuntime {
                 .map_err(|e| TaskError::Runtime(format!("link gdb.store_get: {e}")))?;
         }
 
+        // gdb.llm_generate (feature `compute-llm`, RFC 0004 phase 5): linked
+        // only when granted; the response buffer is allocated by re-entrantly
+        // calling the guest's own `gdb_alloc`.
+        #[cfg(feature = "compute-llm")]
+        if let Some(grant) = grants.llm.clone() {
+            linker
+                .func_wrap(
+                    "gdb",
+                    "llm_generate",
+                    move |mut caller: Caller<'_, HostState>,
+                          model_ptr: i32,
+                          model_len: i32,
+                          prompt_ptr: i32,
+                          prompt_len: i32|
+                          -> i64 {
+                        let Some(model) = read_guest_bytes(&mut caller, model_ptr, model_len)
+                        else {
+                            return -1;
+                        };
+                        let Some(prompt) = read_guest_bytes(&mut caller, prompt_ptr, prompt_len)
+                        else {
+                            return -1;
+                        };
+                        let model = String::from_utf8_lossy(&model).into_owned();
+                        let prompt = String::from_utf8_lossy(&prompt).into_owned();
+                        let response = match grant.generate_blocking(model, prompt) {
+                            Ok(text) => text,
+                            Err(e) => {
+                                tracing::warn!(target: "guardian_compute_guest",
+                                               "llm_generate failed: {e}");
+                                return -1;
+                            }
+                        };
+                        write_into_guest_alloc(&mut caller, response.as_bytes())
+                    },
+                )
+                .map_err(|e| TaskError::Runtime(format!("link gdb.llm_generate: {e}")))?;
+        }
+
         // wasi-nn (feature `compute-nn`): linked only when granted, so a
         // module importing `wasi_ephemeral_nn` on an ungranted executor is
         // refused at instantiation like any other capability.
@@ -650,6 +809,36 @@ fn read_guest_bytes(caller: &mut Caller<'_, HostState>, ptr: i32, len: i32) -> O
     let mut buffer = vec![0u8; len];
     memory.read(caller, ptr, &mut buffer).ok()?;
     Some(buffer)
+}
+
+/// Allocates via the guest's own `gdb_alloc` (a re-entrant call back into the
+/// instance) and writes `bytes` there, returning the location packed as
+/// `(ptr << 32) | len` — the same convention as the entrypoint's return
+/// value. Returns `-1` on any failure (missing allocator, trap, OOB write).
+#[cfg(feature = "compute-llm")]
+fn write_into_guest_alloc(caller: &mut Caller<'_, HostState>, bytes: &[u8]) -> i64 {
+    if bytes.is_empty() {
+        return 0;
+    }
+    let Ok(len) = i32::try_from(bytes.len()) else {
+        return -1;
+    };
+    let Some(alloc) = caller
+        .get_export(ABI_ALLOC_EXPORT)
+        .and_then(|e| e.into_func())
+    else {
+        return -1;
+    };
+    let Ok(alloc) = alloc.typed::<i32, i32>(&mut *caller) else {
+        return -1;
+    };
+    let Ok(ptr) = alloc.call(&mut *caller, len) else {
+        return -1;
+    };
+    if ptr < 0 || !write_guest_bytes(caller, ptr, bytes) {
+        return -1;
+    }
+    ((ptr as u32 as i64) << 32) | (len as u32 as i64)
 }
 
 /// Writes `bytes` at `ptr` into the calling guest's exported memory.
@@ -1022,6 +1211,150 @@ mod tests {
             )
             .expect("execution");
         assert_eq!(exec.output, b"oi");
+    }
+
+    /// gdb.llm_generate end to end (feature `compute-llm`, RFC 0004 phase 5):
+    /// a WAT guest asks the granted registry for a generation and returns the
+    /// response as its task output.
+    #[cfg(feature = "compute-llm")]
+    mod llm_grant {
+        use super::*;
+        use crate::compute::llm::{
+            GenerateEvent, GenerateRequest, GenerateStream, LlmBackend, LlmError, LlmRegistry,
+            Locality, ModelInfo, Usage,
+        };
+        use futures::StreamExt;
+
+        /// Guest importing `gdb.llm_generate`: model = "test-model" (from its
+        /// data segment), prompt = the task input; the packed response
+        /// location is returned directly as the task output (or empty on -1).
+        const LLM_WAT: &str = r#"
+            (module
+              (import "gdb" "llm_generate"
+                (func $llm (param i32 i32 i32 i32) (result i64)))
+              (memory (export "memory") 1)
+              (data (i32.const 64) "test-model")
+              (global $next (mut i32) (i32.const 4096))
+              (func (export "gdb_alloc") (param $len i32) (result i32)
+                (local $ptr i32)
+                (local.set $ptr (global.get $next))
+                (global.set $next (i32.add (global.get $next) (local.get $len)))
+                (local.get $ptr))
+              (func (export "gdb_run") (param $ptr i32) (param $len i32) (result i64)
+                (local $packed i64)
+                (local.set $packed
+                  (call $llm (i32.const 64) (i32.const 10)
+                             (local.get $ptr) (local.get $len)))
+                (if (i64.lt_s (local.get $packed) (i64.const 0))
+                  (then (return (i64.const 0))))
+                (local.get $packed)))
+        "#;
+
+        /// Backend answering "echo: <prompt>" as two deltas plus End.
+        struct EchoBackend;
+
+        #[async_trait::async_trait]
+        impl LlmBackend for EchoBackend {
+            async fn models(&self) -> Result<Vec<ModelInfo>, LlmError> {
+                Ok(vec![ModelInfo {
+                    name: "test-model".into(),
+                    content_hash: None,
+                }])
+            }
+
+            async fn generate(&self, req: GenerateRequest) -> Result<GenerateStream, LlmError> {
+                let prompt = req
+                    .messages
+                    .last()
+                    .map(|m| m.content.clone())
+                    .unwrap_or_default();
+                Ok(futures::stream::iter(vec![
+                    Ok(GenerateEvent::Delta {
+                        content: "echo: ".into(),
+                    }),
+                    Ok(GenerateEvent::Delta { content: prompt }),
+                    Ok(GenerateEvent::End {
+                        finish_reason: crate::compute::llm::FinishReason::Stop,
+                        usage: Usage::default(),
+                    }),
+                ])
+                .boxed())
+            }
+
+            fn locality(&self) -> Locality {
+                Locality::Local
+            }
+        }
+
+        /// A probed registry + grant, plus the tokio runtime that must stay
+        /// alive to serve the grant's `block_on`.
+        fn llm_grants() -> (tokio::runtime::Runtime, HostGrants) {
+            let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+            let registry = Arc::new(LlmRegistry::default());
+            registry.register_backend("mock", Arc::new(EchoBackend));
+            rt.block_on(registry.probe_once());
+            let grant = rt.block_on(async { LlmGrant::new(registry) });
+            let grants = HostGrants {
+                llm: Some(Arc::new(grant)),
+                ..HostGrants::default()
+            };
+            (rt, grants)
+        }
+
+        #[test]
+        fn granted_guest_generates_and_returns_the_response() {
+            let rt = runtime();
+            let task = compile(&rt, LLM_WAT);
+            let (_tokio, grants) = llm_grants();
+            let exec = rt
+                .execute_with_host(
+                    &task,
+                    "gdb_run",
+                    b"hello",
+                    &ResourceLimits::default(),
+                    &grants,
+                )
+                .expect("execution with llm grant");
+            assert_eq!(exec.output, b"echo: hello");
+        }
+
+        #[test]
+        fn ungranted_executor_refuses_llm_modules_before_running() {
+            let rt = runtime();
+            let task = compile(&rt, LLM_WAT);
+            let err = rt
+                .execute(&task, "gdb_run", b"hello", &ResourceLimits::default())
+                .unwrap_err();
+            assert!(
+                matches!(err, TaskError::HostCapabilityDenied(_)),
+                "expected HostCapabilityDenied, got: {err:?}"
+            );
+        }
+
+        #[test]
+        fn unknown_model_surfaces_as_failure_not_trap() {
+            let rt = runtime();
+            let task = compile(&rt, LLM_WAT);
+            // Registry with no backends: resolution fails, the host fn
+            // returns -1, and the guest maps that to an empty output.
+            let tokio_rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+            let registry = Arc::new(LlmRegistry::default());
+            let grant = tokio_rt.block_on(async { LlmGrant::new(registry) });
+            let grants = HostGrants {
+                llm: Some(Arc::new(grant)),
+                ..HostGrants::default()
+            };
+            let exec = rt
+                .execute_with_host(
+                    &task,
+                    "gdb_run",
+                    b"hello",
+                    &ResourceLimits::default(),
+                    &grants,
+                )
+                .expect("execution");
+            assert!(exec.output.is_empty());
+        }
     }
 
     /// wasi-nn end to end (feature `compute-nn`, RFC 0003 phase NN-1): a

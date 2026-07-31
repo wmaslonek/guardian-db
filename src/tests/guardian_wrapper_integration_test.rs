@@ -12,11 +12,11 @@
 
 #[cfg(test)]
 mod guardian_wrapper_integration_tests {
+    use crate::events::EventBus;
     use crate::guardian::GuardianDB;
     use crate::guardian::core::NewGuardianDBOptions;
     use crate::guardian::error::{GuardianError, Result};
     use crate::log::identity::{Identity, Signatures};
-    use crate::p2p::EventBus;
     use crate::p2p::network::client::IrohClient;
     use crate::p2p::network::config::ClientConfig;
     use crate::p2p::network::core::IrohBackend;

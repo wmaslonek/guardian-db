@@ -377,7 +377,7 @@ impl Exec {
     }
 
     fn fk_loaded(&self, q: &QualifiedName) -> Result<&crate::sql::store::LoadedTable> {
-        self.tables.get(q).ok_or_else(|| {
+        self.tables.get(q).map(|a| a.as_ref()).ok_or_else(|| {
             SqlError::Internal(format!(
                 "foreign-key table {} was not preloaded",
                 q.to_string_qualified()
@@ -757,7 +757,7 @@ impl Exec {
             crate::sql::lock::LockMode::ForUpdate,
             crate::sql::lock::LockScope::Transaction,
         );
-        let loaded = self.tables.get_mut(child_q).unwrap();
+        let loaded = std::sync::Arc::make_mut(self.tables.get_mut(child_q).unwrap());
         loaded.apply_delete(rid);
         self.mutations
             .lock()

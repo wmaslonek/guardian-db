@@ -2,14 +2,15 @@ use crate::access_control::acl_simple::SimpleAccessController;
 use crate::access_control::traits::AccessController;
 use crate::address::Address;
 use crate::data_store::Datastore;
+use crate::events::EventBus;
 use crate::events::EventEmitter;
 use crate::guardian::error::{GuardianError, Result};
 use crate::log::identity::Identity;
 use crate::log::lamport_clock::LamportClock;
-use crate::p2p::EventBus;
 use crate::p2p::network::client::IrohClient;
 use crate::p2p::network::core::docs::WillowDocs;
 use crate::stores::operation::Operation;
+use crate::stores::payload_codec::{RecordCtx, SharedPayloadCodec, codec_or_identity};
 use crate::traits::{
     CreateDocumentDBOptions, DocumentStoreGetOptions, NewStoreOptions, Store, StoreIndex,
     TracerWrapper,
@@ -227,6 +228,11 @@ pub struct GuardianDBDocumentStore {
     /// Whether this replica may originate writes. `false` when opened read-only (via the
     /// `read_only` option) or imported from a read-only `DocTicket` (no namespace secret).
     writable: bool,
+    /// Transforms marshalled document bytes on the way to and from iroh-docs. Defaults to
+    /// the no-op `IdentityCodec`. Applied *after* `doc_opts.marshal` and *before*
+    /// `unmarshal`, so the codec sees serialized documents and the index mirrors the
+    /// **stored** form. See [`crate::stores::payload_codec`].
+    payload_codec: SharedPayloadCodec,
 }
 
 #[async_trait::async_trait]
@@ -341,16 +347,18 @@ impl Store for GuardianDBDocumentStore {
 
         match op.op() {
             "PUT" => {
-                let value = op.value().to_vec();
+                // The operation carries marshalled document bytes, so it goes through the
+                // codec exactly like the other write paths.
+                let stored = self.encode_value(&key, op.value().to_vec())?;
                 self.docs
                     .set_bytes(
                         &self.doc_handle,
                         self.author_id,
                         Bytes::from(key.clone().into_bytes()),
-                        Bytes::from(value.clone()),
+                        Bytes::from(stored.clone()),
                     )
                     .await?;
-                self.index.insert(key, value);
+                self.index.insert(key, stored);
             }
             "DEL" => {
                 self.docs
@@ -764,6 +772,7 @@ impl GuardianDBDocumentStore {
             empty_log,
             blob_store,
             writable,
+            payload_codec: codec_or_identity(options.payload_codec),
         };
 
         // Synchronize the local index with the iroh-docs document state.
@@ -821,6 +830,57 @@ impl GuardianDBDocumentStore {
         Ok(store)
     }
 
+    /// Returns the raw, still-encoded bytes held in the index for `key`.
+    ///
+    /// Test-only: lets the suite assert what actually reaches storage, which is the
+    /// whole point of a payload codec and is otherwise invisible through the API.
+    #[cfg(test)]
+    pub(crate) fn stored_value_for_test(&self, key: &str) -> Option<Vec<u8>> {
+        self.index.get_value(key)
+    }
+
+    /// Injects already-encoded bytes straight into the index, bypassing the codec.
+    ///
+    /// Test-only: reproduces a record replicated from a peer whose key material this
+    /// node does not have, which is otherwise only reachable by standing up two
+    /// synchronizing nodes.
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn put_raw_for_test(&self, key: &str, stored: Vec<u8>) {
+        self.index.insert(key.to_string(), stored);
+    }
+
+    /// Encodes marshalled document bytes into the form stored in iroh-docs.
+    fn encode_value(&self, key: &str, marshalled: Vec<u8>) -> Result<Vec<u8>> {
+        let address = self.cached_address.to_string();
+        let ctx = RecordCtx::new(&address, key);
+        self.payload_codec.encode(&ctx, &marshalled)
+    }
+
+    /// Recovers marshalled document bytes from the stored form.
+    fn decode_value(&self, key: &str, stored: Vec<u8>) -> Result<Vec<u8>> {
+        let address = self.cached_address.to_string();
+        let ctx = RecordCtx::new(&address, key);
+        self.payload_codec.decode(&ctx, &stored)
+    }
+
+    /// Reads a record from the index and decodes it, yielding `None` both when the key is
+    /// absent and when this replica cannot decode the value (a namespace may legitimately
+    /// hold records encoded with key material this node does not have).
+    fn indexed_value(&self, key: &str) -> Option<Vec<u8>> {
+        let stored = self.index.get_value(key)?;
+        match self.decode_value(key, stored) {
+            Ok(plaintext) => Some(plaintext),
+            Err(_) => {
+                warn!(
+                    codec = self.payload_codec.codec_id(),
+                    key, "Skipping record that could not be decoded with the configured codec"
+                );
+                None
+            }
+        }
+    }
+
     #[instrument(level = "debug", skip(self, opts))]
     pub async fn get(
         &self,
@@ -862,7 +922,7 @@ impl GuardianDBDocumentStore {
                 continue;
             }
 
-            if let Some(value_bytes) = self.index.get_value(&index_key) {
+            if let Some(value_bytes) = self.indexed_value(&index_key) {
                 let doc: Document = serde_json::from_slice(&value_bytes).map_err(|e| {
                     GuardianError::Serialization(format!(
                         "Unable to deserialize the value for key {}: {}",
@@ -883,6 +943,7 @@ impl GuardianDBDocumentStore {
 
         let key = (self.doc_opts.key_extractor)(&document)?;
         let data = (self.doc_opts.marshal)(&document)?;
+        let stored = self.encode_value(&key, data.clone())?;
 
         // Write directly to iroh-docs (Willow handles sync).
         self.docs
@@ -890,15 +951,15 @@ impl GuardianDBDocumentStore {
                 &self.doc_handle,
                 self.author_id,
                 Bytes::from(key.clone().into_bytes()),
-                Bytes::from(data.clone()),
+                Bytes::from(stored.clone()),
             )
             .await
             .map_err(|e| {
                 GuardianError::Store(format!("Error writing key '{}' to iroh-docs: {}", key, e))
             })?;
 
-        // Update the local index immediately.
-        self.index.insert(key.clone(), data.clone());
+        // Update the local index immediately (stored form).
+        self.index.insert(key.clone(), stored);
 
         debug!("PUT key='{}' ({} bytes) via iroh-docs", key, data.len());
 
@@ -959,20 +1020,21 @@ impl GuardianDBDocumentStore {
 
         let key = (self.doc_opts.key_extractor)(&document)?;
         let data = (self.doc_opts.marshal)(&document)?;
+        let stored = self.encode_value(&key, data.clone())?;
 
         self.docs
             .set_bytes(
                 &self.doc_handle,
                 self.author_id,
                 Bytes::from(key.clone().into_bytes()),
-                Bytes::from(data.clone()),
+                Bytes::from(stored.clone()),
             )
             .await
             .map_err(|e| {
                 GuardianError::Store(format!("Error writing key '{}' to iroh-docs: {}", key, e))
             })?;
 
-        self.index.insert(key.clone(), data.clone());
+        self.index.insert(key.clone(), stored);
         Ok(Operation::new(Some(key), "PUT".to_string(), Some(data)))
     }
 
@@ -1059,20 +1121,21 @@ impl GuardianDBDocumentStore {
 
         // Each document is an individual set_bytes (iroh-docs has no batch API).
         for (key, data) in &to_add {
+            let stored = self.encode_value(key, data.clone())?;
             self.docs
                 .set_bytes(
                     &self.doc_handle,
                     self.author_id,
                     Bytes::from(key.clone().into_bytes()),
-                    Bytes::from(data.clone()),
+                    Bytes::from(stored.clone()),
                 )
                 .await
                 .map_err(|e| {
                     GuardianError::Store(format!("Error writing key '{}' to iroh-docs: {}", key, e))
                 })?;
 
-            // Update the local index immediately.
-            self.index.insert(key.clone(), data.clone());
+            // Update the local index immediately (stored form).
+            self.index.insert(key.clone(), stored);
         }
 
         debug!("PUTALL {} documents via iroh-docs", to_add.len());
@@ -1090,7 +1153,7 @@ impl GuardianDBDocumentStore {
         let mut results: Vec<Document> = Vec::new();
 
         for index_key in self.index.keys() {
-            if let Some(doc_bytes) = self.index.get_value(&index_key) {
+            if let Some(doc_bytes) = self.indexed_value(&index_key) {
                 let doc: Document = serde_json::from_slice(&doc_bytes).map_err(|e| {
                     GuardianError::Serialization(format!(
                         "Could not deserialize the document: {}",

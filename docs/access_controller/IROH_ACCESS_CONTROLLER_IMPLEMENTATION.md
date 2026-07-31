@@ -452,7 +452,7 @@ let json_str = "[\"did:key:z6Mkk...\",\"did:key:z6Mkj...\"]";
 let cbor = CborWriteAccess { write: json_str };
 
 // 4. Serialized CBOR bytes
-let bytes = serde_cbor::to_vec(&cbor)?;
+let bytes = guardian::cbor::to_vec(&cbor)?;
 
 // 5. Store in IPFS
 let response = ipfs.add_bytes(bytes).await?;
@@ -822,7 +822,7 @@ Rust: Vec<String>
 JSON: "[\"did:key:z6Mkk...\",\"*\"]"
   ↓ Wrap in CborWriteAccess
 CBOR struct: { write: "..." }
-  ↓ serde_cbor::to_vec
+  ↓ guardian::cbor::to_vec
 CBOR bytes: [0xa1, 0x65, 0x77, 0x72, 0x69, ...]
   ↓ ipfs.add_bytes
 IPFS CID: bafyreib...
@@ -834,7 +834,7 @@ IPFS CID: bafyreib...
 IPFS CID: bafyreib...
   ↓ ipfs.cat
 CBOR bytes: [0xa1, 0x65, 0x77, 0x72, 0x69, ...]
-  ↓ serde_cbor::from_slice
+  ↓ guardian::cbor::from_slice
 CBOR struct: CborWriteAccess { write: "..." }
   ↓ Extract .write field
 JSON: "[\"did:key:z6Mkk...\",\"*\"]"

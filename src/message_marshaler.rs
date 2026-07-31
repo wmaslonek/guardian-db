@@ -67,7 +67,7 @@ mod tests {
 
         assert_eq!(message.address, decoded.address);
         assert_eq!(message.heads.len(), decoded.heads.len());
-        println!("✅ Postcard roundtrip: {} bytes", bytes.len());
+        println!("Postcard roundtrip: {} bytes", bytes.len());
     }
 
     #[test]
@@ -89,6 +89,6 @@ mod tests {
             assert_eq!(first, hash, "Determinism broken!");
         }
 
-        println!("✅ Postcard deterministic hash: {}", first);
+        println!("Postcard deterministic hash: {}", first);
     }
 }

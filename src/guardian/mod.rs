@@ -11,6 +11,7 @@ use parking_lot::RwLock;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+pub mod cbor;
 pub mod core;
 pub mod error;
 pub mod serializer;
@@ -600,7 +601,7 @@ impl Store for EventLogStoreWrapper {
         self.store.tracer()
     }
 
-    fn event_bus(&self) -> Arc<crate::p2p::EventBus> {
+    fn event_bus(&self) -> Arc<crate::events::EventBus> {
         self.store.event_bus()
     }
 
@@ -701,6 +702,24 @@ struct KeyValueStoreWrapper {
 }
 
 impl KeyValueStoreWrapper {
+    /// The concrete KV store behind the wrapper, when there is one.
+    ///
+    /// **Reads and writes must go through this**, not through `index()` or
+    /// `op_log()` directly. The index mirrors records in their *stored* form, so
+    /// a payload codec (`stores::payload_codec`) has already been applied to it.
+    /// Reading the index raw returns ciphertext to a caller expecting plaintext.
+    ///
+    /// That was a real bug: the wrapper's `get`/`all` read the index directly,
+    /// so with a codec configured, writes were encrypted and reads returned
+    /// undecoded bytes. It went unnoticed because the KV store's own tests
+    /// exercise `GuardianDBKeyValue` directly, while `GuardianDB::key_value()`
+    /// hands callers this wrapper.
+    fn kv(&self) -> Option<&crate::stores::kv_store::GuardianDBKeyValue> {
+        self.store
+            .as_any()
+            .downcast_ref::<crate::stores::kv_store::GuardianDBKeyValue>()
+    }
+
     fn new(store: Arc<dyn Store<Error = GuardianError> + Send + Sync>) -> Self {
         Self { store }
     }
@@ -794,7 +813,7 @@ impl Store for KeyValueStoreWrapper {
         self.store.tracer()
     }
 
-    fn event_bus(&self) -> Arc<crate::p2p::EventBus> {
+    fn event_bus(&self) -> Arc<crate::events::EventBus> {
         self.store.event_bus()
     }
 
@@ -806,9 +825,14 @@ impl Store for KeyValueStoreWrapper {
 #[async_trait::async_trait]
 impl KeyValueStore for KeyValueStoreWrapper {
     async fn get(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, Self::Error> {
-        // Look up a value by key in the KeyValue store.
+        // Delegate to the concrete store, which applies the payload codec. The
+        // index below holds records in stored form and would hand back
+        // ciphertext — see `KeyValueStoreWrapper::kv`.
+        if let Some(kv) = self.kv() {
+            return kv.get_impl(key).await;
+        }
 
-        // First, try the index (more efficient).
+        // Fallbacks below are for store types without a codec path.
         let index = self.store.index();
         if let Ok(Some(bytes)) = index.get_bytes(key) {
             return Ok(Some(bytes));
@@ -885,10 +909,24 @@ impl KeyValueStore for KeyValueStoreWrapper {
         Ok(operation)
     }
 
+    fn keys(&self) -> Vec<String> {
+        if let Some(kv) = self.kv() {
+            return crate::stores::kv_store::GuardianDBKeyValue::keys(kv);
+        }
+        self.store.index().keys().unwrap_or_default()
+    }
+
     fn all(&self) -> std::collections::HashMap<String, Vec<u8>> {
+        // Delegate to the concrete store, which applies the payload codec. The
+        // index below holds records in stored form and would hand back
+        // ciphertext — see `KeyValueStoreWrapper::kv`.
+        if let Some(kv) = self.kv() {
+            return kv.all();
+        }
+
         let mut result = std::collections::HashMap::new();
 
-        // First, try to collect from the index (more efficient if up to date).
+        // Fallbacks below are for store types without a codec path.
         let index = self.store.index();
         if let Ok(keys) = index.keys() {
             for key in keys {
@@ -1276,7 +1314,7 @@ impl Store for DocumentStoreWrapper {
         self.store.tracer()
     }
 
-    fn event_bus(&self) -> Arc<crate::p2p::EventBus> {
+    fn event_bus(&self) -> Arc<crate::events::EventBus> {
         self.store.event_bus()
     }
 
@@ -1539,7 +1577,7 @@ impl BaseGuardianDBTrait for GuardianDB {
         self.base.get_access_controller_type(controller_type)
     }
 
-    fn event_bus(&self) -> crate::p2p::EventBus {
+    fn event_bus(&self) -> crate::events::EventBus {
         (*self.base.event_bus()).clone()
     }
 
@@ -1679,7 +1717,7 @@ impl Store for KeyValueStoreBoxWrapper {
         self.inner.tracer()
     }
 
-    fn event_bus(&self) -> Arc<crate::p2p::EventBus> {
+    fn event_bus(&self) -> Arc<crate::events::EventBus> {
         self.inner.event_bus()
     }
 
@@ -1690,6 +1728,10 @@ impl Store for KeyValueStoreBoxWrapper {
 
 #[async_trait::async_trait]
 impl KeyValueStore for KeyValueStoreBoxWrapper {
+    fn keys(&self) -> Vec<String> {
+        self.inner.keys()
+    }
+
     async fn put(
         &self,
         key: &str,

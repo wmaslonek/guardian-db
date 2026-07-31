@@ -37,7 +37,30 @@ pub static DEF: ExtensionDef = ExtensionDef {
         "l2_normalize",
     ],
     types: &["vector"],
-    gucs: &[],
+    // RFC 0005 phase 1 (feature `vector-index`): tuning knobs for the
+    // engine-native hnsw access method. Registered unconditionally so `SHOW`
+    // and `SET` behave consistently; without the feature no plan reads them.
+    gucs: &[
+        // Search-time candidate list size (pgvector's knob, same default).
+        super::GucSpec {
+            name: "hnsw.ef_search",
+            default: "40",
+        },
+        // Adaptive-growth ceiling for filtered top-k scans, as a multiple of
+        // `hnsw.ef_search` (RFC 0005 §6.2); past it the planner falls back
+        // to the exact scan.
+        super::GucSpec {
+            name: "hnsw.ef_growth_cap",
+            default: "10",
+        },
+        // Selective-filter cutover: when an indexed equality's measured
+        // candidate count is within `threshold × LIMIT`, the exact
+        // index-scan path is used instead of ANN (RFC 0005 §6.2).
+        super::GucSpec {
+            name: "hnsw.selectivity_threshold",
+            default: "10",
+        },
+    ],
     trusted: true,
     call: Some(call),
     strategy: RuntimeStrategy::Native,

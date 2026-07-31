@@ -488,12 +488,12 @@ println!("{}", json);
 
 ```rust
 // Serialize to CBOR
-let cbor_bytes = serde_cbor::to_vec(&options)?;
+let cbor_bytes = guardian::cbor::to_vec(&options)?;
 println!("CBOR size: {} bytes", cbor_bytes.len());
 
 // Deserialize from CBOR
 let decoded: CreateAccessControllerOptions = 
-    serde_cbor::from_slice(&cbor_bytes)?;
+    guardian::cbor::from_slice(&cbor_bytes)?;
 
 assert_eq!(decoded.get_type(), "simple");
 ```
@@ -790,9 +790,9 @@ fn test_cid_serialization_deserialization() {
     assert_eq!(deserialized.address, Cid::default());
 
     // CBOR round-trip
-    let cbor = serde_cbor::to_vec(&options).unwrap();
+    let cbor = guardian::cbor::to_vec(&options).unwrap();
     let cbor_deserialized: CreateAccessControllerOptions = 
-        serde_cbor::from_slice(&cbor).unwrap();
+        guardian::cbor::from_slice(&cbor).unwrap();
     assert_eq!(cbor_deserialized.address, Cid::default());
 }
 ```
@@ -879,7 +879,7 @@ CBOR is more efficient than JSON for storage:
 
 ```rust
 let json_size = serde_json::to_vec(&params)?.len();
-let cbor_size = serde_cbor::to_vec(&params)?.len();
+let cbor_size = guardian::cbor::to_vec(&params)?.len();
 println!("JSON: {} bytes, CBOR: {} bytes", json_size, cbor_size);
 // Typical: CBOR is 20-40% smaller
 ```

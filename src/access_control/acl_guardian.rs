@@ -1,9 +1,9 @@
 use crate::access_control::manifest::CreateAccessControllerOptions;
 use crate::access_control::manifest::ManifestParams;
 use crate::address::Address;
+use crate::events::{Emitter, EventBus};
 use crate::guardian::error::{GuardianError, Result};
 use crate::log::{access_control, identity_provider::IdentityProvider};
-use crate::p2p::{Emitter, EventBus};
 use crate::traits::{CreateDBOptions, GuardianDBKVStoreProvider, KeyValueStore};
 use iroh_blobs::Hash;
 use std::collections::{HashMap, HashSet};

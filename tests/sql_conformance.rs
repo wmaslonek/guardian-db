@@ -1388,3 +1388,144 @@ async fn generated_columns() {
         _ => panic!("expected rows"),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Decoded-table cache (generation-validated) — correctness of the reload
+// optimization: repeated reads must still observe writes, cross-session
+// writes must be visible, and DDL (which the storage change counter does not
+// track) must invalidate cached views.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn cache_reflects_writes_and_ddl() {
+    let db = Arc::new(Database::new(Arc::new(MemoryStorage::new()), "app"));
+    let mut s = Session::new(db.clone(), "guardian");
+    ok(
+        &mut s,
+        "CREATE TABLE t (id INT PRIMARY KEY, v INT, tag TEXT)",
+    )
+    .await;
+    ok(&mut s, "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b')").await;
+    // Warm the cache, then confirm a subsequent write is observed (the
+    // generation bump invalidates the cached view).
+    assert_eq!(scalar_i64(&mut s, "SELECT count(*) FROM t").await, 2);
+    assert_eq!(scalar_i64(&mut s, "SELECT count(*) FROM t").await, 2);
+    ok(&mut s, "INSERT INTO t VALUES (3, 30, 'c')").await;
+    assert_eq!(scalar_i64(&mut s, "SELECT count(*) FROM t").await, 3);
+    ok(&mut s, "UPDATE t SET v = 99 WHERE id = 1").await;
+    assert_eq!(scalar_i64(&mut s, "SELECT v FROM t WHERE id = 1").await, 99);
+    ok(&mut s, "DELETE FROM t WHERE id = 2").await;
+    assert_eq!(scalar_i64(&mut s, "SELECT count(*) FROM t").await, 2);
+
+    // A second session over the same Database sees the first session's
+    // committed writes (shared cache, generation-keyed).
+    let mut s2 = Session::new(db.clone(), "guardian");
+    assert_eq!(scalar_i64(&mut s2, "SELECT count(*) FROM t").await, 2);
+    ok(&mut s2, "INSERT INTO t VALUES (4, 40, 'd')").await;
+    assert_eq!(scalar_i64(&mut s, "SELECT count(*) FROM t").await, 3);
+
+    // DDL that leaves rows untouched (CREATE INDEX) must invalidate the cache
+    // so index-dependent planning sees the new index. Prove it functionally:
+    // a unique index created now must reject a duplicate.
+    ok(&mut s, "CREATE UNIQUE INDEX t_tag ON t (tag)").await;
+    assert_eq!(
+        &err_code(&mut s, "INSERT INTO t VALUES (5, 50, 'c')").await,
+        "23505"
+    );
+    // TRUNCATE is a schema-independent row change; still observed.
+    ok(&mut s, "TRUNCATE t").await;
+    assert_eq!(scalar_i64(&mut s, "SELECT count(*) FROM t").await, 0);
+}
+
+#[tokio::test]
+async fn cache_transaction_isolation_of_own_writes() {
+    let db = Arc::new(Database::new(Arc::new(MemoryStorage::new()), "app"));
+    let mut s = Session::new(db, "guardian");
+    ok(&mut s, "CREATE TABLE t (id INT PRIMARY KEY, v INT)").await;
+    ok(&mut s, "INSERT INTO t VALUES (1, 10)").await;
+    assert_eq!(scalar_i64(&mut s, "SELECT count(*) FROM t").await, 1);
+    // Inside a transaction, the statement must see its own staged writes
+    // (the overlay path, which bypasses the committed cache).
+    ok(&mut s, "BEGIN").await;
+    ok(&mut s, "INSERT INTO t VALUES (2, 20)").await;
+    assert_eq!(scalar_i64(&mut s, "SELECT count(*) FROM t").await, 2);
+    ok(&mut s, "UPDATE t SET v = 11 WHERE id = 1").await;
+    assert_eq!(scalar_i64(&mut s, "SELECT v FROM t WHERE id = 1").await, 11);
+    ok(&mut s, "ROLLBACK").await;
+    // After rollback the staged writes vanish and the cached committed view
+    // is correct again.
+    assert_eq!(scalar_i64(&mut s, "SELECT count(*) FROM t").await, 1);
+    assert_eq!(scalar_i64(&mut s, "SELECT v FROM t WHERE id = 1").await, 10);
+}
+
+// ---------------------------------------------------------------------------
+// Regression: decoded-table cache correctness under DDL-in-transaction, and
+// EXPLAIN as a side-effect-free inspection (code-review findings, 2026-07-24).
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn cache_reflects_ddl_within_a_transaction() {
+    // A metadata-only DDL inside a transaction must be visible to the next
+    // statement in the same transaction — the cache must not serve the
+    // pre-DDL table meta.
+    let mut s = session().await;
+    ok(&mut s, "CREATE TABLE t (a INT PRIMARY KEY)").await;
+    ok(&mut s, "INSERT INTO t VALUES (1)").await;
+    // Warm the shared cache for t's collection.
+    assert_eq!(scalar_i64(&mut s, "SELECT count(*) FROM t").await, 1);
+
+    ok(&mut s, "BEGIN").await;
+    ok(&mut s, "ALTER TABLE t ADD COLUMN b INT").await;
+    // The new column must be *visible* within the transaction: before the fix
+    // the stale cached table meta made this fail with "column b does not
+    // exist" (42703). It reads NULL for the pre-existing row — the point is
+    // that it resolves, not what value it has.
+    assert_eq!(
+        rows_text(&mut s, "SELECT b FROM t WHERE a = 1").await,
+        vec![vec!["NULL".to_string()]]
+    );
+    // And it is fully usable within the same transaction: write then read.
+    ok(&mut s, "UPDATE t SET b = 7 WHERE a = 1").await;
+    assert_eq!(scalar_i64(&mut s, "SELECT b FROM t WHERE a = 1").await, 7);
+    // A second DDL in the same transaction is likewise immediately visible.
+    ok(&mut s, "ALTER TABLE t ADD COLUMN c TEXT").await;
+    ok(&mut s, "UPDATE t SET c = 'x' WHERE a = 1").await;
+    assert_eq!(
+        rows_text(&mut s, "SELECT c FROM t WHERE a = 1").await,
+        vec![vec!["x".to_string()]]
+    );
+    ok(&mut s, "COMMIT").await;
+    // Visible after commit to a fresh statement too.
+    assert_eq!(scalar_i64(&mut s, "SELECT b FROM t WHERE a = 1").await, 7);
+
+    // Rollback of a DDL leaves the committed schema intact (no cache poison
+    // from the transaction's uncommitted meta).
+    ok(&mut s, "BEGIN").await;
+    ok(&mut s, "ALTER TABLE t ADD COLUMN d INT").await;
+    ok(&mut s, "SELECT d FROM t WHERE a = 1").await; // visible inside the txn
+    ok(&mut s, "ROLLBACK").await;
+    // `d` must be gone now — and no stale cached view resurrects it.
+    assert_eq!(&err_code(&mut s, "SELECT d FROM t").await, "42703");
+}
+
+#[tokio::test]
+async fn explain_select_for_update_takes_no_row_locks() {
+    use std::sync::Arc;
+    // Two sessions over one Database; a lock taken by session A blocks B.
+    let db = Arc::new(Database::new(Arc::new(MemoryStorage::new()), "app"));
+    let mut a = Session::new(db.clone(), "guardian");
+    ok(&mut a, "CREATE TABLE t (id INT PRIMARY KEY)").await;
+    ok(&mut a, "INSERT INTO t VALUES (1)").await;
+
+    // EXPLAIN of a FOR UPDATE query must NOT acquire the row lock (inspection
+    // only). If it did, a competing NOWAIT lock in another session would fail.
+    let plan = rows_text(&mut a, "EXPLAIN SELECT id FROM t WHERE id = 1 FOR UPDATE").await;
+    assert!(!plan.is_empty(), "EXPLAIN produced a plan");
+
+    // A second session locking the same row NOWAIT must succeed — proving the
+    // EXPLAIN above left no lock behind.
+    let mut b = Session::new(db, "guardian");
+    ok(&mut b, "BEGIN").await;
+    ok(&mut b, "SELECT id FROM t WHERE id = 1 FOR UPDATE NOWAIT").await;
+    ok(&mut b, "ROLLBACK").await;
+}

@@ -61,6 +61,12 @@ impl LoadedTable {
             versions,
             indexes: index_defs
                 .into_iter()
+                // ANN (hnsw) indexes are not ordered-btree structures: they
+                // live in the engine-level `AnnRuntime` (RFC 0005), never as
+                // a per-statement `SecondaryIndex`. Materializing them here
+                // would both waste the build and wrongly offer them to
+                // equality-lookup planning.
+                .filter(|m| m.method != "hnsw")
                 .map(|m| LoadedIndex {
                     data: SecondaryIndex::new(m.unique),
                     meta: m,

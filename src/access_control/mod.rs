@@ -789,7 +789,7 @@ impl crate::traits::Store for KeyValueStoreAdapter {
         self.store.tracer()
     }
 
-    fn event_bus(&self) -> Arc<crate::p2p::EventBus> {
+    fn event_bus(&self) -> Arc<crate::events::EventBus> {
         self.store.event_bus()
     }
 
@@ -800,6 +800,10 @@ impl crate::traits::Store for KeyValueStoreAdapter {
 
 #[async_trait::async_trait]
 impl crate::traits::KeyValueStore for KeyValueStoreAdapter {
+    fn keys(&self) -> Vec<String> {
+        self.all().into_keys().collect()
+    }
+
     async fn put(
         &self,
         key: &str,

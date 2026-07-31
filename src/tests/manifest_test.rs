@@ -198,8 +198,9 @@ fn test_options_cbor_serialization() {
     options.set_name("test_controller".to_string());
     options.set_access("write".to_string(), vec!["user1".to_string()]);
 
-    let serialized = serde_cbor::to_vec(&options).unwrap();
-    let deserialized: CreateAccessControllerOptions = serde_cbor::from_slice(&serialized).unwrap();
+    let serialized = crate::guardian::cbor::to_vec(&options).unwrap();
+    let deserialized: CreateAccessControllerOptions =
+        crate::guardian::cbor::from_slice(&serialized).unwrap();
 
     assert_eq!(deserialized.address(), options.address());
     assert_eq!(deserialized.skip_manifest(), options.skip_manifest());
@@ -220,8 +221,8 @@ fn test_manifest_cbor_serialization() {
         params: options.clone(),
     };
 
-    let serialized = serde_cbor::to_vec(&manifest).unwrap();
-    let deserialized: Manifest = serde_cbor::from_slice(&serialized).unwrap();
+    let serialized = crate::guardian::cbor::to_vec(&manifest).unwrap();
+    let deserialized: Manifest = crate::guardian::cbor::from_slice(&serialized).unwrap();
 
     assert_eq!(deserialized.get_type, manifest.get_type);
     assert_eq!(deserialized.params.address(), manifest.params.address());
@@ -237,8 +238,9 @@ fn test_hash_hex_serialization() {
     let mut options = CreateAccessControllerOptions::new(hash, false, "iroh".to_string());
     options.set_access("write".to_string(), vec!["user1".to_string()]);
 
-    let serialized = serde_cbor::to_vec(&options).unwrap();
-    let deserialized: CreateAccessControllerOptions = serde_cbor::from_slice(&serialized).unwrap();
+    let serialized = crate::guardian::cbor::to_vec(&options).unwrap();
+    let deserialized: CreateAccessControllerOptions =
+        crate::guardian::cbor::from_slice(&serialized).unwrap();
 
     assert_eq!(deserialized.address(), hash);
     assert_eq!(
@@ -259,8 +261,9 @@ fn test_options_with_empty_access_serialization() {
     let mut options_with_empty = create_test_options();
     options_with_empty.set_access("write".to_string(), vec![]);
 
-    let serialized = serde_cbor::to_vec(&options_with_empty).unwrap();
-    let deserialized: CreateAccessControllerOptions = serde_cbor::from_slice(&serialized).unwrap();
+    let serialized = crate::guardian::cbor::to_vec(&options_with_empty).unwrap();
+    let deserialized: CreateAccessControllerOptions =
+        crate::guardian::cbor::from_slice(&serialized).unwrap();
 
     // Deve ter o campo write, mas vazio
     assert_eq!(deserialized.get_access("write").unwrap().len(), 0);
@@ -276,8 +279,9 @@ fn test_options_with_multiple_roles_serialization() {
     );
     options.set_access("admin".to_string(), vec!["admin1".to_string()]);
 
-    let serialized = serde_cbor::to_vec(&options).unwrap();
-    let deserialized: CreateAccessControllerOptions = serde_cbor::from_slice(&serialized).unwrap();
+    let serialized = crate::guardian::cbor::to_vec(&options).unwrap();
+    let deserialized: CreateAccessControllerOptions =
+        crate::guardian::cbor::from_slice(&serialized).unwrap();
 
     assert_eq!(deserialized.get_all_access().len(), 3);
     assert_eq!(deserialized.get_access("write").unwrap().len(), 1);
@@ -608,7 +612,7 @@ fn test_cbor_vs_json_size() {
         ],
     );
 
-    let cbor_bytes = serde_cbor::to_vec(&options).unwrap();
+    let cbor_bytes = crate::guardian::cbor::to_vec(&options).unwrap();
     let json_bytes = serde_json::to_string(&options).unwrap().into_bytes();
 
     println!("CBOR size: {} bytes", cbor_bytes.len());

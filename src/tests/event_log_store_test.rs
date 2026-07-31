@@ -11,7 +11,7 @@ use crate::address::{Address, GuardianDBAddress};
 use crate::guardian::error::{GuardianError, Result};
 use crate::log::identity::Identity;
 use crate::message_marshaler::PostcardMarshaler;
-use crate::p2p::messaging::one_on_one_channel::new_channel_factory;
+use crate::messaging::new_channel_factory;
 use crate::p2p::network::client::IrohClient;
 use crate::p2p::network::config::ClientConfig;
 use crate::stores::event_log_store::GuardianDBEventLogStore;
@@ -73,7 +73,7 @@ async fn create_test_store() -> Result<(GuardianDBEventLogStore, TempDir)> {
     let address = test_address().await;
 
     // Cria componentes necessários para o store
-    let event_bus = crate::p2p::EventBus::new();
+    let event_bus = crate::events::EventBus::new();
     let backend = client.backend().clone();
     let pubsub = Arc::new(
         backend
@@ -87,7 +87,7 @@ async fn create_test_store() -> Result<(GuardianDBEventLogStore, TempDir)> {
     let channel_factory = new_channel_factory(client.clone())
         .await
         .expect("Failed to create DirectChannelFactory");
-    let payload_emitter = crate::p2p::PayloadEmitter::new(&event_bus)
+    let payload_emitter = crate::events::PayloadEmitter::new(&event_bus)
         .await
         .expect("Failed to create PayloadEmitter");
     let direct_channel = channel_factory(Arc::new(payload_emitter), None)
@@ -144,7 +144,7 @@ async fn test_eventlog_creation_with_empty_address() {
         Arc::new(GuardianDBAddress::new(hash, "".to_string()));
 
     // Cria componentes necessários para o store
-    let event_bus = crate::p2p::EventBus::new();
+    let event_bus = crate::events::EventBus::new();
     let backend = client.backend().clone();
     let pubsub = Arc::new(
         backend
@@ -158,7 +158,7 @@ async fn test_eventlog_creation_with_empty_address() {
     let channel_factory = new_channel_factory(client.clone())
         .await
         .expect("Failed to create DirectChannelFactory");
-    let payload_emitter = crate::p2p::PayloadEmitter::new(&event_bus)
+    let payload_emitter = crate::events::PayloadEmitter::new(&event_bus)
         .await
         .expect("Failed to create PayloadEmitter");
     let direct_channel = channel_factory(Arc::new(payload_emitter), None)

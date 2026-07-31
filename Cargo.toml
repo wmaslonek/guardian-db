@@ -5,16 +5,22 @@ authors = ["William Maslonek <wmaslonek@icloud.com>"]
 license = "MIT OR Apache-2.0"
 edition = "2024"
 rust-version = "1.97.0"
-description = "High-performance, local-first decentralized database built on Rust and Iroh"
+description = "High-performance, local-first decentralized database that stores and processes data, built on Rust and Iroh"
 repository = "https://github.com/wmaslonek/guardian-db/"
 readme = "README.md"
 homepage = "https://www.willsearch.com.br/"
 documentation = "https://docs.rs/guardian-db"
-keywords = ["database", "p2p", "iroh", "decentralized", "crdt"]
-categories = ["database-implementations", "network-programming", "web-programming"]
+keywords = ["database", "local-first", "p2p", "sql", "decentralized"]
+categories = ["database-implementations", "network-programming", "web-programming", "wasm"]
 
 [features]
-default = []
+default = ["messaging"]
+# High-level P2P messaging (the `messaging` module): the default DirectChannel
+# transport between peers — one-on-one channels over the backend's shared
+# gossip layer. On by default because it is the built-in transport used by
+# GuardianDB::new; disabling it (--no-default-features) requires supplying
+# `options.direct_channel_factory` explicitly. Adds no extra dependencies.
+messaging = []
 odm = ["dep:guardian-db-derive", "uuid/v4"]
 # Administration RPC: a loopback socket server that exposes read/ops over a live
 # GuardianDB (the `sentinel` module + `guardian-sentinel-server` binary). Reuses
@@ -50,66 +56,148 @@ compute-nn = ["compute", "dep:wasmtime-wasi-nn", "dep:ort"]
 # and verifies advertised `Accel::Gpu` against the real CUDA availability.
 # Pulls the CUDA-enabled ONNX Runtime binaries (large download at build).
 compute-nn-cuda = ["compute-nn", "wasmtime-wasi-nn/onnx-cuda"]
+# Generative LLM inference for Guardian Compute (docs/rfcs/0004-compute-llm.md):
+# the LlmBackend trait, the owner-curated LlmRegistry with active
+# health-checking (RFC 0004 §6.1), and the OpenAI-compatible HTTP backend
+# (SSE token streaming) that fronts mesh-llm, colibri's server, llama.cpp,
+# ollama or vLLM. Later phases add the supervised colibri process driver and
+# streamed responses on COMPUTE_ALPN.
+compute-llm = ["compute", "dep:reqwest"]
+# Native colibri driver (RFC 0004 phase 3): supervises an upstream-built
+# `coli` child process and speaks its stdin/stdout serve protocol directly —
+# no Python. Full §6.4 supervisor: warmup deadline, exponential backoff with
+# a restart budget that trips, bounded queue, cancel/deadline handling, and
+# BLAKE3 model identity with a sidecar cache (§6.3).
+compute-llm-colibri = ["compute-llm"]
+# ANN vector search for the SQL engine (docs/rfcs/0005-vector-search.md
+# phase 1): engine-native HNSW index access method behind the pgvector-
+# compatible surface — `CREATE INDEX ... USING hnsw`, the `vector_*_ops`
+# opclasses, the top-k planner hook for `ORDER BY <col> <dist-op> <vec>
+# LIMIT k`, the `hnsw.ef_search` GUC family, tombstone/rebuild maintenance,
+# and persistent sidecar snapshots (§6.1). The HNSW graph is per-node
+# derived state, never replicated.
+vector-index = ["sql", "dep:hnsw_rs"]
+# Auto-embedding pipeline for the SQL engine (docs/rfcs/0005-vector-search.md
+# phase 2): the pluggable `Embedder` trait + owner-curated `EmbeddingRegistry`
+# (mirroring RFC 0004's LlmRegistry), an OpenAI-compatible HTTP embedding
+# backend, a deterministic test embedder, and the `EmbeddingService` that
+# watches the SQL change-feed and idempotently writes embeddings back into a
+# vector column (source-hash sidecar, provenance). Plus the SQL declaration
+# surface. Delegation to GPU peers activates additionally with `compute`.
+embedding = ["vector-index", "dep:reqwest"]
+# Host-side ONNX embedding backend for the pipeline: runs a local embedding
+# model via the wasi-nn ONNX backend, tokenizing with the HuggingFace
+# `tokenizers` crate. Self-contained (no embedding service required), heavier
+# build.
+embedding-onnx = ["embedding", "compute-nn", "dep:tokenizers"]
+# RAG helper (docs/rfcs/0005-vector-search.md phase 3): a thin retrieve →
+# augment → generate helper tying the vector index (phase 1) + auto-embedding
+# (phase 2) + the LLM layer (RFC 0004) together, with a query/corpus model
+# consistency check.
+rag = ["embedding", "compute-llm"]
+# Batteries-included encryption: the reference XChaCha20-Poly1305 implementation
+# of `PayloadCodec` (`stores::payload_codec`) and the encrypted-at-rest
+# `RedbKeystore` backend (`keystore`). The `PayloadCodec` *trait* itself is
+# always available and dependency-free, so applications supplying their own
+# scheme never pay for the AEAD dependency; this feature only adds the ready-made
+# implementations. Off by default: enabling it changes no default behaviour, it
+# only makes the implementations available to opt into.
+encryption = ["dep:chacha20poly1305"]
 
 [dependencies]
-async-trait = "0.1.89"
+
+# Async runtime & concurrency
+async-trait = "0.1.91"
 async-stream = "0.3.6"
-base64 = "0.22.1"
-byteorder = "1.5.0"
-chrono = { version = "0.4", features = ["serde"] }
-fastrand = "2.3"
-futures = "0.3.31"
-opentelemetry = "0.32.0"
+futures = "0.3.33"
+futures-lite = "2.6.1"
+tokio = { version = "1.53.1", features = ["full"] }
+tokio-stream = "0.1.19"
+tokio-util = "0.7.19"
 parking_lot = "0.12.4"
-serde = { version = "1.0.219", features = ["derive"] }
-serde_cbor = "0.11.2"
-serde_json = "1.0.143"
-tempfile = "3.21.0"
-thiserror = "2.0.18"
-tokio = { version = "1.47.1", features = ["full"] }
-tokio-stream = "0.1.17"
-tokio-util = "0.7.16"
-tracing = "0.1.41"
-tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
-rand = "0.10.2"
+
+# Serialization & encoding
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+ciborium = "0.2" # CBOR (manifests, access lists)
+postcard = { version = "1.1.3", features = ["use-std"] }
+base64 = "0.23.0"
 hex = "0.4.3"
-iroh = "1.0.2"
+byteorder = "1.5.0"
+bytes = "1.12.1"
+
+# Cryptography & hashing 
+blake3 = "1.8.2"
+ed25519-dalek = { version = "3.0.0-rc.0", features = ["serde"] }
+rand = "0.10.2"
+zeroize = "1.8"
+sha1 = { version = "0.11.0", optional = true }          # `sql` builtins (digest/hmac functions)
+sha2 = { version = "0.11.0", optional = true }          # `sql`
+md-5 = { version = "0.11.0", optional = true }          # `sql`
+hmac = { version = "0.13.0", optional = true }          # `sql`
+bcrypt = { version = "0.19.3", optional = true }        # `sql` (crypt/bcrypt)
+chacha20poly1305 = { version = "0.11.0", optional = true } # `encryption` (XChaCha20-Poly1305 codec + keystore)
+
+# P2P networking (Iroh)
+iroh = "1.0.3"
 iroh-io = "0.6.1"
 iroh-blobs = "0.103.0"
 iroh-gossip = "0.101.0"
 iroh-docs = "0.101.0"
 iroh-mdns-address-lookup = "0.4.0"
-bytes = "1.12.1"
-ed25519-dalek = { version = "3.0.0-rc.0", features = ["serde"] }
-uuid = { version = "1.23.5", features = ["serde"] }
-blake3 = "1.8.2"
-zeroize = "1.8"
+
+# Storage & caching
+redb = "4.1.0"
 lru = "0.18.1"
 zstd = "0.13.3"
-futures-lite = "2.6.1"
-postcard = { version = "1.1.3", features = ["use-std"] }
+tempfile = "3.21.0"
+
+# Observability
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+opentelemetry = "0.32.0"
+
+# Errors, time, IDs & misc
+thiserror = "2.0.19"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.24.0", features = ["serde"] }
+fastrand = "2.5.0" # non-crypto RNG (jitter/backoff)
+
+# Terminal UI: `sentinel`
 ratatui = "0.30.0"
-redb = "4.1.0"
-image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
 ratatui-image = { version = "11", optional = true, default-features = false, features = ["crossterm"] }
+image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
+
+# ODM: `odm`
 guardian-db-derive = { version = "0.17.0", path = "guardian-db-derive", optional = true }
+
+# SQL engine: `sql`
 sqlparser = { version = "0.62", optional = true }
-sha1 = { version = "0.11.0", optional = true }
-sha2 = { version = "0.11.0", optional = true }
-md-5 = { version = "0.11.0", optional = true }
-hmac = { version = "0.13.0", optional = true }
-bcrypt = { version = "0.19.2", optional = true }
+rust_decimal = { version = "1.37", features = ["serde"], optional = true }
 unicode-normalization = { version = "0.1", optional = true }
 rust-stemmers = { version = "1", optional = true }
-rust_decimal = { version = "1.37", features = ["serde"], optional = true }
-pgwire = { version = "0.40", optional = true }
-axum = { version = "0.8", optional = true, features = ["ws"] }
-tower = { version = "0.5", optional = true, features = ["util"] }
-graphql-parser = { version = "0.4", optional = true }
-wasmtime = { version = "46.0.1", default-features = false, features = ["runtime", "cranelift"], optional = true }
-sysinfo = { version = "0.39.6", optional = true }
-wasmtime-wasi-nn = { version = "46.0.1", default-features = false, features = ["onnx-download"], optional = true }
-ort = { version = "=2.0.0-rc.10", default-features = false, optional = true }
+
+# HTTP servers & clients
+pgwire = { version = "0.40.5", optional = true } # `pgwire` (Postgres wire server)
+axum = { version = "0.8", optional = true, features = ["ws"] } # `supabase`
+tower = { version = "0.5", optional = true, features = ["util"] } # `supabase`
+graphql-parser = { version = "0.4", optional = true } # `supabase` (/graphql/v1)
+reqwest = { version = "0.13.4", optional = true, default-features = false, features = [
+    "rustls",
+    "stream",
+    "json",
+    "http2",
+] }
+
+# Guardian Compute (WASM): `compute*`
+wasmtime = { version = "47.0.2", default-features = false, features = ["runtime", "cranelift"], optional = true }
+sysinfo = { version = "0.39.6", optional = true }       # capacity telemetry
+wasmtime-wasi-nn = { version = "47.0.2", default-features = false, features = ["onnx-download"], optional = true } # `compute-nn`
+ort = { version = "=2.0.0-rc.10", default-features = false, optional = true }  # `compute-nn` (ONNX Runtime; pinned, see wasi-nn)
+tokenizers = { version = "0.23.1", default-features = false, features = ["onig"], optional = true } # `embedding-onnx`
+
+# Vector search: `vector-index`
+hnsw_rs = { version = "0.3", default-features = false, optional = true }
 
 [dev-dependencies]
 tokio-test = "0.4"
@@ -118,11 +206,10 @@ dialoguer = "0.12.0"
 console = "0.16.4"
 chrono = "0.4"
 crossterm = "0.29.0"
-base64 = "0.22.1"
+base64 = "0.23.0"
 tokio-postgres = "0.7"
 tokio-tungstenite = "0.30.0"
-wat = "1.253.0"
-ciborium = "0.2"
+wat = "1.255.0"
 
 [[bin]]
 name = "guardian-sentinel"
@@ -149,6 +236,21 @@ name = "postgres_iroh_gateway"
 path = "examples/postgres_iroh_gateway.rs"
 required-features = ["pgwire"]
 
+[[example]]
+name = "llm_inference_demo"
+path = "examples/llm_inference_demo.rs"
+required-features = ["compute-llm"]
+
+[[example]]
+name = "vector_index_bench"
+path = "examples/vector_index_bench.rs"
+required-features = ["vector-index"]
+
+[[example]]
+name = "rag_demo"
+path = "examples/rag_demo.rs"
+required-features = ["rag"]
+
 [[test]]
 name = "sql_conformance"
 path = "tests/sql_conformance.rs"
@@ -168,6 +270,26 @@ required-features = ["sql"]
 name = "sql_extensions"
 path = "tests/sql_extensions.rs"
 required-features = ["sql"]
+
+[[test]]
+name = "sql_vector_index"
+path = "tests/sql_vector_index.rs"
+required-features = ["vector-index"]
+
+[[test]]
+name = "embedding_pipeline"
+path = "tests/embedding_pipeline.rs"
+required-features = ["embedding"]
+
+[[test]]
+name = "embedding_delegation"
+path = "tests/embedding_delegation.rs"
+required-features = ["embedding", "compute"]
+
+[[test]]
+name = "embedding_rag"
+path = "tests/embedding_rag.rs"
+required-features = ["rag"]
 
 [[test]]
 name = "sql_rls"

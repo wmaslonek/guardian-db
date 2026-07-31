@@ -77,6 +77,7 @@ fn create_test_options() -> CreateDBOptions {
         store_specific_opts: None,
         doc_ticket: None,
         read_only: None,
+        payload_codec: None,
     }
 }
 

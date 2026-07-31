@@ -1,5 +1,5 @@
+use guardian_db::events::{EventBus, PayloadEmitter};
 use guardian_db::guardian::error::Result;
-use guardian_db::p2p::{EventBus, PayloadEmitter};
 use guardian_db::traits::EventPubSubPayload;
 use serde::{Deserialize, Serialize};
 

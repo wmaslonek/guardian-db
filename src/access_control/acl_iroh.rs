@@ -193,7 +193,7 @@ impl IrohAccessController {
         .await
         .map_err(|e| GuardianError::Store(format!("Task join error: {}", e)))??;
 
-        let manifest: Manifest = serde_cbor::from_slice(&manifest_data)?;
+        let manifest: Manifest = crate::guardian::cbor::from_slice(&manifest_data)?;
 
         // 2. Read the permissions content using the manifest's address.
         let access_data_hash = manifest.params.address();
@@ -215,7 +215,8 @@ impl IrohAccessController {
         .await
         .map_err(|e| GuardianError::Store(format!("Task join error: {}", e)))??;
 
-        let write_access_data: CborWriteAccess = serde_cbor::from_slice(&access_data_bytes)?;
+        let write_access_data: CborWriteAccess =
+            crate::guardian::cbor::from_slice(&access_data_bytes)?;
 
         // 3. Extract the permissions directly from the CBOR.
         let write_access = write_access_data.write;
@@ -236,7 +237,7 @@ impl IrohAccessController {
             write: state.write_access.clone(),
         };
         // Serialize the CBOR structure into bytes.
-        let cbor_bytes = serde_cbor::to_vec(&cbor_data)?;
+        let cbor_bytes = crate::guardian::cbor::to_vec(&cbor_data)?;
 
         let client = self.client.clone();
         // Spawn a blocking task to handle the non-Send Iroh operations

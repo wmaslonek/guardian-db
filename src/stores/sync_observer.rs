@@ -1,8 +1,8 @@
-//! # Reactive Synchronizer
+//! # Sync Observer
 //!
-//! Reactive observability system for data synchronization between stores.
-//! Allows external components (UI, logs, monitoring) to observe the state
-//! of synchronization operations in real time.
+//! Reactive observability for store synchronization. Allows external
+//! components (UI, logs, monitoring) to observe the state of
+//! synchronization operations in real time.
 //!
 //! ## Components
 //!
@@ -11,10 +11,9 @@
 //! - **SyncEvent**: Events emitted during synchronization
 
 use crate::address::Address;
+use crate::events::EventBus;
 use crate::guardian::error::{GuardianError, Result};
 use crate::log::entry::Entry;
-use crate::p2p::EventBus;
-use crate::stores::events::{EventLoad, EventLoadProgress, EventReady, EventReplicated};
 use iroh_blobs::Hash;
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -155,7 +154,7 @@ impl SyncEvent {
 /// # Example
 ///
 /// ```rust,no_run
-/// use guardian_db::reactive_synchronizer::{SyncObserver, SyncEvent};
+/// use guardian_db::stores::sync_observer::{SyncObserver, SyncEvent};
 ///
 /// async fn monitor_sync(observer: SyncObserver) {
 ///     let mut receiver = observer.subscribe().await.unwrap();
@@ -323,54 +322,6 @@ impl SyncObserver {
             && let Err(e) = emitter.emit(event)
         {
             warn!("Failed to emit SyncEvent::Error: {}", e);
-        }
-    }
-}
-
-/// Converter from the old event system to the new one.
-impl From<EventLoad> for SyncEvent {
-    fn from(event: EventLoad) -> Self {
-        SyncEvent::Started {
-            address: event.address,
-            total: event.heads.len(),
-        }
-    }
-}
-
-impl From<EventLoadProgress> for SyncEvent {
-    fn from(event: EventLoadProgress) -> Self {
-        SyncEvent::Progress {
-            address: event.address,
-            hash: event.hash,
-            entry: event.entry,
-            processed: event.progress as usize,
-            total: event.max as usize,
-        }
-    }
-}
-
-impl From<EventReady> for SyncEvent {
-    fn from(event: EventReady) -> Self {
-        SyncEvent::Ready {
-            address: event.address,
-            heads: event.heads,
-        }
-    }
-}
-
-impl From<EventReplicated> for SyncEvent {
-    fn from(event: EventReplicated) -> Self {
-        // EventReplicated has no single hash, but rather multiple entries.
-        // We use the hash of the first entry as representative.
-        let hash = event
-            .entries
-            .first()
-            .map(|e| *e.hash())
-            .unwrap_or_else(|| iroh_blobs::Hash::from([0u8; 32]));
-
-        SyncEvent::Replicated {
-            address: event.address,
-            hash,
         }
     }
 }

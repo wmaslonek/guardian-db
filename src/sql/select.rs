@@ -152,7 +152,12 @@ impl Exec {
         let mut rowset = match query.body.as_ref() {
             // For a single SELECT block, ORDER BY is resolved with the input
             // (pre-projection) columns available, matching PostgreSQL.
-            SetExpr::Select(select) => self.exec_select(select, outer, query.order_by.as_ref())?,
+            SetExpr::Select(select) => {
+                // `LIMIT + OFFSET` as a top-k hint for the ANN planner hook
+                // (RFC 0005); `None` when absent or not constant-evaluable.
+                let limit_hint = self.limit_hint(query.limit_clause.as_ref(), outer);
+                self.exec_select(select, outer, query.order_by.as_ref(), limit_hint)?
+            }
             _ => {
                 let mut rs = self.exec_set_expr(&query.body, outer)?;
                 if let Some(order_by) = &query.order_by {
@@ -165,9 +170,34 @@ impl Exec {
         Ok(rowset)
     }
 
+    /// Evaluate `LIMIT + OFFSET` to a row-count hint for top-k planning.
+    /// `None` when there is no LIMIT or it does not evaluate to a
+    /// non-negative integer (the authoritative application remains
+    /// [`Self::apply_limit`]).
+    fn limit_hint(&self, limit: Option<&LimitClause>, outer: &[Frame]) -> Option<usize> {
+        let (limit_expr, offset_expr) = match limit {
+            None => return None,
+            Some(LimitClause::LimitOffset { limit, offset, .. }) => {
+                (limit.clone()?, offset.as_ref().map(|o| o.value.clone()))
+            }
+            Some(LimitClause::OffsetCommaLimit { offset, limit }) => {
+                (limit.clone(), Some(offset.clone()))
+            }
+        };
+        let lim = self.eval(&limit_expr, outer).ok()?.as_i64()?;
+        if lim < 0 {
+            return None;
+        }
+        let off = match offset_expr {
+            Some(e) => self.eval(&e, outer).ok()?.as_i64()?.max(0),
+            None => 0,
+        };
+        usize::try_from(lim).ok()?.checked_add(off as usize)
+    }
+
     fn exec_set_expr(&self, body: &SetExpr, outer: &[Frame]) -> Result<RowSet> {
         match body {
-            SetExpr::Select(select) => self.exec_select(select, outer, None),
+            SetExpr::Select(select) => self.exec_select(select, outer, None, None),
             SetExpr::Query(q) => self.exec_select_query(q, outer),
             SetExpr::Values(values) => self.exec_values(values, outer),
             SetExpr::SetOperation {
@@ -267,11 +297,13 @@ impl Exec {
 
     // ---- core single-block SELECT --------------------------------------
 
+    #[cfg_attr(not(feature = "vector-index"), allow(unused_variables))]
     fn exec_select(
         &self,
         select: &Select,
         outer: &[Frame],
         order_by: Option<&OrderBy>,
+        limit_hint: Option<usize>,
     ) -> Result<RowSet> {
         // Window functions are valid in the SELECT list and ORDER BY only;
         // PostgreSQL rejects them in the other clauses with 42P20.
@@ -292,11 +324,22 @@ impl Exec {
                 "window functions are not allowed in HAVING".into(),
             ));
         }
-        // Planner: prefer an index scan when a single base table is filtered by
-        // an equality on an indexed column; otherwise fall back to a full scan.
-        let from = match self.try_index_scan(select, outer)? {
+        // Planner. Highest preference: ANN top-k candidate scan for
+        // `ORDER BY <col> <dist-op> <query> LIMIT k` over an hnsw index
+        // (RFC 0005 §3.2 — the hook only *selects candidates*; ordering,
+        // filtering and projection below stay exact and unchanged). Next: an
+        // index scan when a single base table is filtered by an equality on
+        // an indexed column. Otherwise a full scan.
+        #[cfg(feature = "vector-index")]
+        let ann_from = self.try_ann_scan(select, outer, order_by, limit_hint)?;
+        #[cfg(not(feature = "vector-index"))]
+        let ann_from: Option<RowSet> = None;
+        let from = match ann_from {
             Some(rs) => rs,
-            None => self.exec_from(&select.from, outer)?,
+            None => match self.try_index_scan(select, outer)? {
+                Some(rs) => rs,
+                None => self.exec_from(&select.from, outer)?,
+            },
         };
         let filtered = self.apply_where(from, select.selection.as_ref(), outer)?;
         let group_exprs = match &select.group_by {
@@ -384,6 +427,309 @@ impl Exec {
             })
             .collect();
         Ok(Some(RowSet { schema, rows }))
+    }
+
+    /// Attempt an ANN top-k candidate scan (RFC 0005 §3.2 / §6.2).
+    ///
+    /// Pattern gate: single base table, no joins/grouping/aggregates/
+    /// DISTINCT, `ORDER BY <indexed vector column> <dist-op> <constant
+    /// vector> [ASC] [, tie-breakers...] LIMIT k`, a healthy `hnsw` index
+    /// whose opclass serves exactly that operator, and the `vector`
+    /// extension installed. Anything else returns `None` and the exact path
+    /// runs unchanged.
+    ///
+    /// On a hit the hook returns a *candidate* `RowSet`: the ANN-ranked rows
+    /// (a superset of the answer) plus every NULL-vector row appended (they
+    /// sort last under ASC/NULLS LAST, so including them is always correct
+    /// and lets them fill an under-full LIMIT exactly like PostgreSQL).
+    /// The normal WHERE / ORDER BY / LIMIT pipeline then runs *exactly* over
+    /// those candidates — approximation lives only in candidate selection.
+    ///
+    /// Filtered-search strategy (§6.2), both halves:
+    /// - **selective cutover**: when the WHERE clause has an indexed
+    ///   equality whose measured candidate count is within
+    ///   `hnsw.selectivity_threshold × k`, ANN is skipped entirely — the
+    ///   existing `try_index_scan` + exact sort is cheaper *and* exact;
+    /// - **adaptive growth**: otherwise candidates are post-filtered; while
+    ///   fewer than `k` survive the WHERE clause, the fetch size doubles
+    ///   (raising `ef` with it) until `k` survivors, the whole graph, or the
+    ///   `hnsw.ef_search × hnsw.ef_growth_cap` ceiling — past the ceiling
+    ///   the hook falls back to the exact scan rather than under-filling.
+    #[cfg(feature = "vector-index")]
+    fn try_ann_scan(
+        &self,
+        select: &Select,
+        outer: &[Frame],
+        order_by: Option<&OrderBy>,
+        limit_hint: Option<usize>,
+    ) -> Result<Option<RowSet>> {
+        use crate::relational::hnsw::VectorOpClass;
+        let k = match limit_hint {
+            Some(k) if k > 0 => k,
+            _ => return Ok(None),
+        };
+        let Some(ann) = self.ann.as_ref() else {
+            return Ok(None);
+        };
+        // `SET enable_indexscan = off` disables the approximate path — the
+        // documented way to force exact results (RFC 0005 §3.2).
+        if let Some(v) = self.vars.borrow().get("enable_indexscan")
+            && matches!(v.as_str(), "off" | "false" | "0")
+        {
+            return Ok(None);
+        }
+        if !self.catalog.extension_installed("vector") {
+            return Ok(None);
+        }
+        // Result-shape gates: candidate pre-selection must commute with the
+        // rest of the pipeline, which it only does for a plain projection.
+        if select_has_aggregate(select)
+            || select.distinct.is_some()
+            || !matches!(
+                &select.group_by,
+                GroupByExpr::Expressions(exprs, _) if exprs.is_empty()
+            )
+        {
+            return Ok(None);
+        }
+        if select.from.len() != 1 || !select.from[0].joins.is_empty() {
+            return Ok(None);
+        }
+        let (name, alias) = match &select.from[0].relation {
+            TableFactor::Table {
+                name,
+                alias,
+                args: None,
+                ..
+            } => (name, alias),
+            _ => return Ok(None),
+        };
+        let (schema, tname) = split_schema_table(name);
+        let Some(q) = self.catalog.resolve_table_name(schema.as_deref(), &tname) else {
+            return Ok(None);
+        };
+        let Some(loaded) = self.tables.get(&q) else {
+            return Ok(None);
+        };
+        let alias_name = alias
+            .as_ref()
+            .map(|a| ident_name(&a.name))
+            .unwrap_or_else(|| tname.clone());
+
+        // ORDER BY: first key must be `col <dist-op> const-vector` ascending
+        // with NULLS LAST (the index's native order); extra keys are fine —
+        // the exact sort below handles them over the candidates.
+        let exprs = match order_by.map(|ob| &ob.kind) {
+            Some(OrderByKind::Expressions(exprs)) if !exprs.is_empty() => exprs,
+            _ => return Ok(None),
+        };
+        let first = &exprs[0];
+        if !first.options.asc.unwrap_or(true) || first.options.nulls_first.unwrap_or(false) {
+            return Ok(None);
+        }
+        let Expr::BinaryOp { left, op, right } = &first.expr else {
+            return Ok(None);
+        };
+        let op_token = {
+            use sqlparser::ast::BinaryOperator as BO;
+            match op {
+                BO::LtDashGt => "<->",
+                BO::Spaceship => "<=>",
+                BO::Custom(s) if s == "<#>" => "<#>",
+                BO::Custom(s) if s == "<+>" => "<+>",
+                _ => return Ok(None),
+            }
+        };
+        // One side names the vector column, the other must be row-constant.
+        let column_of = |e: &Expr| -> Option<String> {
+            let (qual, col) = match e {
+                Expr::Identifier(ident) => (None, ident_name(ident)),
+                Expr::CompoundIdentifier(parts) if parts.len() == 2 => {
+                    (Some(ident_name(&parts[0])), ident_name(&parts[1]))
+                }
+                _ => return None,
+            };
+            if let Some(t) = qual
+                && t != alias_name
+            {
+                return None;
+            }
+            loaded.meta.column(&col).map(|_| col)
+        };
+        let (column, query_expr) = match (column_of(left), column_of(right)) {
+            (Some(c), None) => (c, right.as_ref()),
+            (None, Some(c)) => (c, left.as_ref()),
+            _ => return Ok(None),
+        };
+        let col_def = loaded.meta.column(&column).expect("resolved above");
+        let dims = match &col_def.ty {
+            SqlType::Vector(Some(d)) => *d as usize,
+            _ => return Ok(None),
+        };
+        // The matching hnsw index: same column, opclass serving this operator.
+        let Some(opclass) = VectorOpClass::for_operator(op_token) else {
+            return Ok(None);
+        };
+        let indexes = self.catalog.indexes_for_table(&q.schema, &q.name);
+        let Some(idx) = indexes.iter().find(|i| {
+            i.method == "hnsw"
+                && i.columns.len() == 1
+                && i.columns[0] == column
+                && i.opclasses.first().map(String::as_str) == Some(opclass.name())
+        }) else {
+            return Ok(None);
+        };
+        // The query vector must be row-constant: evaluation with no row frame
+        // fails on any column reference, which is exactly the bail we want.
+        let Ok(query_val) = self.eval(query_expr, outer) else {
+            return Ok(None);
+        };
+        let Ok(SqlValue::Vector(query_vec)) = query_val.cast(&col_def.ty) else {
+            // Let the exact path surface the proper error/NULL semantics.
+            return Ok(None);
+        };
+        if query_vec.len() != dims {
+            return Ok(None);
+        }
+
+        // GUCs (registered on the `vector` extension; SET overrides).
+        let guc = |name: &str, default: i64, lo: i64, hi: i64| -> i64 {
+            self.vars
+                .borrow()
+                .get(name)
+                .cloned()
+                .or_else(|| crate::sql::ext::default_guc(name).map(str::to_string))
+                .and_then(|v| v.trim().parse::<i64>().ok())
+                .unwrap_or(default)
+                .clamp(lo, hi)
+        };
+        let ef_search = guc("hnsw.ef_search", 40, 1, 1000) as usize;
+        let growth_cap = guc("hnsw.ef_growth_cap", 10, 1, 100) as usize;
+        let selectivity = guc("hnsw.selectivity_threshold", 10, 1, 1000) as usize;
+        let ef_ceiling = ef_search.saturating_mul(growth_cap);
+
+        // §6.2 selective cutover: measured (not estimated) via the existing
+        // secondary-index machinery. Within threshold → let `try_index_scan`
+        // + exact sort handle it.
+        if let Some(selection) = &select.selection
+            && let Some((eq_col, eq_expr)) = find_indexed_equality(selection, loaded)
+            && let Ok(value) = self.eval(eq_expr, outer)
+            && let Some(eq_def) = loaded.meta.column(&eq_col)
+            && let Ok(coerced) = value.cast(&eq_def.ty)
+            && let Some(ids) = loaded.index_lookup_eq(&eq_col, &coerced)
+            && ids.len() <= selectivity.saturating_mul(k)
+        {
+            self.plan_notes.borrow_mut().push(format!(
+                "Index Scan on {} (ann skipped: equality candidates {} within {} \u{00d7} k)",
+                q.name,
+                ids.len(),
+                selectivity
+            ));
+            return Ok(None);
+        }
+
+        let rls_hidden = self.rls_select_hidden(&q);
+        let visible = |rid: &str| rls_hidden.map(|h| !h.contains(rid)).unwrap_or(true);
+        let fields: Vec<FieldRef> = loaded
+            .meta
+            .columns
+            .iter()
+            .map(|c| FieldRef {
+                table: Some(alias_name.clone()),
+                name: c.name.clone(),
+                ty: c.ty.clone(),
+            })
+            .collect();
+        let row_schema = RowSchema::new(fields);
+        let tuple_of = |rid: &str| -> Option<Tuple> {
+            loaded.rows.get(rid).map(|values| {
+                loaded
+                    .meta
+                    .columns
+                    .iter()
+                    .map(|c| values.get(&c.name).cloned().unwrap_or(SqlValue::Null))
+                    .collect()
+            })
+        };
+        // NULL-vector rows sort last under the index's order; always append
+        // them so they can fill an under-full LIMIT (PostgreSQL semantics).
+        let null_rows: Vec<Tuple> = loaded
+            .rows
+            .iter()
+            .filter(|(rid, values)| {
+                visible(rid) && !matches!(values.get(&column), Some(SqlValue::Vector(_)))
+            })
+            .map(|(_, values)| {
+                loaded
+                    .meta
+                    .columns
+                    .iter()
+                    .map(|c| values.get(&c.name).cloned().unwrap_or(SqlValue::Null))
+                    .collect()
+            })
+            .collect();
+
+        // Adaptive growth loop (§6.2).
+        let mut fetch = k;
+        loop {
+            let ef = ef_search.max(fetch).min(ef_ceiling);
+            let req = crate::sql::ann::AnnQuery {
+                idx,
+                column: &column,
+                column_ty: &col_def.ty,
+                op: op_token,
+                query: &query_vec,
+                k: fetch,
+                ef,
+            };
+            let Some(ranked) = ann.candidates(&req, loaded) else {
+                return Ok(None);
+            };
+            // Exhaustion means "every live indexed row is already in the
+            // candidate set" — measured against the index's live count, NOT
+            // `ranked.len() < fetch`: an ef-bounded (filtered) HNSW
+            // traversal can legitimately return fewer than `fetch` results
+            // while plenty of unvisited nodes remain.
+            let exhausted = ann.live_count(idx).is_some_and(|live| ranked.len() >= live);
+            let rows: Vec<Tuple> = ranked
+                .iter()
+                .filter(|(rid, _)| visible(rid))
+                .filter_map(|(rid, _)| tuple_of(rid))
+                .collect();
+            let candidate_count = rows.len();
+            let mut rowset = RowSet {
+                schema: row_schema.clone(),
+                rows,
+            };
+            rowset.rows.extend(null_rows.iter().cloned());
+            // Enough WHERE survivors among the candidates?
+            let survivors = match &select.selection {
+                Some(selection) => self
+                    .apply_where(rowset.clone(), Some(selection), outer)?
+                    .rows
+                    .len(),
+                None => rowset.rows.len(),
+            };
+            if survivors >= k || exhausted {
+                self.plan_notes.borrow_mut().push(format!(
+                    "Ann Index Scan using {} on {} (op {}, ef {}, candidates {})",
+                    idx.name, q.name, op_token, ef, candidate_count
+                ));
+                return Ok(Some(rowset));
+            }
+            // Grow. Past the ceiling, fall back to the exact scan rather
+            // than returning fewer than k rows the table could satisfy.
+            let next = fetch.saturating_mul(2);
+            if ef_search.max(next) > ef_ceiling {
+                self.plan_notes.borrow_mut().push(format!(
+                    "Seq Scan on {} (ann abandoned: ef ceiling {} reached with {} of {} \
+                     survivors)",
+                    q.name, ef_ceiling, survivors, k
+                ));
+                return Ok(None);
+            }
+            fetch = next;
+        }
     }
 
     fn exec_from(&self, from: &[TableWithJoins], outer: &[Frame]) -> Result<RowSet> {

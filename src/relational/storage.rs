@@ -43,6 +43,27 @@ pub trait RelationalStorage: Send + Sync {
 
     /// Persist the catalog document.
     async fn save_catalog(&self, catalog: &Json) -> Result<()>;
+
+    /// A monotonic change counter for a collection, or `None` if the backend
+    /// cannot cheaply report one.
+    ///
+    /// The engine reloads and decodes a whole table view per statement (its
+    /// local-first "refresh then operate" model). When a backend can answer
+    /// "has this collection changed?" in O(1), the engine caches the decoded
+    /// view keyed by this counter and skips the rescan+decode+index-rebuild
+    /// on a hit (see [`crate::sql::engine::Database`]).
+    ///
+    /// Contract: the returned value **must strictly increase** whenever any
+    /// row in `collection` is added, changed, removed, or truncated —
+    /// including changes that arrive through replication and become visible
+    /// to [`scan`](Self::scan). Returning a value that fails to advance after
+    /// a visible change makes the engine serve stale reads. The default
+    /// implementation returns `None`, which disables caching (always
+    /// correct, never stale) — a backend opts into caching by overriding it.
+    fn generation(&self, collection: &str) -> Option<u64> {
+        let _ = collection;
+        None
+    }
 }
 
 /// Deterministic in-memory storage.
@@ -50,6 +71,9 @@ pub trait RelationalStorage: Send + Sync {
 pub struct MemoryStorage {
     collections: RwLock<BTreeMap<String, BTreeMap<String, Json>>>,
     catalog: RwLock<Option<Json>>,
+    /// Per-collection monotonic change counters (see
+    /// [`RelationalStorage::generation`]), bumped on every mutation.
+    generations: RwLock<BTreeMap<String, u64>>,
 }
 
 impl MemoryStorage {
@@ -65,6 +89,16 @@ impl MemoryStorage {
             .get(collection)
             .map(|c| c.len())
             .unwrap_or(0)
+    }
+
+    /// Bump a collection's change counter (any mutation advances it).
+    fn bump(&self, collection: &str) {
+        *self
+            .generations
+            .write()
+            .unwrap()
+            .entry(collection.to_string())
+            .or_insert(0) += 1;
     }
 }
 
@@ -96,6 +130,7 @@ impl RelationalStorage for MemoryStorage {
             .entry(collection.to_string())
             .or_default()
             .insert(row_id.to_string(), doc.clone());
+        self.bump(collection);
         Ok(())
     }
 
@@ -103,6 +138,7 @@ impl RelationalStorage for MemoryStorage {
         if let Some(c) = self.collections.write().unwrap().get_mut(collection) {
             c.remove(row_id);
         }
+        self.bump(collection);
         Ok(())
     }
 
@@ -110,6 +146,7 @@ impl RelationalStorage for MemoryStorage {
         if let Some(c) = self.collections.write().unwrap().get_mut(collection) {
             c.clear();
         }
+        self.bump(collection);
         Ok(())
     }
 
@@ -120,6 +157,17 @@ impl RelationalStorage for MemoryStorage {
     async fn save_catalog(&self, catalog: &Json) -> Result<()> {
         *self.catalog.write().unwrap() = Some(catalog.clone());
         Ok(())
+    }
+
+    fn generation(&self, collection: &str) -> Option<u64> {
+        Some(
+            self.generations
+                .read()
+                .unwrap()
+                .get(collection)
+                .copied()
+                .unwrap_or(0),
+        )
     }
 }
 
@@ -139,6 +187,27 @@ mod tests {
         assert_eq!(s.scan("c").await.unwrap().len(), 1);
         s.truncate("c").await.unwrap();
         assert_eq!(s.scan("c").await.unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn generation_advances_on_every_mutation() {
+        let s = MemoryStorage::new();
+        // Unknown collection reports a stable baseline.
+        assert_eq!(s.generation("c"), Some(0));
+        s.put("c", "1", &json!({"a": 1})).await.unwrap();
+        let g1 = s.generation("c").unwrap();
+        assert!(g1 > 0);
+        // Every mutation strictly advances it.
+        s.put("c", "2", &json!({"a": 2})).await.unwrap();
+        let g2 = s.generation("c").unwrap();
+        assert!(g2 > g1);
+        s.delete("c", "1").await.unwrap();
+        let g3 = s.generation("c").unwrap();
+        assert!(g3 > g2);
+        s.truncate("c").await.unwrap();
+        assert!(s.generation("c").unwrap() > g3);
+        // Independent collections keep independent counters.
+        assert_eq!(s.generation("other"), Some(0));
     }
 
     #[tokio::test]

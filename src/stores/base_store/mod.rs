@@ -1,21 +1,21 @@
 use crate::access_control::{acl_simple::SimpleAccessController, traits::AccessController};
 use crate::address::Address;
 use crate::data_store::Datastore;
+use crate::events::{Emitter, EventBus};
 use crate::events::{EmitterInterface, EventEmitter};
 use crate::guardian::error::{GuardianError, Result};
 use crate::log::access_control::{CanAppendAdditionalContext, LogEntry};
 use crate::log::identity_provider::{GuardianDBIdentityProvider, IdentityProvider};
 use crate::log::{Log, LogOptions, entry::Entry, identity::Identity};
 use crate::p2p::network::client::IrohClient;
-use crate::p2p::{Emitter, EventBus};
 use crate::stores::events::{
     EventLoad, EventLoadProgress, EventReady, EventReplicate, EventReplicateProgress,
     EventReplicated, EventWrite,
 };
 use crate::stores::operation::Operation;
 use crate::traits::{
-    DirectChannel, MessageExchangeHeads, MessageMarshaler, NewStoreOptions, PubSubInterface,
-    PubSubTopic, Store, StoreIndex, TracerWrapper,
+    DirectChannel, MessageExchangeHeads, MessageMarshaler, NewStoreOptions, PubSub, PubSubTopic,
+    Store, StoreIndex, TracerWrapper,
 };
 use iroh::EndpointId as NodeId;
 use iroh_blobs::Hash;
@@ -350,7 +350,7 @@ pub struct BaseStore {
     log_and_index: LogAndIndex,
 
     // --- Replication Components ---
-    pubsub: Arc<dyn PubSubInterface<Error = GuardianError> + Send + Sync>,
+    pubsub: Arc<dyn PubSub<Error = GuardianError> + Send + Sync>,
     message_marshaler: Arc<dyn MessageMarshaler<Error = GuardianError> + Send + Sync>,
     direct_channel:
         Arc<tokio::sync::Mutex<Arc<dyn DirectChannel<Error = GuardianError> + Send + Sync>>>,
@@ -363,7 +363,7 @@ pub struct BaseStore {
     emitters: Emitters,
     span: Span,
     tracer: Arc<TracerWrapper>,
-    sync_observer: Arc<crate::reactive_synchronizer::SyncObserver>,
+    sync_observer: Arc<crate::stores::sync_observer::SyncObserver>,
 
     // --- Retry Metrics for P2P Communication ---
     retry_metrics: Arc<Mutex<RetryMetrics>>,
@@ -718,7 +718,7 @@ impl BaseStore {
     }
 
     /// Returns access to the store's PubSub.
-    pub fn pubsub(&self) -> Arc<dyn PubSubInterface<Error = GuardianError> + Send + Sync> {
+    pub fn pubsub(&self) -> Arc<dyn PubSub<Error = GuardianError> + Send + Sync> {
         self.pubsub.clone()
     }
 
@@ -742,7 +742,7 @@ impl BaseStore {
     ///
     /// Allows external components to observe the progress of synchronization
     /// and replication operations in real time.
-    pub fn sync_observer(&self) -> Arc<crate::reactive_synchronizer::SyncObserver> {
+    pub fn sync_observer(&self) -> Arc<crate::stores::sync_observer::SyncObserver> {
         self.sync_observer.clone()
     }
 
@@ -1176,6 +1176,7 @@ impl BaseStore {
             store_specific_opts: None,
             doc_ticket: None,
             read_only: None,
+            payload_codec: None,
         });
         let cancellation_token = CancellationToken::new();
 
@@ -1356,7 +1357,7 @@ impl BaseStore {
             emitters,
             span,
             tracer,
-            sync_observer: Arc::new(crate::reactive_synchronizer::SyncObserver::new(
+            sync_observer: Arc::new(crate::stores::sync_observer::SyncObserver::new(
                 Arc::new(event_bus),
                 address.clone(),
             )),
@@ -1825,33 +1826,9 @@ impl BaseStore {
             shared_topic_name, self.id
         );
 
-        // **Since PubSubInterface::topic_subscribe requires &mut self, but we have Arc<dyn PubSubInterface>,
-        // we use a concrete-type-based approach when available.
-        let topic = if let Some(core_api_pubsub) = self
-            .pubsub
-            .as_ref()
-            .as_any()
-            .downcast_ref::<std::sync::Arc<crate::p2p::messaging::CoreApiPubSub>>()
-        {
-            // Use the internal method that works with &self.
-            debug!("Using CoreApiPubSub for topic subscription");
-            core_api_pubsub
-                .topic_subscribe_internal(&shared_topic_name)
-                .await?
-        } else if let Some(epidemic_pubsub) =
-            self.pubsub
-                .as_ref()
-                .as_any()
-                .downcast_ref::<crate::p2p::network::core::gossip::EpidemicPubSub>()
-        {
-            // Use EpidemicPubSub directly for replication.
-            debug!("Using EpidemicPubSub for topic subscription");
-            epidemic_pubsub.topic_subscribe(&shared_topic_name).await?
-        } else {
-            return Err(GuardianError::Store(
-                "Unknown PubSub implementation type".to_string(),
-            ));
-        };
+        // Subscribe through the PubSub trait; each implementation
+        // handles its own topic caching.
+        let topic = self.pubsub.topic_subscribe(&shared_topic_name).await?;
 
         debug!(
             "Successfully created topic '{}' for replication",
@@ -2111,47 +2088,20 @@ impl BaseStore {
                     node_id, topic_name
                 );
 
-                if let Some(epidemic_pubsub) =
-                    self.pubsub
-                        .as_ref()
-                        .as_any()
-                        .downcast_ref::<crate::p2p::network::core::gossip::EpidemicPubSub>()
-                {
-                    if let Err(e) = epidemic_pubsub
-                        .subscribe_with_peers(&topic_name, vec![node_id])
-                        .await
-                    {
-                        warn!(
-                            "[BIDIRECTIONAL_MESH] Failed to establish bidirectional connection: {}",
-                            e
-                        );
-                    } else {
-                        debug!(
-                            "[BIDIRECTIONAL_MESH] Successfully established bidirectional connection with {:?}",
-                            node_id
-                        );
-                    }
-                } else if let Some(core_api_pubsub) = self
+                if let Err(e) = self
                     .pubsub
-                    .as_ref()
-                    .as_any()
-                    .downcast_ref::<std::sync::Arc<crate::p2p::messaging::CoreApiPubSub>>()
+                    .subscribe_with_peers(&topic_name, vec![node_id])
+                    .await
                 {
-                    if let Err(e) = core_api_pubsub
-                        .epidemic_pubsub
-                        .subscribe_with_peers(&topic_name, vec![node_id])
-                        .await
-                    {
-                        warn!(
-                            "[BIDIRECTIONAL_MESH] Failed to establish bidirectional connection (CoreApiPubSub): {}",
-                            e
-                        );
-                    } else {
-                        debug!(
-                            "[BIDIRECTIONAL_MESH] Successfully established bidirectional connection with {:?} (CoreApiPubSub)",
-                            node_id
-                        );
-                    }
+                    warn!(
+                        "[BIDIRECTIONAL_MESH] Failed to establish bidirectional connection: {}",
+                        e
+                    );
+                } else {
+                    debug!(
+                        "[BIDIRECTIONAL_MESH] Successfully established bidirectional connection with {:?}",
+                        node_id
+                    );
                 }
 
                 // Wait a bit for the mesh to stabilize bidirectionally.
@@ -2387,48 +2337,20 @@ impl BaseStore {
             peer, shared_topic_name
         );
 
-        if let Some(core_api_pubsub) = self
+        // Re-subscribe with the peer as bootstrap to form a mesh.
+        // FIX: Use shared_topic_name instead of self.id to ensure the same TopicId.
+        if let Err(e) = self
             .pubsub
-            .as_ref()
-            .as_any()
-            .downcast_ref::<std::sync::Arc<crate::p2p::messaging::CoreApiPubSub>>()
+            .get_or_create_topic_with_peers(&shared_topic_name, vec![peer])
+            .await
         {
-            // Re-subscribe with the peer as bootstrap to form a mesh.
-            // FIX: Use shared_topic_name instead of self.id to ensure the same TopicId.
-            if let Err(e) = core_api_pubsub
-                .epidemic_pubsub
-                .get_or_create_topic_with_peers(&shared_topic_name, vec![peer])
-                .await
-            {
-                warn!("[GOSSIP_MESH] Failed to add peer to gossip mesh: {}", e);
-                // Does not fail - continues with exchange_heads even without a mesh.
-            } else {
-                debug!(
-                    "[GOSSIP_MESH] Successfully added peer {:?} to gossip mesh",
-                    peer
-                );
-            }
-        } else if let Some(epidemic_pubsub) =
-            self.pubsub
-                .as_ref()
-                .as_any()
-                .downcast_ref::<crate::p2p::network::core::gossip::EpidemicPubSub>()
-        {
-            // FIX: Use shared_topic_name instead of self.id to ensure the same TopicId.
-            if let Err(e) = epidemic_pubsub
-                .get_or_create_topic_with_peers(&shared_topic_name, vec![peer])
-                .await
-            {
-                warn!(
-                    "[GOSSIP_MESH] Failed to add peer to gossip mesh (EpidemicPubSub): {}",
-                    e
-                );
-            } else {
-                debug!(
-                    "[GOSSIP_MESH] Successfully added peer {:?} to gossip mesh (EpidemicPubSub)",
-                    peer
-                );
-            }
+            warn!("[GOSSIP_MESH] Failed to add peer to gossip mesh: {}", e);
+            // Does not fail - continues with exchange_heads even without a mesh.
+        } else {
+            debug!(
+                "[GOSSIP_MESH] Successfully added peer {:?} to gossip mesh",
+                peer
+            );
         }
 
         // Small delay to allow the mesh to form.
@@ -2637,155 +2559,67 @@ impl BaseStore {
 
         // **CRITICAL FIX**: Before publishing, ensure the target peer is in the mesh.
         // Re-subscribing with the peer as bootstrap ensures iroh-gossip forms a connection.
-        if let Some(epidemic_pubsub) =
-            self.pubsub
-                .as_ref()
-                .as_any()
-                .downcast_ref::<crate::p2p::network::core::gossip::EpidemicPubSub>()
+        // All mesh operations go through the PubSub trait, so any
+        // implementation works without downcasting.
+        debug!(
+            "[EXCHANGE_HEADS] Adding peer {:?} to gossip mesh before publishing",
+            peer
+        );
+
+        // Add the peer to the mesh via subscribe_with_peers.
+        // Does not fail if it cannot add; tries to publish anyway.
+        if let Err(e) = self
+            .pubsub
+            .subscribe_with_peers(topic_name, vec![peer])
+            .await
         {
-            debug!(
-                "[EXCHANGE_HEADS] Adding peer {:?} to gossip mesh before publishing",
-                peer
+            warn!(
+                "[EXCHANGE_HEADS] Failed to add peer to mesh (continuing anyway): {}",
+                e
             );
-
-            // Add the peer to the mesh via subscribe_with_peers.
-            epidemic_pubsub
-                .subscribe_with_peers(topic_name, vec![peer])
-                .await
-                .map_err(|e| {
-                    warn!(
-                        "[EXCHANGE_HEADS] Failed to add peer to mesh (continuing anyway): {}",
-                        e
-                    );
-                    GuardianError::Store(format!("Failed to add peer to mesh: {}", e))
-                })
-                .ok(); // Does not fail if it cannot add; tries to publish anyway.
-
-            // **CRITICAL FIX**: Check that the peer is actually connected before publishing.
-            // This avoids sending messages when the mesh is not yet formed bilaterally.
-            let iroh_topic = epidemic_pubsub.get_topic(topic_name).await;
-            if let Some(iroh_topic) = iroh_topic {
-                let mut attempts = 0;
-                const MAX_WAIT_ATTEMPTS: u32 = 30; // 30 * 100ms = 3 seconds max.
-
-                loop {
-                    let peers = iroh_topic.list_peers().await;
-                    let peer_connected = peers.contains(&peer);
-
-                    if peer_connected {
-                        debug!(
-                            "[EXCHANGE_HEADS] Peer {:?} confirmed in mesh, proceeding with broadcast",
-                            peer
-                        );
-                        break;
-                    }
-
-                    attempts += 1;
-                    if attempts >= MAX_WAIT_ATTEMPTS {
-                        warn!(
-                            "[EXCHANGE_HEADS] Timeout waiting for peer {:?} to appear in mesh after {}ms",
-                            peer,
-                            attempts * 100
-                        );
-                        // Continue anyway - it may work.
-                        break;
-                    }
-
-                    debug!(
-                        "[EXCHANGE_HEADS] Waiting for peer {:?} to appear in mesh (attempt {}/{})",
-                        peer, attempts, MAX_WAIT_ATTEMPTS
-                    );
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                }
-            }
-
-            epidemic_pubsub
-                .publish_to_topic(topic_name, &payload)
-                .await
-                .map_err(|e| {
-                    error!(
-                        "[EXCHANGE_HEADS] Failed to broadcast via EpidemicPubSub: {}",
-                        e
-                    );
-                    GuardianError::Store(format!("Failed to broadcast via gossip: {}", e))
-                })?;
-        } else if let Some(core_api_pubsub) =
-            self.pubsub
-                .as_ref()
-                .as_any()
-                .downcast_ref::<crate::p2p::messaging::CoreApiPubSub>()
-        {
-            // For CoreApiPubSub, use the internal method.
-            debug!(
-                "[EXCHANGE_HEADS] Adding peer {:?} to gossip mesh before publishing (CoreApiPubSub)",
-                peer
-            );
-
-            core_api_pubsub
-                .epidemic_pubsub
-                .subscribe_with_peers(topic_name, vec![peer])
-                .await
-                .map_err(|e| {
-                    warn!(
-                        "[EXCHANGE_HEADS] Failed to add peer to mesh (continuing anyway): {}",
-                        e
-                    );
-                    GuardianError::Store(format!("Failed to add peer to mesh: {}", e))
-                })
-                .ok();
-
-            // **CRITICAL FIX**: Check that the peer is actually connected before publishing.
-            let iroh_topic = core_api_pubsub.epidemic_pubsub.get_topic(topic_name).await;
-            if let Some(iroh_topic) = iroh_topic {
-                let mut attempts = 0;
-                const MAX_WAIT_ATTEMPTS: u32 = 30; // 30 * 100ms = 3 seconds max.
-
-                loop {
-                    let peers = iroh_topic.list_peers().await;
-                    let peer_connected = peers.contains(&peer);
-
-                    if peer_connected {
-                        debug!(
-                            "[EXCHANGE_HEADS] Peer {:?} confirmed in mesh (CoreApiPubSub), proceeding with broadcast",
-                            peer
-                        );
-                        break;
-                    }
-
-                    attempts += 1;
-                    if attempts >= MAX_WAIT_ATTEMPTS {
-                        warn!(
-                            "[EXCHANGE_HEADS] Timeout waiting for peer {:?} to appear in mesh after {}ms (CoreApiPubSub)",
-                            peer,
-                            attempts * 100
-                        );
-                        break;
-                    }
-
-                    debug!(
-                        "[EXCHANGE_HEADS] Waiting for peer {:?} to appear in mesh (attempt {}/{}) (CoreApiPubSub)",
-                        peer, attempts, MAX_WAIT_ATTEMPTS
-                    );
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                }
-            }
-
-            core_api_pubsub
-                .epidemic_pubsub
-                .publish_to_topic(topic_name, &payload)
-                .await
-                .map_err(|e| {
-                    error!(
-                        "[EXCHANGE_HEADS] Failed to broadcast via CoreApiPubSub: {}",
-                        e
-                    );
-                    GuardianError::Store(format!("Failed to broadcast via gossip: {}", e))
-                })?;
-        } else {
-            return Err(GuardianError::Store(
-                "Unknown PubSub implementation - cannot publish".to_string(),
-            ));
         }
+
+        // **CRITICAL FIX**: Check that the peer is actually connected before publishing.
+        // This avoids sending messages when the mesh is not yet formed bilaterally.
+        let mut attempts = 0;
+        const MAX_WAIT_ATTEMPTS: u32 = 30; // 30 * 100ms = 3 seconds max.
+
+        // `topic_peers` returns None when the topic is not subscribed, in which
+        // case there is no mesh to wait for.
+        while let Some(peers) = self.pubsub.topic_peers(topic_name).await {
+            if peers.contains(&peer) {
+                debug!(
+                    "[EXCHANGE_HEADS] Peer {:?} confirmed in mesh, proceeding with broadcast",
+                    peer
+                );
+                break;
+            }
+
+            attempts += 1;
+            if attempts >= MAX_WAIT_ATTEMPTS {
+                warn!(
+                    "[EXCHANGE_HEADS] Timeout waiting for peer {:?} to appear in mesh after {}ms",
+                    peer,
+                    attempts * 100
+                );
+                // Continue anyway - it may work.
+                break;
+            }
+
+            debug!(
+                "[EXCHANGE_HEADS] Waiting for peer {:?} to appear in mesh (attempt {}/{})",
+                peer, attempts, MAX_WAIT_ATTEMPTS
+            );
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
+
+        self.pubsub
+            .publish_to_topic(topic_name, &payload)
+            .await
+            .map_err(|e| {
+                error!("[EXCHANGE_HEADS] Failed to broadcast via gossip: {}", e);
+                GuardianError::Store(format!("Failed to broadcast via gossip: {}", e))
+            })?;
 
         debug!(
             "[EXCHANGE_HEADS] Successfully broadcast {} entries to all peers via gossip topic",

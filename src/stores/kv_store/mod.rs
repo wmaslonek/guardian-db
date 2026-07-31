@@ -2,13 +2,14 @@ use crate::access_control::acl_simple::SimpleAccessController;
 use crate::access_control::traits::AccessController;
 use crate::address::Address;
 use crate::data_store::Datastore;
+use crate::events::EventBus;
 use crate::events::EventEmitter;
 use crate::guardian::error::{GuardianError, Result};
 use crate::log::identity::Identity;
 use crate::log::lamport_clock::LamportClock;
-use crate::p2p::EventBus;
 use crate::p2p::network::core::docs::WillowDocs;
 use crate::stores::operation::Operation;
+use crate::stores::payload_codec::{RecordCtx, SharedPayloadCodec, codec_or_identity};
 use crate::traits::{KeyValueStore, NewStoreOptions, Store, StoreIndex, TracerWrapper};
 use bytes::Bytes;
 use iroh_docs::{AuthorId, Capability, api::Doc, store::Query};
@@ -237,6 +238,11 @@ pub struct GuardianDBKeyValue {
     /// Whether this replica may originate writes. `false` when the store was opened read-only
     /// (via `read_only` option) or imported from a read-only `DocTicket` (no namespace secret).
     writable: bool,
+    /// Transforms record values on the way to and from iroh-docs. Defaults to the no-op
+    /// `IdentityCodec`, which stores payloads verbatim. The in-memory `index` mirrors the
+    /// **stored** (encoded) bytes, so reads decode and writes encode — see the module docs
+    /// of [`crate::stores::payload_codec`].
+    payload_codec: SharedPayloadCodec,
 }
 
 #[async_trait::async_trait]
@@ -365,18 +371,20 @@ impl Store for GuardianDBKeyValue {
 
         match op.op() {
             "PUT" => {
-                let value = op.value().to_vec();
+                // The operation carries an application payload, so it goes through the
+                // codec exactly like put_impl does.
+                let stored = self.encode_value(&key, op.value().to_vec())?;
                 self.docs
                     .set_bytes(
                         &self.doc_handle,
                         self.author_id,
                         Bytes::from(key.clone().into_bytes()),
-                        Bytes::from(value.clone()),
+                        Bytes::from(stored.clone()),
                     )
                     .await?;
 
-                // Update the local index.
-                self.index.insert(key, value);
+                // Update the local index (stored form).
+                self.index.insert(key, stored);
             }
             "DEL" => {
                 self.docs
@@ -452,7 +460,13 @@ impl GuardianDBKeyValue {
 #[async_trait::async_trait]
 impl KeyValueStore for GuardianDBKeyValue {
     fn all(&self) -> HashMap<String, Vec<u8>> {
-        self.index.get_all()
+        // Decoded, matching `get()`. Records this replica cannot decode are omitted.
+        self.decode_map(self.index.get_all())
+    }
+
+    fn keys(&self) -> Vec<String> {
+        // No decoding: reports what is stored, not what is readable.
+        GuardianDBKeyValue::keys(self)
     }
 
     async fn put(&self, key: &str, value: Vec<u8>) -> Result<Operation> {
@@ -526,7 +540,71 @@ impl GuardianDBKeyValue {
         }
     }
 
+    /// Encodes an application payload into the bytes to store for `key`.
+    fn encode_value(&self, key: &str, plaintext: Vec<u8>) -> Result<Vec<u8>> {
+        let address = self.cached_address.to_string();
+        let ctx = RecordCtx::new(&address, key);
+        self.payload_codec.encode(&ctx, &plaintext)
+    }
+
+    /// Decodes stored bytes back into an application payload for `key`.
+    fn decode_value(&self, key: &str, stored: Vec<u8>) -> Result<Vec<u8>> {
+        let address = self.cached_address.to_string();
+        let ctx = RecordCtx::new(&address, key);
+        self.payload_codec.decode(&ctx, &stored)
+    }
+
+    /// Decodes every entry of a stored map, dropping the ones this node cannot read.
+    ///
+    /// A namespace legitimately may contain records encoded with key material this
+    /// replica does not hold, so a decode failure is a skipped record and a warning —
+    /// never an error that would fail the whole listing.
+    fn decode_map(&self, stored: HashMap<String, Vec<u8>>) -> HashMap<String, Vec<u8>> {
+        let address = self.cached_address.to_string();
+        let mut out = HashMap::with_capacity(stored.len());
+        let mut undecodable = 0usize;
+        for (key, value) in stored {
+            let ctx = RecordCtx::new(&address, &key);
+            match self.payload_codec.decode(&ctx, &value) {
+                Ok(plaintext) => {
+                    out.insert(key, plaintext);
+                }
+                Err(_) => undecodable += 1,
+            }
+        }
+        if undecodable > 0 {
+            warn!(
+                codec = self.payload_codec.codec_id(),
+                skipped = undecodable,
+                "Skipped records that could not be decoded with the configured payload codec"
+            );
+        }
+        out
+    }
+
+    /// Returns the raw, still-encoded bytes held in the index for `key`.
+    ///
+    /// Test-only: lets the suite assert what actually reaches storage, which is the
+    /// whole point of a payload codec and is otherwise invisible through the API.
+    #[cfg(test)]
+    pub(crate) fn stored_value_for_test(&self, key: &str) -> Option<Vec<u8>> {
+        self.index.get_value(key)
+    }
+
+    /// Injects already-encoded bytes straight into the index, bypassing the codec.
+    ///
+    /// Test-only: reproduces a record replicated from a peer whose key material this
+    /// node does not have, which is otherwise only reachable by standing up two
+    /// synchronizing nodes.
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn put_raw_for_test(&self, key: &str, stored: Vec<u8>) {
+        self.index.insert(key.to_string(), stored);
+    }
+
     /// Returns the number of key-value pairs in the store.
+    ///
+    /// Counts stored records, including any this replica cannot decode.
     pub fn len(&self) -> usize {
         self.index.len()
     }
@@ -537,18 +615,26 @@ impl GuardianDBKeyValue {
     }
 
     /// Checks whether a key exists in the store.
+    ///
+    /// Keys are never transformed by a payload codec, so this needs no decoding
+    /// and answers for records this replica cannot read.
     pub fn contains_key(&self, key: &str) -> bool {
         self.index.get_value(key).is_some()
     }
 
     /// Returns all keys in the store.
+    ///
+    /// Keys are stored in the clear, so this includes records whose values this
+    /// replica cannot decode.
     pub fn keys(&self) -> Vec<String> {
         self.index.get_all().keys().cloned().collect()
     }
 
-    /// Returns all key-value pairs in the store.
+    /// Returns all key-value pairs in the store, decoded.
+    ///
+    /// Records that fail to decode are omitted (see [`Self::decode_map`]).
     pub fn all(&self) -> HashMap<String, Vec<u8>> {
-        self.index.get_all()
+        self.decode_map(self.index.get_all())
     }
 
     /// Synchronizes the local index with the current state of the iroh-docs document.
@@ -619,21 +705,25 @@ impl GuardianDBKeyValue {
             ));
         }
 
+        // Encode before anything leaves this function: iroh-docs and the local index must
+        // only ever see stored-form bytes. With the default IdentityCodec this is a clone.
+        let stored = self.encode_value(key, value.clone())?;
+
         // Write to the iroh-docs document.
         self.docs
             .set_bytes(
                 &self.doc_handle,
                 self.author_id,
                 Bytes::from(key.as_bytes().to_vec()),
-                Bytes::from(value.clone()),
+                Bytes::from(stored.clone()),
             )
             .await
             .map_err(|e| {
                 GuardianError::Store(format!("Error writing key '{}' to iroh-docs: {}", key, e))
             })?;
 
-        // Update the local index immediately.
-        self.index.insert(key.to_string(), value.clone());
+        // Update the local index immediately (stored form, mirroring iroh-docs).
+        self.index.insert(key.to_string(), stored);
 
         debug!("PUT key='{}' ({} bytes) via iroh-docs", key, value.len());
 
@@ -699,8 +789,11 @@ impl GuardianDBKeyValue {
             return Err(GuardianError::Store("The key cannot be empty".to_string()));
         }
 
-        // Query the local index (mirrors the iroh-docs state).
-        Ok(self.index.get_value(key))
+        // Query the local index (mirrors the iroh-docs state in stored form) and decode.
+        match self.index.get_value(key) {
+            Some(stored) => self.decode_value(key, stored).map(Some),
+            None => Ok(None),
+        }
     }
 
     pub fn get_type(&self) -> &'static str {
@@ -952,6 +1045,7 @@ impl GuardianDBKeyValue {
             emitter_interface,
             empty_log,
             writable,
+            payload_codec: codec_or_identity(opts.payload_codec),
         };
 
         // Synchronize the local index with the iroh-docs document state.

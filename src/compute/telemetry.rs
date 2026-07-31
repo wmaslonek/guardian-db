@@ -34,7 +34,9 @@ use super::{Accel, CapabilityVector, CpuArch};
 ///
 /// `/2`: the vector gained `nn_models` (phase NN-3) — postcard cannot decode
 /// across that change, so the topic was bumped (same discipline as the ALPN).
-pub const CAPABILITY_TOPIC: &str = "guardian-db/compute/capabilities/2";
+/// `/3`: the vector gained `llm_models` (RFC 0004 phase 4), same rule.
+/// `/4`: the vector gained `embed_models` (RFC 0005 §6.4 phase 2), same rule.
+pub const CAPABILITY_TOPIC: &str = "guardian-db/compute/capabilities/4";
 
 /// The gossip [`TopicId`] of [`CAPABILITY_TOPIC`].
 pub fn capability_topic_id() -> TopicId {
@@ -127,6 +129,8 @@ impl TelemetrySampler {
             max_concurrent: max_concurrent.min(u8::MAX as u32) as u8,
             accepts: policy.accepts,
             nn_models: handler.nn_model_names(),
+            llm_models: handler.llm_model_names(),
+            embed_models: handler.embed_model_names(),
             accelerators: advertised_accelerators(&config.accelerators),
             issued_at: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -162,6 +166,11 @@ pub fn should_publish(
         || prev.max_concurrent != next.max_concurrent
         || prev.accepts != next.accepts
         || prev.nn_models != next.nn_models
+        // A backend tripping unhealthy (or recovering) must reach the
+        // directory on the next gossip round (RFC 0004 §6.1).
+        || prev.llm_models != next.llm_models
+        // An embedding model becoming (un)available must propagate too.
+        || prev.embed_models != next.embed_models
 }
 
 /// Background service that joins the capability topic, publishes this node's
@@ -373,6 +382,8 @@ mod tests {
             max_concurrent: 4,
             accepts: vec![TaskClass::General],
             nn_models: vec![],
+            llm_models: vec![],
+            embed_models: vec![],
             issued_at: 0,
         }
     }

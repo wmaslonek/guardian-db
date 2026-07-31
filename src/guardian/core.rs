@@ -1,19 +1,18 @@
 use crate::address::{Address, GuardianDBAddress};
 use crate::cache::level_down::LevelDownCache;
 use crate::db_manifest;
+use crate::events::Emitter;
+pub use crate::events::EventBus;
+pub use crate::events::EventBus as EventBusImpl;
 use crate::guardian::error::{GuardianError, Result};
 use crate::keystore::RedbKeystore;
 use crate::log::identity::Identity;
 pub use crate::log::identity_provider::Keystore;
-use crate::p2p::Emitter;
-pub use crate::p2p::EventBus;
-pub use crate::p2p::EventBus as EventBusImpl;
 use crate::p2p::network::{client::IrohClient, config::ClientConfig, core::IrohBackend};
 use crate::traits::{
     AccessControllerConstructor, BaseGuardianDB, CreateDBOptions, DetermineAddressOptions,
     DirectChannel, DirectChannelFactory, DirectChannelOptions, EventPubSubPayload,
-    MessageExchangeHeads, MessageMarshaler, PubSubInterface, Store, StoreConstructor,
-    TracerWrapper,
+    MessageExchangeHeads, MessageMarshaler, PubSub, Store, StoreConstructor, TracerWrapper,
 };
 use hex;
 use iroh::EndpointId as NodeId;
@@ -45,7 +44,7 @@ pub struct NewGuardianDBOptions {
     pub close_keystore: Option<Box<dyn Fn() -> Result<()> + Send + Sync>>,
     pub tracer: Option<Arc<BoxedTracer>>,
     pub direct_channel_factory: Option<DirectChannelFactory>,
-    pub pubsub: Option<Box<dyn PubSubInterface<Error = GuardianError>>>,
+    pub pubsub: Option<Box<dyn PubSub<Error = GuardianError>>>,
     pub message_marshaler: Option<Box<dyn MessageMarshaler<Error = GuardianError>>>,
     pub event_bus: Option<Arc<EventBusImpl>>,
     pub backend: Option<Arc<IrohBackend>>,
@@ -67,7 +66,7 @@ pub struct GuardianDB {
     directory: PathBuf,
     cache: Arc<RwLock<Arc<LevelDownCache>>>,
     #[allow(dead_code)]
-    pubsub: Option<Box<dyn PubSubInterface<Error = GuardianError>>>,
+    pubsub: Option<Box<dyn PubSub<Error = GuardianError>>>,
     event_bus: Arc<EventBusImpl>,
     #[allow(dead_code)]
     message_marshaler: Arc<dyn MessageMarshaler<Error = GuardianError> + Send + Sync>,
@@ -438,20 +437,28 @@ impl GuardianDB {
         let event_bus = Arc::new(EventBusImpl::new());
 
         // Extract the IrohBackend or create a new one (must always be present via options).
+        // Without the `messaging` feature the backend is only validated, not consumed
+        // (the default direct-channel factory that uses it is compiled out).
+        #[cfg_attr(not(feature = "messaging"), allow(unused_variables))]
         let backend = options.backend.clone().ok_or_else(|| {
             GuardianError::Other("IrohBackend is required in the options".to_string())
         })?;
 
         // Create the DirectChannelFactory.
         let own_node_id = client.node_id();
+        #[cfg(feature = "messaging")]
         let direct_channel_factory = options.direct_channel_factory.unwrap_or_else(|| {
-            let temp_span = tracing::Span::none();
-            crate::p2p::messaging::direct_channel::init_direct_channel_factory(
-                temp_span,
-                own_node_id,
-                backend.clone(),
-            )
+            crate::messaging::init_direct_channel_factory(own_node_id, backend.clone())
         });
+        // Without the `messaging` feature there is no built-in transport, so the
+        // caller must provide a factory explicitly.
+        #[cfg(not(feature = "messaging"))]
+        let direct_channel_factory = options.direct_channel_factory.ok_or_else(|| {
+            GuardianError::Other(
+                "options.direct_channel_factory is required when the `messaging` feature is disabled"
+                    .to_string(),
+            )
+        })?;
         let cancellation_token = CancellationToken::new();
 
         // Create emitters using the EventBus.
@@ -1719,12 +1726,12 @@ impl GuardianDB {
             // PubSub already exists - create a new EpidemicPubSub from the backend.
             let backend = self.client().backend().clone();
             let epidemic_pubsub = Arc::new(backend.create_pubsub_interface().await?);
-            Some(epidemic_pubsub as Arc<dyn PubSubInterface<Error = GuardianError>>)
+            Some(epidemic_pubsub as Arc<dyn PubSub<Error = GuardianError>>)
         } else {
             // Create an EpidemicPubSub directly from the backend.
             let backend = self.client().backend().clone();
             let epidemic_pubsub = Arc::new(backend.create_pubsub_interface().await?);
-            Some(epidemic_pubsub as Arc<dyn PubSubInterface<Error = GuardianError>>)
+            Some(epidemic_pubsub as Arc<dyn PubSub<Error = GuardianError>>)
         };
 
         let store_options = NewStoreOptions {
@@ -1760,6 +1767,7 @@ impl GuardianDB {
             store_specific_opts: None,
             doc_ticket: options.doc_ticket,
             read_only: options.read_only,
+            payload_codec: options.payload_codec,
         };
 
         tracing::debug!("Options converted successfully");
@@ -3184,7 +3192,7 @@ pub async fn make_direct_channel(
     factory: DirectChannelFactory,
     options: &DirectChannelOptions,
 ) -> Result<Arc<dyn DirectChannel<Error = GuardianError> + Send + Sync>> {
-    let emitter = crate::p2p::PayloadEmitter::new(event_bus)
+    let emitter = crate::events::PayloadEmitter::new(event_bus)
         .await
         .map_err(|e| {
             GuardianError::Other(format!("could not initialize the pubsub emitter: {}", e))
@@ -3255,6 +3263,7 @@ impl BaseGuardianDB for GuardianDB {
             store_specific_opts: None,
             doc_ticket: options.doc_ticket.clone(),
             read_only: options.read_only,
+            payload_codec: options.payload_codec.clone(),
         };
 
         // Call the internal GuardianDB open method.
@@ -3307,6 +3316,7 @@ impl BaseGuardianDB for GuardianDB {
             store_specific_opts: None,
             doc_ticket: options.doc_ticket.clone(),
             read_only: options.read_only,
+            payload_codec: options.payload_codec.clone(),
         };
 
         // Call the internal GuardianDB create method.

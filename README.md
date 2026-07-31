@@ -1,6 +1,8 @@
 <div align="center">
   <img src="docs/logotipo-guardiandb-new-outubro.png" alt="GuardianDB Logo" width="350"/>
 
+### GuardianDB 0.20.26 · The Odyssey Release · One Year Anniversary. One Year of Innovation · 2026
+
 [![Discord](https://img.shields.io/discord/1410233136846995519?label=chat&logo=discord&logoColor=white&style=flat-square&color=7289DA)](https://discord.gg/Ezzk8PnGR5)
 ![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)
 ![Rust](https://img.shields.io/badge/rust-1.97.0+-orange.svg)
@@ -10,8 +12,9 @@
 ---
 
 <div align="center">
-  <a href="https://discord.gg/Ezzk8PnGR5"><img src="https://www.willsearch.com.br/wp-content/uploads/2026/07/button-git.png" alt="Discord Button" width="275"/></a></div>
+  <a href="https://discord.gg/Ezzk8PnGR5"><img src="assets/button-git.png" alt="Discord Button" width="275"/></a></div>
 
+### Store your data. Run your logic. Right where it lives. A database that stores and processes data.
 **High-performance, local-first decentralized database built on Rust and Iroh**
 
 </div>
@@ -19,7 +22,20 @@
 GuardianDB is a decentralized, local-first database for apps that need peer-to-peer
 synchronization, offline-first operation, and high performance. Every node keeps a full
 local replica: reads and writes are local (no server round-trip), and changes converge
-across peers automatically over [Iroh](https://www.iroh.computer/).
+across peers automatically over [Iroh](https://www.iroh.computer/). And it doesn't stop
+at storage, it runs your business logic on the network too.
+
+## At a glance
+
+- **[Local-first & P2P](#powered-by-iroh):** every node holds a full replica; reads and writes are local, changes sync automatically over Iroh. No server.
+- **[Three store types](#store-types):** key-value, document, and append-only event log (LWW CRDT + causal DAG).
+- **[PostgreSQL-compatible SQL](#postgresql-compatibility-typeorm-psql-node-postgres):** the real Postgres wire protocol: psql, TypeORM, node-postgres and DBeaver connect unchanged.
+- **Supabase-compatible gateway:** a Kong-shaped HTTP layer over the SQL engine, REST, Auth (JWT), GraphQL, Storage and Realtime, served by the `guardian-supabase` binary.
+- **[Vector search & RAG](#vector-search--rag-pgvector-compatible):** pgvector-compatible HNSW index, auto-embedding, and retrieve-augment-generate right beside your data.
+- **[Guardian Compute](#guardian-compute-decentralized-edge-computing):** delegate WebAssembly tasks to the most capable peer: capacity-aware scheduling, Edge AI, and LLM inference.
+- **[Guardian Sentinel](#introducing-guardian-sentinel-tui):** a terminal UI to inspect, manage and monitor a live database.
+- **[Optional ODM](#optional-odm-and-collection-api):** TypeORM/Mongoose-style models, collections and indexes over the document store.
+- **Encryption:** opt-in payload codecs and an encrypted keystore for confidentiality even from replica holders.
 
 ## Powered by Iroh
 
@@ -64,7 +80,7 @@ guardian-db/
 
 ```toml
 [dependencies]
-guardian-db = "0.19"
+guardian-db = "0.20.26"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -158,7 +174,7 @@ Enable the Rust ODM explicitly:
 
 ```toml
 [dependencies]
-guardian-db = { version = " 0.19", features = ["odm"] }
+guardian-db = { version = " 0.20.26", features = ["odm"] }
 ```
 
 ### Rust model definitions
@@ -366,11 +382,13 @@ permissioning.
 
 ```toml
 [dependencies]
-guardian-db = { version = "0.19", features = ["compute"] }         # runtime + scheduler
+guardian-db = { version = "0.20.26", features = ["compute"] }         # runtime + scheduler
 # or, for Edge AI (wasi-nn / ONNX Runtime on CPU):
-guardian-db = { version = "0.19", features = ["compute-nn"] }
+guardian-db = { version = "0.20.26", features = ["compute-nn"] }
 # or, to add GPU inference via the CUDA execution provider:
-guardian-db = { version = "0.19", features = ["compute-nn-cuda"] }
+guardian-db = { version = "0.20.26", features = ["compute-nn-cuda"] }
+# or, for generative LLM inference (OpenAI-compatible backends, token streaming):
+guardian-db = { version = "0.20.26", features = ["compute-llm"] }
 ```
 
 Write a task as an ordinary Rust function with the SDK, compile it to
@@ -407,11 +425,61 @@ Highlights:
 - **Edge AI** (`compute-nn`): serve ONNX models to inference tasks over `wasi-nn`,
   with models distributed as blobs, model-affinity routing, and optional GPU
   (`compute-nn-cuda`).
+- **LLM inference** (`compute-llm`): delegate generative inference to a model-serving
+  peer — an owner-curated registry with active health-checking, an OpenAI-compatible
+  HTTP backend with SSE token streaming (fronting ollama, llama.cpp, vLLM, mesh-llm), a
+  native colibri process driver (`compute-llm-colibri`), streamed results across the
+  compute protocol, and an opt-in `gdb.llm_generate` host grant for WASM tasks.
 - **Trust model**: the sandbox protects the executor; result trust comes from
   running in permissioned networks or via redundant execution. Participation is
   reciprocal, never paid, and local policy stays sovereign.
 
 Full guide: [`docs/compute.md`](docs/compute.md).
+
+## Vector Search & RAG (pgvector-compatible)
+
+GuardianDB does semantic search over its own replicated data. An engine-native
+HNSW index accelerates approximate nearest-neighbour queries through the exact
+pgvector SQL surface — `CREATE INDEX ... USING hnsw`, the `vector_l2_ops` /
+`vector_ip_ops` / `vector_cosine_ops` opclasses, and the `hnsw.ef_search` GUC — so
+clients written for Postgres + pgvector (and their ORMs) work unchanged over
+`pgwire`. The index is per-node derived state, never replicated: each node rebuilds
+it from the replicated rows, so index divergence can never corrupt data.
+
+```toml
+[dependencies]
+guardian-db = { version = "0.20.26", features = ["vector-index"] }    # HNSW ANN over the sql engine
+# or, to auto-populate vector columns from a text column:
+guardian-db = { version = "0.20.26", features = ["embedding"] }       # + OpenAI-compatible embedder
+guardian-db = { version = "0.20.26", features = ["embedding-onnx"] }  # + local ONNX embedder (heavy)
+# or, for the retrieve → augment → generate helper:
+guardian-db = { version = "0.20.26", features = ["rag"] }             # embedding + compute-llm
+```
+
+Index a vector column and query it with the ordinary pgvector operators; any shape the
+index can't serve falls through to an exact scan, and `SET enable_indexscan = off` forces
+exact results:
+
+```sql
+CREATE INDEX ON docs USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);
+SELECT id, body FROM docs ORDER BY embedding <=> $1 LIMIT 10;   -- ~3 ms p50, recall ≈ 0.95 at 100k×384-d
+```
+
+- **Auto-embedding** (`embedding`): declare a rule and the engine watches the committed-change
+  feed, embeds a text column, and writes the vector back idempotently (a source-text hash
+  skips unchanged rows). Declarable from SQL and persisted in the catalog:
+  `SELECT guardian_embed('docs', 'body', 'embedding', 'model', 'delegated');`. Embedding can
+  run locally or be **delegated to a GPU peer** over Guardian Compute, hash-pinned by default
+  so a peer that can't prove the exact weights is ineligible.
+- **RAG** (`rag`): `Rag::answer(query)` embeds the query with the *same* model the corpus used
+  (a mismatch is refused, not silently wrong), runs the top-k search, and streams a grounded
+  answer through the `compute-llm` router — the whole retrieve-augment-generate loop next to
+  the replicated data. See [`examples/rag_demo.rs`](examples/rag_demo.rs) (fully offline).
+
+Notes: `embedding-onnx` and `rag` pull in heavy optional pieces (ONNX Runtime, a C toolchain
+for the tokenizer; `compute-llm`); the `<+>` (L1) operator is valid DDL and works on the exact
+path but is not yet reachable from the ANN planner (a parser limitation). Design, as-built
+record, and benchmark: [`docs/rfcs/0005-vector-search.md`](docs/rfcs/0005-vector-search.md).
 
 ## Store Types
 
@@ -495,7 +563,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // CRUD operations - all operations are automatically replicated
     kv.put("app_name", "GuardianDB".as_bytes().to_vec()).await?;
-    kv.put("version", " 0.19.0".as_bytes().to_vec()).await?;
+    kv.put("version", " 0.20.26".as_bytes().to_vec()).await?;
     kv.put("language", "Rust".as_bytes().to_vec()).await?;
 
     // Get values - queries the local CRDT index
@@ -565,7 +633,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "_id": "guardian-db",
         "name": "GuardianDB", 
         "type": "database",
-        "version": " 0.19.0",
+        "version": " 0.20.26",
         "language": "Rust",
         "features": ["decentralized", "peer-to-peer", "CRDT", "Iroh"]
     });
@@ -744,7 +812,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Development
 
-**Prerequisites:** Rust 1.95+ (edition 2024) and Git.
+**Prerequisites:** Rust 1.97+ (edition 2024) and Git.
 
 ```bash
 git clone https://github.com/wmaslonek/guardian-db.git

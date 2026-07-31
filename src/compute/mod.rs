@@ -33,6 +33,14 @@
 //! - [`triggers`] (Phase 4, **implemented**) — reactive rules with
 //!   replica-safe deduplication and deadline-based requeue, bridged to the
 //!   store `EventBus` via [`triggers::TriggerEngine::attach_event_bus`]
+//! - `llm` (RFC 0004 phases 1–5, **implemented**, features `compute-llm` /
+//!   `compute-llm-colibri`) — generative LLM inference through pluggable
+//!   backends (OpenAI-compatible HTTP: mesh-llm, colibri's server,
+//!   llama.cpp…; plus the supervised native colibri process driver), with
+//!   active health-checking, streamed `Generate` responses on
+//!   [`COMPUTE_ALPN`], the local → peers → distributed placement router, and
+//!   the `gdb.llm_generate` host grant for WASM tasks (SDK:
+//!   `guardian_compute_sdk::host::llm_generate`)
 //!
 //! Decisions recorded in RFC §8: wasmtime (no WASI, fuel + epoch); task
 //! input/output are opaque bytes at protocol level (CBOR is an SDK-level
@@ -58,6 +66,19 @@ pub use triggers::{DispatchError, TaskDispatcher, TriggerConfig, TriggerEngine, 
 pub mod nn;
 #[cfg(feature = "compute-nn")]
 pub use nn::NnModelRegistry;
+#[cfg(feature = "compute-llm")]
+pub mod llm;
+#[cfg(feature = "compute-llm-colibri")]
+pub use llm::{ColibriConfig, ColibriProcessBackend};
+#[cfg(feature = "compute-llm")]
+pub use llm::{
+    GenerateEvent, GenerateRequest, GenerateStream, LlmBackend, LlmError, LlmRegistry, LlmRouter,
+    ModelInfo, ModelSelector, OpenAiConfig, OpenAiHttpBackend, PeerDelegation, RouterConfig,
+};
+#[cfg(feature = "compute-llm")]
+pub use protocol::{LlmGenerateRequest, LlmStreamFrame};
+#[cfg(feature = "compute-llm")]
+pub use runtime::LlmGrant;
 #[cfg(feature = "compute-nn")]
 pub use runtime::{NnGrant, NnTarget};
 pub use scheduler::{
@@ -218,6 +239,16 @@ pub struct CapabilityVector {
     /// Always present in the wire format so nodes with and without the
     /// `compute-nn` feature interoperate; nodes without it advertise none.
     pub nn_models: Vec<String>,
+    /// Generative LLM model names this node serves (RFC 0004 phase 4). Only
+    /// models of **healthy** backends appear here — the registry's prober
+    /// withdraws unresponsive ones (RFC 0004 §6.1). Same interop rule as
+    /// `nn_models`: always on the wire, empty without `compute-llm`.
+    pub llm_models: Vec<String>,
+    /// Embedding model names this node serves (RFC 0005 §6.4 phase 2). Same
+    /// interop rule: always on the wire, empty unless an `EmbeddingRegistry`
+    /// is attached to the executor. A peer delegating an embedding picks a
+    /// node that advertises the model here.
+    pub embed_models: Vec<String>,
     /// Unix timestamp (seconds) when this vector was sampled, so schedulers
     /// can discard stale vectors.
     pub issued_at: u64,
@@ -234,6 +265,18 @@ impl CapabilityVector {
     /// Whether this node advertises the named NN model (phase NN-3).
     pub fn offers_model(&self, name: &str) -> bool {
         self.nn_models.iter().any(|m| m == name)
+    }
+
+    /// Whether this node advertises the named generative LLM model
+    /// (RFC 0004 phase 4).
+    pub fn offers_llm_model(&self, name: &str) -> bool {
+        self.llm_models.iter().any(|m| m == name)
+    }
+
+    /// Whether this node advertises the named embedding model
+    /// (RFC 0005 §6.4 phase 2).
+    pub fn offers_embed_model(&self, name: &str) -> bool {
+        self.embed_models.iter().any(|m| m == name)
     }
 }
 
@@ -256,6 +299,8 @@ mod tests {
             max_concurrent: 4,
             accepts: vec![TaskClass::General, TaskClass::Media],
             nn_models: vec!["doubler".to_string()],
+            llm_models: vec![],
+            embed_models: vec![],
             issued_at: 1_760_000_000,
         }
     }

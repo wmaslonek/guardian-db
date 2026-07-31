@@ -2,11 +2,15 @@ pub mod access_control;
 pub mod access_control_permission_test;
 pub mod acl_guardian_comprehensive_test;
 pub mod acl_simple_test;
+// Store tests wire nodes through the `messaging` one-on-one channel factory.
+#[cfg(feature = "messaging")]
 pub mod base_store_test;
 pub mod batch_processor_test;
 pub mod connection_pool_test;
 pub mod crdt_log_test;
+#[cfg(feature = "messaging")]
 pub mod document_store_test;
+#[cfg(feature = "messaging")]
 pub mod event_log_store_test;
 pub mod gossip_test;
 pub mod guardian_core_test;

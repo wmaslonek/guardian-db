@@ -1,11 +1,11 @@
 // Native integration of iroh-gossip with IrohBackend.
 //
-// PubSubInterface implementation using pure iroh-gossip
+// PubSub implementation using pure iroh-gossip
 // with Epidemic Broadcast Trees.
 
 use crate::guardian::error::{GuardianError, Result};
 use crate::p2p::network::core::IrohBackend;
-use crate::traits::{EventPubSubMessage, PubSubInterface, PubSubTopic};
+use crate::traits::{EventPubSubMessage, PubSub, PubSubTopic};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::stream::{Stream, StreamExt};
@@ -21,7 +21,7 @@ use tokio::task::JoinHandle;
 use tokio_stream::wrappers::BroadcastStream;
 use tracing::{debug, error, info, warn};
 
-/// IrohBackend wrapper that implements PubSubInterface using iroh-gossip.
+/// IrohBackend wrapper that implements PubSub using iroh-gossip.
 pub struct EpidemicPubSub {
     /// Reference to the Iroh backend.
     #[allow(dead_code)]
@@ -403,7 +403,7 @@ impl EpidemicPubSub {
 }
 
 #[async_trait]
-impl PubSubInterface for EpidemicPubSub {
+impl PubSub for EpidemicPubSub {
     type Error = GuardianError;
 
     async fn topic_subscribe(
@@ -415,6 +415,41 @@ impl PubSubInterface for EpidemicPubSub {
         let iroh_topic = self.get_or_create_topic(topic).await?;
 
         Ok(iroh_topic as Arc<dyn PubSubTopic<Error = GuardianError>>)
+    }
+
+    async fn subscribe_with_peers(
+        &self,
+        topic: &str,
+        peers: Vec<NodeId>,
+    ) -> std::result::Result<(), Self::Error> {
+        EpidemicPubSub::subscribe_with_peers(self, topic, peers)
+            .await
+            .map(|_| ())
+    }
+
+    async fn get_or_create_topic_with_peers(
+        &self,
+        topic: &str,
+        peers: Vec<NodeId>,
+    ) -> std::result::Result<(), Self::Error> {
+        EpidemicPubSub::get_or_create_topic_with_peers(self, topic, peers)
+            .await
+            .map(|_| ())
+    }
+
+    async fn publish_to_topic(
+        &self,
+        topic: &str,
+        data: &[u8],
+    ) -> std::result::Result<(), Self::Error> {
+        EpidemicPubSub::publish_to_topic(self, topic, data).await
+    }
+
+    async fn topic_peers(&self, topic: &str) -> Option<Vec<NodeId>> {
+        match self.get_topic(topic).await {
+            Some(iroh_topic) => Some(iroh_topic.list_peers().await),
+            None => None,
+        }
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

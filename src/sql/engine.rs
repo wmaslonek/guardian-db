@@ -23,6 +23,27 @@ pub struct Database<S: RelationalStorage> {
     /// Registered row-change listeners (see [`Database::subscribe_changes`]).
     /// Closed receivers are pruned lazily on the next emission.
     change_listeners: std::sync::RwLock<Vec<tokio::sync::mpsc::UnboundedSender<ChangeEvent>>>,
+    /// Cross-statement ANN index runtime (RFC 0005): HNSW graphs are too
+    /// expensive to rebuild per statement, so they live here and are
+    /// reconciled against each statement's freshly loaded table view.
+    #[cfg(feature = "vector-index")]
+    ann: Arc<crate::sql::ann::AnnRuntime>,
+    /// Decoded-table cache: the engine's local-first model reloads and
+    /// decodes a whole table view per statement. When the backend reports a
+    /// per-collection change counter ([`RelationalStorage::generation`]),
+    /// the decoded [`LoadedTable`] is cached here keyed by that counter, so a
+    /// statement that finds the counter unchanged skips the
+    /// rescan+decode+index-rebuild entirely and shares the cached view by
+    /// `Arc` (zero copy for reads). Bypassed inside a transaction whose
+    /// overlay touches the collection (those need the staged writes merged in).
+    table_cache: std::sync::RwLock<HashMap<String, CachedTable>>,
+}
+
+/// One cached decoded table view, tagged with the storage change counter it
+/// was built at (see [`Database::table_cache`]).
+struct CachedTable {
+    generation: u64,
+    table: Arc<LoadedTable>,
 }
 
 impl<S: RelationalStorage> Database<S> {
@@ -32,11 +53,147 @@ impl<S: RelationalStorage> Database<S> {
             name: name.into(),
             locks: Arc::new(LockManager::new()),
             change_listeners: std::sync::RwLock::new(Vec::new()),
+            #[cfg(feature = "vector-index")]
+            ann: Arc::new(crate::sql::ann::AnnRuntime::new()),
+            table_cache: std::sync::RwLock::new(HashMap::new()),
         }
     }
 
     pub fn storage(&self) -> &Arc<S> {
         &self.storage
+    }
+
+    /// Load a fresh snapshot of the persisted catalog (schemas, tables,
+    /// columns, indexes). Used by out-of-band consumers such as the
+    /// auto-embedding service ([`crate::embedding`]) that need column types
+    /// and storage-collection names without opening a full statement.
+    pub async fn catalog_snapshot(&self) -> Result<Catalog> {
+        match self.storage.load_catalog().await? {
+            Some(json) => serde_json::from_value(json)
+                .map_err(|e| SqlError::Storage(format!("corrupt catalog: {e}"))),
+            None => Ok(Catalog::new(&self.name)),
+        }
+    }
+
+    /// Merge column updates into a stored row and persist it, bumping the
+    /// row's version. Column values are the engine's JSON encoding (a
+    /// `vector` is a JSON array of numbers, text is a JSON string).
+    ///
+    /// This is the auto-embedding service's write-back path
+    /// ([`crate::embedding`]). It deliberately goes straight to storage
+    /// rather than through a SQL `UPDATE`, for two reasons:
+    /// - a direct storage write emits **no** [`ChangeEvent`], which is what
+    ///   structurally breaks the embed → write-back → embed loop (the
+    ///   source-hash sidecar is the second line of defence, not the only one);
+    /// - it needs neither the row's primary key nor a constructed SQL
+    ///   statement — it addresses the row by its stored id.
+    ///
+    /// The row is re-read here (not taken from a possibly-stale change event)
+    /// so the merge lands on the *current* document and only the named columns
+    /// are touched — a concurrent change to the source text is preserved (and
+    /// the next change event re-embeds it).
+    ///
+    /// **Concurrency semantics.** The `get` + `put` are not one atomic
+    /// operation, so a write that commits to the same row *between* them is
+    /// resolved last-writer-wins on the whole document — exactly like the
+    /// engine's own autocommit `UPDATE` (which likewise scans, modifies and
+    /// writes the whole row without holding a cross-statement lock) and like
+    /// GuardianDB's LWW-CRDT model for concurrent document writes. This is not
+    /// a stronger guarantee than a normal write; callers needing atomicity
+    /// against a specific concurrent writer must serialize at a higher level.
+    ///
+    /// Returns `Ok(())` with no write if the row no longer exists (deleted
+    /// since the change). The generation bump from the underlying `put`
+    /// invalidates the decoded-table cache.
+    pub async fn patch_row(
+        &self,
+        collection: &str,
+        row_id: &str,
+        updates: &[(String, Json)],
+    ) -> Result<()> {
+        let Some(existing) = self.storage.get(collection, row_id).await? else {
+            return Ok(());
+        };
+        let Json::Object(mut obj) = existing else {
+            return Err(SqlError::Storage("row document is not an object".into()));
+        };
+        for (col, val) in updates {
+            obj.insert(col.clone(), val.clone());
+        }
+        let v = obj
+            .get(crate::sql::store::F_VERSION)
+            .and_then(Json::as_i64)
+            .unwrap_or(1)
+            + 1;
+        obj.insert(crate::sql::store::F_VERSION.to_string(), Json::from(v));
+        self.storage
+            .put(collection, row_id, &Json::Object(obj))
+            .await
+    }
+
+    /// Invalidate the entire decoded-table cache. Called when a catalog
+    /// change commits: a `LoadedTable` embeds its table's column set and
+    /// secondary-index definitions, which the storage change counter does not
+    /// track, so a `CREATE INDEX` / `ALTER TABLE` that leaves rows untouched
+    /// must still force a rebuild. DDL is rare, so clearing the whole map
+    /// (rather than tracking which tables a statement altered) is the robust,
+    /// simple choice.
+    pub(crate) fn invalidate_table_cache(&self) {
+        self.table_cache.write().unwrap().clear();
+    }
+
+    /// Fetch a table view for `collection` at storage change-counter
+    /// `generation`, decoding it only on a cache miss (see
+    /// [`Database::table_cache`]). The `build` closure turns the scanned
+    /// documents into a [`LoadedTable`]; it runs only on a miss.
+    async fn cached_table(
+        &self,
+        collection: &str,
+        generation: u64,
+        build: impl FnOnce(Vec<(String, Json)>) -> Result<LoadedTable>,
+    ) -> Result<Arc<LoadedTable>> {
+        // Fast path: a matching cached generation is a zero-copy Arc clone.
+        {
+            let cache = self.table_cache.read().unwrap();
+            if let Some(c) = cache.get(collection)
+                && c.generation == generation
+            {
+                return Ok(c.table.clone());
+            }
+        }
+        // Miss: scan + decode without holding the cache lock.
+        let docs = self.storage.scan(collection).await?;
+        let built = Arc::new(build(docs)?);
+        let mut cache = self.table_cache.write().unwrap();
+        // A concurrent builder may have installed an equal-or-newer view
+        // while we scanned; keep the freshest rather than regress it.
+        match cache.get(collection) {
+            Some(c) if c.generation >= generation => Ok(c.table.clone()),
+            _ => {
+                cache.insert(
+                    collection.to_string(),
+                    CachedTable {
+                        generation,
+                        table: built.clone(),
+                    },
+                );
+                Ok(built)
+            }
+        }
+    }
+
+    /// Enable persistent ANN index snapshots (RFC 0005 §6.1) under
+    /// `dir/<database-name>/`. Without this, ANN indexes rebuild from rows on
+    /// first use each process — always correct, only slower to start.
+    #[cfg(feature = "vector-index")]
+    pub fn set_ann_snapshot_dir(&self, dir: impl Into<std::path::PathBuf>) {
+        self.ann.set_snapshot_dir(Some(dir.into().join(&self.name)));
+    }
+
+    /// The shared ANN runtime (RFC 0005).
+    #[cfg(feature = "vector-index")]
+    pub fn ann(&self) -> &Arc<crate::sql::ann::AnnRuntime> {
+        &self.ann
     }
 
     /// The shared lock manager (single-node coordinator).
@@ -94,6 +251,27 @@ pub struct ChangeEvent {
     pub new: Option<Json>,
     /// When the local commit applied this change.
     pub commit_time: chrono::DateTime<chrono::Utc>,
+}
+
+impl ChangeEvent {
+    /// The stored row id (`_id`), taken from the post-image for
+    /// insert/update and the pre-image for delete. `None` only if neither
+    /// image is present or lacks the field (never, for engine-produced
+    /// events).
+    pub fn row_id(&self) -> Option<&str> {
+        self.new
+            .as_ref()
+            .or(self.old.as_ref())
+            .and_then(|d| d.get(crate::sql::store::F_ID))
+            .and_then(Json::as_str)
+    }
+
+    /// A column's raw stored JSON value from the post-image (the value after
+    /// this change). `None` if there is no post-image (delete) or the column
+    /// is absent.
+    pub fn new_field(&self, column: &str) -> Option<&Json> {
+        self.new.as_ref().and_then(|d| d.get(column))
+    }
 }
 
 /// The kind of row change a [`ChangeEvent`] describes.
@@ -629,7 +807,7 @@ impl<S: RelationalStorage> Session<S> {
                 collect_stmt(&body_stmt, &mut names);
             }
         }
-        let mut tables: HashMap<QualifiedName, LoadedTable> = HashMap::new();
+        let mut tables: HashMap<QualifiedName, Arc<LoadedTable>> = HashMap::new();
         for (schema, name) in &names {
             if let Some(q) = catalog.resolve_table_name(schema.as_deref(), name)
                 && !tables.contains_key(&q)
@@ -638,6 +816,18 @@ impl<S: RelationalStorage> Session<S> {
                 tables.insert(q, loaded);
             }
         }
+
+        // ANN bookkeeping (RFC 0005): snapshot the set of hnsw index oids so
+        // any DDL that drops one — DROP INDEX, DROP TABLE/COLUMN, schema
+        // cascades — is caught by a single post-statement diff instead of
+        // per-path wiring. Eager forgetting inside a transaction that later
+        // rolls back only costs a rebuild: derived state self-heals.
+        #[cfg(feature = "vector-index")]
+        let hnsw_before: Vec<u32> = catalog
+            .indexes()
+            .filter(|i| i.method == "hnsw")
+            .map(|i| i.oid)
+            .collect();
 
         // Build the synchronous execution context and run.
         let now = chrono::Utc::now();
@@ -652,6 +842,11 @@ impl<S: RelationalStorage> Session<S> {
             self.session_id,
         );
         exec.vars = std::cell::RefCell::new(self.vars.clone());
+        // Shared ANN runtime for the vector planner hook (RFC 0005).
+        #[cfg(feature = "vector-index")]
+        {
+            exec.ann = Some(self.db.ann.clone());
+        }
         // This transaction's `SET CONSTRAINTS` state, read-only for the
         // statement (see `ConstraintModes`); `None` in autocommit, which
         // always means "check every foreign key immediately".
@@ -698,6 +893,21 @@ impl<S: RelationalStorage> Session<S> {
         // `DeferredTriggerFiring`) — splice into the transaction's queue.
         let new_deferred_triggers: Vec<_> = std::mem::take(&mut exec.deferred_triggers);
         let new_catalog = exec.catalog;
+        // Forget ANN state for hnsw indexes this statement dropped (see the
+        // `hnsw_before` snapshot above).
+        #[cfg(feature = "vector-index")]
+        if catalog_dirty {
+            let after: std::collections::HashSet<u32> = new_catalog
+                .indexes()
+                .filter(|i| i.method == "hnsw")
+                .map(|i| i.oid)
+                .collect();
+            for oid in hnsw_before {
+                if !after.contains(&oid) {
+                    self.db.ann.forget(oid);
+                }
+            }
+        }
         match &mut self.txn {
             Some(txn) => {
                 txn.catalog = new_catalog;
@@ -714,6 +924,10 @@ impl<S: RelationalStorage> Session<S> {
                 self.apply_mutations(mutations).await?;
                 if catalog_dirty {
                     self.save_catalog(&new_catalog).await?;
+                    // Column/index-set changes are invisible to the storage
+                    // change counter; drop cached decoded views so the next
+                    // load rebuilds against the new schema.
+                    self.db.invalidate_table_cache();
                 }
                 // Autocommit: release the locks this statement acquired.
                 self.db.locks.release_transaction(self.session_id);
@@ -1058,6 +1272,14 @@ impl<S: RelationalStorage> Session<S> {
     fn dispatch(&self, exec: &mut Exec, stmt: &Statement) -> Result<ExecResult> {
         match stmt {
             Statement::Query(q) => {
+                // The auto-embedding SQL surface (RFC 0005 §6.3):
+                // `SELECT guardian_embed(...)` / `guardian_unembed(...)` are
+                // catalog-mutating commands disguised as function calls
+                // (sqlparser cannot parse string args on CREATE TRIGGER). Any
+                // ordinary query returns `None` and runs normally.
+                if let Some(result) = exec.try_embedding_command(q) {
+                    return result;
+                }
                 // Row-level locking (FOR UPDATE / FOR SHARE [NOWAIT | SKIP LOCKED]).
                 exec.prepare_for_update(q)?;
                 let rs = exec.exec_select_query(q, &[])?;
@@ -1070,6 +1292,44 @@ impl<S: RelationalStorage> Session<S> {
                 Ok(ExecResult::Rows {
                     fields,
                     rows: rs.rows,
+                })
+            }
+            // `EXPLAIN <select>` (RFC 0005 §6.2): this engine has no
+            // cost-based planner producing a static tree, and the ANN scan
+            // decision (adaptive growth, measured selectivity) only exists at
+            // run time — so EXPLAIN *executes* the query, discards its rows
+            // and reports the plan decisions actually taken (EXPLAIN ANALYZE
+            // semantics). Restricted to SELECT so EXPLAIN can never run DML
+            // side effects.
+            #[cfg(feature = "vector-index")]
+            Statement::Explain {
+                statement: inner, ..
+            } => {
+                let Statement::Query(q) = inner.as_ref() else {
+                    return Err(SqlError::FeatureNotSupported(
+                        "EXPLAIN is supported for SELECT statements only".into(),
+                    ));
+                };
+                exec.plan_notes.borrow_mut().clear();
+                // Deliberately NOT `prepare_for_update`: EXPLAIN is inspection.
+                // Queuing this SELECT's `FOR UPDATE`/`FOR SHARE` row locks (or
+                // consuming rows under `SKIP LOCKED`) would be an observable,
+                // non-read-only side effect from a statement users expect to be
+                // side-effect-free. The plan report needs none of it.
+                let _ = exec.exec_select_query(q, &[])?;
+                let mut notes = std::mem::take(&mut *exec.plan_notes.borrow_mut());
+                if notes.is_empty() {
+                    notes.push("Seq Scan (default execution; no indexed path chosen)".into());
+                }
+                Ok(ExecResult::Rows {
+                    fields: vec![crate::sql::result::OutField::new(
+                        "QUERY PLAN".to_string(),
+                        crate::relational::SqlType::Text,
+                    )],
+                    rows: notes
+                        .into_iter()
+                        .map(|n| vec![crate::relational::SqlValue::Text(n)])
+                        .collect(),
                 })
             }
             Statement::Insert(insert) => exec.exec_insert(insert),
@@ -1279,6 +1539,9 @@ impl<S: RelationalStorage> Session<S> {
             }
             if txn.catalog_dirty {
                 self.save_catalog(&txn.catalog).await?;
+                // Schema changes are invisible to the storage change counter
+                // (see `invalidate_table_cache`).
+                self.db.invalidate_table_cache();
             }
             self.db.emit_changes(events);
         }
@@ -1312,42 +1575,88 @@ impl<S: RelationalStorage> Session<S> {
         &self,
         catalog: &Catalog,
         q: &QualifiedName,
-    ) -> Result<Option<LoadedTable>> {
+    ) -> Result<Option<Arc<LoadedTable>>> {
         let Some(table) = catalog.get_table(q) else {
             return Ok(None);
         };
         let collection = table.storage_collection.clone();
-        let mut docs = self.db.storage.scan(&collection).await?;
-        if let Some(txn) = &self.txn {
-            let truncated = txn.truncated.contains(&collection);
-            let overlay = txn.overlay.get(&collection);
-            if truncated || overlay.is_some() {
-                let mut map: std::collections::BTreeMap<String, Json> = if truncated {
-                    std::collections::BTreeMap::new()
-                } else {
-                    docs.into_iter().collect()
-                };
-                if let Some(ov) = overlay {
-                    for (rid, val) in ov {
-                        match val {
-                            Some(doc) => {
-                                map.insert(rid.clone(), doc.clone());
-                            }
-                            None => {
-                                map.remove(rid);
-                            }
-                        }
-                    }
-                }
-                docs = map.into_iter().collect();
-            }
-        }
-        let index_defs = catalog
+        let index_defs: Vec<_> = catalog
             .indexes_for_table(&q.schema, &q.name)
             .into_iter()
             .cloned()
             .collect();
-        Ok(Some(LoadedTable::build(table.clone(), docs, index_defs)?))
+
+        // Does this statement's transaction have staged writes for this
+        // collection? If so the cached (committed) view is not what the
+        // statement must see — fall through to the merge path below.
+        let overlay = self.txn.as_ref().and_then(|txn| {
+            let truncated = txn.truncated.contains(&collection);
+            let ov = txn.overlay.get(&collection);
+            (truncated || ov.is_some()).then_some((truncated, ov))
+        });
+
+        // Uncommitted schema changes in this transaction (a DDL statement ran
+        // since BEGIN) make the shared, committed-meta cache unsafe: a cache
+        // hit would return the *pre-DDL* `LoadedTable` meta this transaction
+        // must not see (e.g. an added column would be invisible), and caching
+        // a table built with this transaction's uncommitted meta would leak it
+        // to other sessions at the same storage generation. So a transaction
+        // with pending catalog changes builds fresh and uncached — DDL inside
+        // a transaction is the uncommon path.
+        let txn_schema_dirty = self.txn.as_ref().is_some_and(|t| t.catalog_dirty);
+
+        if overlay.is_none() && !txn_schema_dirty {
+            // Hot path: no staged writes, no uncommitted schema. Serve from the
+            // decoded-table cache when the backend reports a change counter;
+            // otherwise decode fresh (uncacheable backend) but still return an
+            // Arc.
+            let table = table.clone();
+            if let Some(generation) = self.db.storage.generation(&collection) {
+                let built = self
+                    .db
+                    .cached_table(&collection, generation, move |docs| {
+                        LoadedTable::build(table, docs, index_defs)
+                    })
+                    .await?;
+                return Ok(Some(built));
+            }
+            let docs = self.db.storage.scan(&collection).await?;
+            return Ok(Some(Arc::new(LoadedTable::build(table, docs, index_defs)?)));
+        }
+
+        // Fresh, uncached build: merge the committed scan with the
+        // transaction's staged writes (when any), decoded against the current
+        // — possibly uncommitted — catalog meta. The result is private to this
+        // statement/transaction and never enters the shared cache.
+        let truncated = matches!(overlay, Some((true, _)));
+        let mut map: std::collections::BTreeMap<String, Json> = if truncated {
+            std::collections::BTreeMap::new()
+        } else {
+            self.db
+                .storage
+                .scan(&collection)
+                .await?
+                .into_iter()
+                .collect()
+        };
+        if let Some((_, Some(ov))) = overlay {
+            for (rid, val) in ov {
+                match val {
+                    Some(doc) => {
+                        map.insert(rid.clone(), doc.clone());
+                    }
+                    None => {
+                        map.remove(rid);
+                    }
+                }
+            }
+        }
+        let docs = map.into_iter().collect();
+        Ok(Some(Arc::new(LoadedTable::build(
+            table.clone(),
+            docs,
+            index_defs,
+        )?)))
     }
 
     /// Load `q` reflecting explicitly-given `overlay`/`truncated` writes —
@@ -1361,7 +1670,7 @@ impl<S: RelationalStorage> Session<S> {
         q: &QualifiedName,
         overlay: &HashMap<String, HashMap<String, Option<Json>>>,
         truncated: &HashSet<String>,
-    ) -> Result<Option<LoadedTable>> {
+    ) -> Result<Option<Arc<LoadedTable>>> {
         let Some(table) = catalog.get_table(q) else {
             return Ok(None);
         };
@@ -1394,7 +1703,11 @@ impl<S: RelationalStorage> Session<S> {
             .into_iter()
             .cloned()
             .collect();
-        Ok(Some(LoadedTable::build(table.clone(), docs, index_defs)?))
+        Ok(Some(Arc::new(LoadedTable::build(
+            table.clone(),
+            docs,
+            index_defs,
+        )?)))
     }
 
     /// Re-validate every check in `checks` ([`DeferredFkCheck`]) against the
@@ -1416,7 +1729,7 @@ impl<S: RelationalStorage> Session<S> {
         if checks.is_empty() {
             return Ok(());
         }
-        let mut tables: HashMap<QualifiedName, LoadedTable> = HashMap::new();
+        let mut tables: HashMap<QualifiedName, Arc<LoadedTable>> = HashMap::new();
         for q in deferred_check_tables(&checks, catalog) {
             if let Some(t) = self
                 .load_table_with_overlay(catalog, &q, overlay, truncated)
@@ -1425,7 +1738,8 @@ impl<S: RelationalStorage> Session<S> {
                 tables.insert(q, t);
             }
         }
-        let exec = Exec::new(
+        #[allow(unused_mut)]
+        let mut exec = Exec::new(
             catalog.clone(),
             tables,
             Vec::new(),
@@ -1435,6 +1749,10 @@ impl<S: RelationalStorage> Session<S> {
             self.db.locks.clone(),
             self.session_id,
         );
+        #[cfg(feature = "vector-index")]
+        {
+            exec.ann = Some(self.db.ann.clone());
+        }
         exec.fk_drain_deferred(checks)
     }
 
@@ -1454,7 +1772,7 @@ impl<S: RelationalStorage> Session<S> {
         }
         // Load all tables so trigger bodies can access any table (they may
         // INSERT into audit tables, SELECT from reference tables, etc.).
-        let mut tables: HashMap<QualifiedName, LoadedTable> = HashMap::new();
+        let mut tables: HashMap<QualifiedName, Arc<LoadedTable>> = HashMap::new();
         let all_table_qs: Vec<QualifiedName> = catalog
             .tables()
             .map(|t| QualifiedName {
@@ -1480,6 +1798,10 @@ impl<S: RelationalStorage> Session<S> {
             self.db.locks.clone(),
             self.session_id,
         );
+        #[cfg(feature = "vector-index")]
+        {
+            exec.ann = Some(self.db.ann.clone());
+        }
         exec.fire_deferred(firings)?;
         let mutations = std::mem::take(&mut *exec.mutations.lock().unwrap());
         self.apply_mutations(mutations).await
@@ -2249,6 +2571,9 @@ fn collect_stmt(stmt: &Statement, out: &mut NameOut) {
         }
         Statement::AlterTable(alter) => push_name(&alter.name, out),
         Statement::CreateIndex(ci) => push_name(&ci.table_name, out),
+        // EXPLAIN executes its inner statement (SELECT-only, see dispatch);
+        // preload whatever that statement touches.
+        Statement::Explain { statement, .. } => collect_stmt(statement, out),
         Statement::CreateView(cv) => collect_query(&cv.query, out),
         Statement::Truncate(t) => {
             for target in &t.table_names {

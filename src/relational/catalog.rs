@@ -494,6 +494,15 @@ pub struct Index {
     pub unique: bool,
     pub primary: bool,
     pub method: String,
+    /// Operator class per key column (e.g. `vector_cosine_ops` for `hnsw`
+    /// indexes). Empty for methods that take none; `serde(default)` so
+    /// catalogs persisted before this field existed keep loading.
+    #[serde(default)]
+    pub opclasses: Vec<String>,
+    /// `WITH (...)` storage parameters (e.g. `m`, `ef_construction`),
+    /// normalized to lower-case keys.
+    #[serde(default)]
+    pub with_options: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -503,6 +512,24 @@ pub struct Sequence {
     pub current: i64,
     pub increment: i64,
     pub start: i64,
+}
+
+/// A declared auto-embedding rule, persisted in the catalog so it replicates
+/// like any other DDL and is read by the async embedding service. This is the
+/// catalog-level, dependency-free mirror of `guardian_db::embedding::EmbeddingRule`
+/// (the relational core must not depend on the embedding module); the service
+/// converts it. Identity is `(schema, table, vector_column)` — a vector column
+/// has at most one rule. Declared and dropped through the SQL surface
+/// (`guardian_embed(...)` / `guardian_unembed(...)`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmbeddingRuleDef {
+    pub schema: String,
+    pub table: String,
+    pub text_column: String,
+    pub vector_column: String,
+    pub model: String,
+    /// Execution policy, lower-case: `"local"` or `"delegated"`.
+    pub policy: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -662,6 +689,10 @@ pub struct Catalog {
     /// Serde-defaulted so catalogs predating this field keep loading.
     #[serde(default)]
     ts_dictionaries: Vec<TsDictionaryDef>,
+    /// Declared auto-embedding rules (RFC 0005 §6.3), read by the embedding
+    /// service. Serde-defaulted for backward compatibility.
+    #[serde(default)]
+    embedding_rules: Vec<EmbeddingRuleDef>,
     /// Reverse map: (schema, table) -> list of index QualifiedNames for O(1)
     /// `indexes_for_table` lookup. Not persisted — rebuilt on deserialization
     /// and maintained by `insert_index` / `drop_index`.
@@ -687,6 +718,8 @@ struct CatalogRaw {
     functions: Vec<FunctionDef>,
     #[serde(default)]
     ts_dictionaries: Vec<TsDictionaryDef>,
+    #[serde(default)]
+    embedding_rules: Vec<EmbeddingRuleDef>,
 }
 
 impl From<CatalogRaw> for Catalog {
@@ -710,6 +743,7 @@ impl From<CatalogRaw> for Catalog {
             extensions: raw.extensions,
             functions: raw.functions,
             ts_dictionaries: raw.ts_dictionaries,
+            embedding_rules: raw.embedding_rules,
             table_to_indexes,
         }
     }
@@ -730,6 +764,7 @@ impl Catalog {
             extensions: BTreeMap::new(),
             functions: Vec::new(),
             ts_dictionaries: Vec::new(),
+            embedding_rules: Vec::new(),
             table_to_indexes: HashMap::new(),
         };
         // PostgreSQL databases have plpgsql installed by default.
@@ -1310,6 +1345,33 @@ impl Catalog {
     /// All registered text search dictionaries.
     pub fn ts_dictionaries(&self) -> impl Iterator<Item = &TsDictionaryDef> {
         self.ts_dictionaries.iter()
+    }
+
+    /// Declared auto-embedding rules (RFC 0005 §6.3).
+    pub fn embedding_rules(&self) -> &[EmbeddingRuleDef] {
+        &self.embedding_rules
+    }
+
+    /// Declare (or replace) an embedding rule. Identity is
+    /// `(schema, table, vector_column)`: re-declaring the same vector column
+    /// replaces the rule (last write wins), like a `CREATE OR REPLACE`.
+    pub fn put_embedding_rule(&mut self, rule: EmbeddingRuleDef) {
+        self.embedding_rules.retain(|r| {
+            !(r.schema == rule.schema
+                && r.table == rule.table
+                && r.vector_column == rule.vector_column)
+        });
+        self.embedding_rules.push(rule);
+    }
+
+    /// Drop the rule for `(schema, table, vector_column)`. Returns whether one
+    /// was removed.
+    pub fn drop_embedding_rule(&mut self, schema: &str, table: &str, vector_column: &str) -> bool {
+        let before = self.embedding_rules.len();
+        self.embedding_rules.retain(|r| {
+            !(r.schema == schema && r.table == table && r.vector_column == vector_column)
+        });
+        self.embedding_rules.len() != before
     }
 
     /// `CREATE TEXT SEARCH DICTIONARY`. Returns `Ok(())` on `IF NOT EXISTS`

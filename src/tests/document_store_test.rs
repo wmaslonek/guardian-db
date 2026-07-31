@@ -3,10 +3,10 @@ use crate::address::Address;
 ///
 /// Valida todas as operações principais do document store usando IrohClient
 use crate::address::GuardianDBAddress;
+use crate::events::EventBus;
 use crate::log::identity::{Identity, Signatures};
 use crate::message_marshaler::PostcardMarshaler;
-use crate::p2p::EventBus;
-use crate::p2p::messaging::one_on_one_channel::new_channel_factory;
+use crate::messaging::new_channel_factory;
 use crate::p2p::network::client::IrohClient;
 use crate::p2p::network::config::ClientConfig;
 use crate::stores::document_store::GuardianDBDocumentStore;
@@ -72,7 +72,7 @@ async fn create_test_store()
 
     // Cria DirectChannel usando o factory
     let channel_factory = new_channel_factory(client.clone()).await?;
-    let payload_emitter = crate::p2p::PayloadEmitter::new(&event_bus).await?;
+    let payload_emitter = crate::events::PayloadEmitter::new(&event_bus).await?;
     let direct_channel = channel_factory(Arc::new(payload_emitter), None)
         .await
         .map_err(|e| format!("Failed to create DirectChannel: {}", e))?;
@@ -89,6 +89,74 @@ async fn create_test_store()
     let store = GuardianDBDocumentStore::new(client, identity, address, options).await?;
 
     Ok((store, temp_dir))
+}
+
+/// Helper para criar um DocumentStore de teste com um `PayloadCodec` configurado.
+async fn create_test_store_with_codec(
+    codec: crate::stores::payload_codec::SharedPayloadCodec,
+) -> Result<(GuardianDBDocumentStore, TempDir), Box<dyn std::error::Error>> {
+    let temp_dir = TempDir::new()?;
+    let client_config = ClientConfig {
+        data_store_path: Some(temp_dir.path().to_path_buf()),
+        ..ClientConfig::development()
+    };
+
+    let client = Arc::new(IrohClient::new(client_config).await?);
+    let event_bus = EventBus::new();
+    let backend = client.backend().clone();
+    let pubsub = Arc::new(backend.create_pubsub_interface().await?);
+
+    let channel_factory = new_channel_factory(client.clone()).await?;
+    let payload_emitter = crate::events::PayloadEmitter::new(&event_bus).await?;
+    let direct_channel = channel_factory(Arc::new(payload_emitter), None)
+        .await
+        .map_err(|e| format!("Failed to create DirectChannel: {}", e))?;
+
+    let options = NewStoreOptions {
+        event_bus: Some(event_bus),
+        pubsub: Some(pubsub),
+        message_marshaler: Some(Arc::new(PostcardMarshaler::new())),
+        direct_channel: Some(direct_channel),
+        directory: temp_dir.path().join("cache").to_string_lossy().to_string(),
+        payload_codec: Some(codec),
+        ..Default::default()
+    };
+
+    let store =
+        GuardianDBDocumentStore::new(client, test_identity(), test_address().await, options)
+            .await?;
+
+    Ok((store, temp_dir))
+}
+
+/// Codec de teste reversível e sem dependências: inverte todos os bits.
+///
+/// Não é criptografia — existe para exercitar o encaminhamento (`encode` na
+/// escrita, `decode` na leitura) com as features padrão, sem exigir a feature
+/// `encryption`.
+#[derive(Debug)]
+struct BitFlipCodec;
+
+impl crate::stores::payload_codec::PayloadCodec for BitFlipCodec {
+    fn encode(
+        &self,
+        _ctx: &crate::stores::payload_codec::RecordCtx<'_>,
+        plaintext: &[u8],
+    ) -> crate::guardian::error::Result<Vec<u8>> {
+        Ok(plaintext.iter().map(|b| !b).collect())
+    }
+
+    fn decode(
+        &self,
+        _ctx: &crate::stores::payload_codec::RecordCtx<'_>,
+        stored: &[u8],
+    ) -> crate::guardian::error::Result<Vec<u8>> {
+        Ok(stored.iter().map(|b| !b).collect())
+    }
+
+    fn codec_id(&self) -> &str {
+        "test-bitflip"
+    }
 }
 
 /// Helper para criar um documento de teste simples
@@ -503,5 +571,203 @@ mod tests {
             2,
             "Should have 2 workflow documents remaining"
         );
+    }
+
+    // ============= PAYLOAD CODEC =============
+    //
+    // The DocumentStore has four distinct write paths (`put`, `put_impl`,
+    // `put_all`, `add_operation`) and two read paths (`get`, `query`). Each write
+    // path is covered separately: a path that silently bypassed the codec would
+    // write plaintext into a namespace the application believes is encrypted, and
+    // nothing else in the suite would notice.
+
+    /// Marshalled bytes for a document, as the store would produce them.
+    fn marshalled(doc: &serde_json::Value) -> Vec<u8> {
+        serde_json::to_vec(doc).expect("marshal")
+    }
+
+    #[tokio::test]
+    async fn test_default_store_holds_documents_verbatim() {
+        // Regression guard for every existing deployment: with no codec configured,
+        // stored bytes must be byte-for-byte what the marshaller produced.
+        let (mut store, _dir) = create_test_store().await.expect("store");
+        let doc = create_test_document("doc1", "Sem Codec");
+        store.put(doc.clone()).await.expect("put");
+
+        assert_eq!(
+            store.stored_value_for_test("doc1"),
+            Some(marshalled(&doc)),
+            "default store must not transform payloads"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_codec_applied_on_put_and_reversed_on_get() {
+        let (mut store, _dir) = create_test_store_with_codec(Arc::new(BitFlipCodec))
+            .await
+            .expect("store");
+
+        let doc = create_test_document("doc1", "Com Codec");
+        store.put(doc.clone()).await.expect("put");
+
+        // What reaches storage is encoded...
+        let stored = store.stored_value_for_test("doc1").expect("stored");
+        assert_ne!(stored, marshalled(&doc));
+        assert_eq!(
+            stored,
+            marshalled(&doc).iter().map(|b| !b).collect::<Vec<_>>()
+        );
+
+        // ...but get() hands back the original document.
+        let found = store.get("doc1", None).await.expect("get");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0], doc);
+    }
+
+    #[tokio::test]
+    async fn test_codec_applied_on_put_impl_path() {
+        let (store, _dir) = create_test_store_with_codec(Arc::new(BitFlipCodec))
+            .await
+            .expect("store");
+
+        let doc = create_test_document("doc1", "Via put_impl");
+        store.put_impl(doc.clone()).await.expect("put_impl");
+
+        assert_ne!(
+            store.stored_value_for_test("doc1"),
+            Some(marshalled(&doc)),
+            "put_impl must encode like put"
+        );
+        let found = store.get("doc1", None).await.expect("get");
+        assert_eq!(found[0], doc);
+    }
+
+    #[tokio::test]
+    async fn test_codec_applied_on_batch_write_path() {
+        let (mut store, _dir) = create_test_store_with_codec(Arc::new(BitFlipCodec))
+            .await
+            .expect("store");
+
+        let a = create_test_document("doc1", "Lote A");
+        let b = create_test_document("doc2", "Lote B");
+        store
+            .put_all(vec![a.clone(), b.clone()])
+            .await
+            .expect("put_all");
+
+        // Every element of the batch goes through the codec, not just the first.
+        for (key, doc) in [("doc1", &a), ("doc2", &b)] {
+            assert_ne!(
+                store.stored_value_for_test(key),
+                Some(marshalled(doc)),
+                "put_all must encode every document in the batch"
+            );
+            let found = store.get(key, None).await.expect("get");
+            assert_eq!(found[0], *doc);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_codec_applied_on_add_operation_path() {
+        use crate::stores::operation::Operation;
+
+        let (store, _dir) = create_test_store_with_codec(Arc::new(BitFlipCodec))
+            .await
+            .expect("store");
+
+        let doc = create_test_document("doc1", "Via add_operation");
+        let op = Operation::new(
+            Some("doc1".to_string()),
+            "PUT".to_string(),
+            Some(marshalled(&doc)),
+        );
+        store.add_operation(op, None).await.expect("add_operation");
+
+        assert_ne!(
+            store.stored_value_for_test("doc1"),
+            Some(marshalled(&doc)),
+            "add_operation must encode like the other write paths"
+        );
+        let found = store.get("doc1", None).await.expect("get");
+        assert_eq!(found[0], doc);
+    }
+
+    #[tokio::test]
+    async fn test_codec_reversed_on_query_path() {
+        let (mut store, _dir) = create_test_store_with_codec(Arc::new(BitFlipCodec))
+            .await
+            .expect("store");
+
+        store
+            .put(create_test_document("doc1", "Consultavel"))
+            .await
+            .expect("put");
+
+        // query() must decode too, or the filter would run over encoded bytes.
+        let results = store
+            .query(|d| Ok(d["name"] == "Consultavel"))
+            .expect("query");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["_id"], "doc1");
+    }
+
+    #[cfg(feature = "encryption")]
+    #[tokio::test]
+    async fn test_aead_codec_end_to_end_in_the_document_store() {
+        use crate::stores::payload_codec::XChaCha20Poly1305Codec;
+
+        let (mut store, _dir) =
+            create_test_store_with_codec(Arc::new(XChaCha20Poly1305Codec::new([5u8; 32])))
+                .await
+                .expect("store");
+
+        let doc = create_test_document("doc1", "Confidencial");
+        store.put(doc.clone()).await.expect("put");
+
+        // The document's contents must not survive into storage in any form.
+        let stored = store.stored_value_for_test("doc1").expect("stored");
+        let needle = b"Confidencial";
+        assert!(
+            !stored.windows(needle.len()).any(|w| w == needle),
+            "document contents must not survive into storage"
+        );
+
+        let found = store.get("doc1", None).await.expect("get");
+        assert_eq!(found[0], doc);
+    }
+
+    #[cfg(feature = "encryption")]
+    #[tokio::test]
+    async fn test_undecodable_documents_are_skipped_by_query() {
+        use crate::stores::payload_codec::{PayloadCodec, RecordCtx, XChaCha20Poly1305Codec};
+
+        // A namespace holding one record this replica can read and one it cannot,
+        // simulating a store shared with a peer using different key material.
+        let (mut store, _dir) =
+            create_test_store_with_codec(Arc::new(XChaCha20Poly1305Codec::new([5u8; 32])))
+                .await
+                .expect("store");
+
+        store
+            .put(create_test_document("mine", "Legivel"))
+            .await
+            .expect("put");
+
+        let foreign = XChaCha20Poly1305Codec::new([9u8; 32]);
+        let opaque = foreign
+            .encode(
+                &RecordCtx::new("irrelevant", "theirs"),
+                &marshalled(&create_test_document("theirs", "Ilegivel")),
+            )
+            .unwrap();
+        store.put_raw_for_test("theirs", opaque);
+
+        // query() degrades gracefully instead of failing the whole listing.
+        let results = store.query(|_| Ok(true)).expect("query must not fail");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["_id"], "mine");
+
+        // get() on the unreadable record likewise yields nothing rather than erroring.
+        assert!(store.get("theirs", None).await.expect("get").is_empty());
     }
 }

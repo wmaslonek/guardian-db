@@ -650,6 +650,8 @@ mod tests {
             max_concurrent: 4,
             accepts: vec![TaskClass::General, TaskClass::Media],
             nn_models: vec![],
+            llm_models: vec![],
+            embed_models: vec![],
             issued_at: 0,
         }
     }
