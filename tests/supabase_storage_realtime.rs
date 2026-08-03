@@ -1586,11 +1586,11 @@ async fn realtime_broadcast_between_subscribers() {
 }
 
 // ===========================================================================
-// Gateway: functions keeps its typed 501; graphql is live
+// Gateway: functions is live (typed 404 for undeployed slugs); graphql is live
 // ===========================================================================
 
 #[tokio::test]
-async fn functions_remains_typed_501_and_graphql_is_live() {
+async fn functions_returns_typed_not_found_and_graphql_is_live() {
     let h = harness().await;
     let (status, body) = call(
         &h.app,
@@ -1601,8 +1601,10 @@ async fn functions_remains_typed_501_and_graphql_is_live() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
-    assert_eq!(body["code"], "SUPA_COMPAT_FUNCTIONS_NOT_IMPLEMENTED");
+    // Functions layer is now wired (see tests/supabase_functions.rs). An
+    // undeployed slug renders the typed 404 shape, not the old 501 stub.
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"], "SUPA_COMPAT_FUNCTION_NOT_FOUND");
 
     // GraphQL is implemented (see tests/supabase_graphql.rs): a real request
     // executes and returns GraphQL-shaped JSON with HTTP 200.

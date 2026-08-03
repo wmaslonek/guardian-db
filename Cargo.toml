@@ -342,6 +342,11 @@ path = "tests/supabase_graphql.rs"
 required-features = ["supabase"]
 
 [[test]]
+name = "supabase_functions"
+path = "tests/supabase_functions.rs"
+required-features = ["supabase"]
+
+[[test]]
 name = "compute_delegation"
 path = "tests/compute_delegation.rs"
 required-features = ["compute"]
