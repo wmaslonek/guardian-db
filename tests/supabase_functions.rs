@@ -558,7 +558,7 @@ async fn invoke_no_body_is_500_boot_error_without_compute() {
         Some(json!({
             "slug": "noop",
             "verify_jwt": false,
-            "body": base64::engine::general_purpose::STANDARD.encode(&minimal_wasm())
+            "body": base64::engine::general_purpose::STANDARD.encode(minimal_wasm())
         })),
     )
     .await;

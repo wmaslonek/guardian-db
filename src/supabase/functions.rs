@@ -901,10 +901,7 @@ async fn invoke_function<S: RelationalStorage + 'static>(
 }
 
 /// The result of running a guest, before it becomes an HTTP response.
-async fn run_guest(
-    wasm: &[u8],
-    input: &InvocationInput,
-) -> Result<InvocationOutput, SupaError> {
+async fn run_guest(wasm: &[u8], input: &InvocationInput) -> Result<InvocationOutput, SupaError> {
     let input_bytes = serde_cbor_to_bytes(input)?;
     let wasm = wasm.to_vec();
     // The guardian compute runtime is synchronous and CPU-bound; run it in
@@ -925,9 +922,8 @@ async fn run_guest(
         }
     };
 
-    let out: InvocationOutput = serde_cbor_from_bytes(&bytes).map_err(|e| {
-        SupaError::Internal(format!("__functions_runtime::invalid output: {e}"))
-    })?;
+    let out: InvocationOutput = serde_cbor_from_bytes(&bytes)
+        .map_err(|e| SupaError::Internal(format!("__functions_runtime::invalid output: {e}")))?;
     Ok(out)
 }
 
@@ -942,14 +938,10 @@ enum GuestError {
 }
 
 #[cfg(feature = "compute")]
-fn run_guest_blocking(
-    wasm: &[u8],
-    entrypoint: &str,
-    input: &[u8],
-) -> Result<Vec<u8>, GuestError> {
-    use crate::compute::runtime::{HostGrants, WasmRuntime};
+fn run_guest_blocking(wasm: &[u8], entrypoint: &str, input: &[u8]) -> Result<Vec<u8>, GuestError> {
     use crate::compute::ResourceLimits;
     use crate::compute::runtime::TaskError;
+    use crate::compute::runtime::{HostGrants, WasmRuntime};
 
     let runtime = WasmRuntime::new().map_err(|e| GuestError::Boot(e.to_string()))?;
     let task = runtime
@@ -960,8 +952,10 @@ fn run_guest_blocking(
         fuel: DEFAULT_FUEL,
         timeout_ms: DEFAULT_TIMEOUT_MS,
     };
-    let mut grants = HostGrants::default();
-    grants.log = true;
+    let grants = HostGrants {
+        log: true,
+        ..HostGrants::default()
+    };
     let result = runtime
         .execute_with_host(&task, entrypoint, input, &limits, &grants)
         .map_err(|e| match e {
@@ -971,7 +965,9 @@ fn run_guest_blocking(
                 GuestError::Boot(format!("host capability denied: {m}"))
             }
             TaskError::FuelExhausted => GuestError::Runtime("fuel exhausted".into()),
-            TaskError::DeadlineExceeded => GuestError::Runtime("wall-clock deadline exceeded".into()),
+            TaskError::DeadlineExceeded => {
+                GuestError::Runtime("wall-clock deadline exceeded".into())
+            }
             TaskError::MemoryLimitExceeded => GuestError::Runtime("memory limit exceeded".into()),
             TaskError::AbiViolation(m) => GuestError::Runtime(format!("abi violation: {m}")),
             TaskError::Trapped(m) => GuestError::Runtime(format!("trap: {m}")),
@@ -997,8 +993,9 @@ fn run_guest_blocking(
 }
 
 fn render_output(output: InvocationOutput) -> Result<Response, SupaError> {
-    let status = StatusCode::from_u16(output.status)
-        .map_err(|_| SupaError::Internal(format!("_functions_runtime::bad status {}", output.status)))?;
+    let status = StatusCode::from_u16(output.status).map_err(|_| {
+        SupaError::Internal(format!("_functions_runtime::bad status {}", output.status))
+    })?;
     let body_bytes = if output.body_b64.is_empty() {
         Vec::new()
     } else {
@@ -1023,16 +1020,11 @@ fn cors_preflight_response(req_headers: &HeaderMap) -> Response {
     let allow_headers = req_headers
         .get("access-control-request-headers")
         .and_then(|v| v.to_str().ok())
-        .unwrap_or(
-            "authorization, x-client-info, apikey, content-type, x-supabase-api-version",
-        )
+        .unwrap_or("authorization, x-client-info, apikey, content-type, x-supabase-api-version")
         .to_string();
     let mut resp = StatusCode::NO_CONTENT.into_response();
     let h = resp.headers_mut();
-    h.insert(
-        "access-control-allow-origin",
-        HeaderValue::from_static("*"),
-    );
+    h.insert("access-control-allow-origin", HeaderValue::from_static("*"));
     h.insert(
         "access-control-allow-methods",
         HeaderValue::from_static("POST, GET, PUT, PATCH, DELETE, OPTIONS"),
@@ -1040,10 +1032,7 @@ fn cors_preflight_response(req_headers: &HeaderMap) -> Response {
     if let Ok(v) = HeaderValue::try_from(allow_headers) {
         h.insert("access-control-allow-headers", v);
     }
-    h.insert(
-        "access-control-max-age",
-        HeaderValue::from_static("86400"),
-    );
+    h.insert("access-control-max-age", HeaderValue::from_static("86400"));
     resp
 }
 
@@ -1234,9 +1223,7 @@ fn validate_secret_name(name: &str) -> Result<(), SupaError> {
     let ok = !name.is_empty()
         && name.len() <= 128
         && name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_');
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
     if ok {
         Ok(())
     } else {
@@ -1275,7 +1262,7 @@ fn hex_sha256(bytes: &[u8]) -> String {
     {
         use sha2::{Digest, Sha256};
         let digest = Sha256::digest(bytes);
-        return hex::encode(digest);
+        hex::encode(digest)
     }
     #[cfg(not(feature = "sql"))]
     {
@@ -1323,7 +1310,7 @@ fn result_objects(result: ExecResult) -> Result<Vec<Json>, SupaError> {
             let mut out = Vec::with_capacity(rows.len());
             for row in rows {
                 let mut obj = Map::with_capacity(fields.len());
-                for (field, value) in fields.iter().zip(row.into_iter()) {
+                for (field, value) in fields.iter().zip(row) {
                     obj.insert(field.name.clone(), value_to_json(value));
                 }
                 out.push(Json::Object(obj));
@@ -1353,9 +1340,7 @@ fn value_to_json(v: SqlValue) -> Json {
         SqlValue::Numeric(d) => Json::String(d.to_string()),
         SqlValue::Text(s) => Json::String(s),
         SqlValue::Citext(s) => Json::String(s),
-        SqlValue::Bytea(b) => {
-            Json::String(base64::engine::general_purpose::STANDARD.encode(b))
-        }
+        SqlValue::Bytea(b) => Json::String(base64::engine::general_purpose::STANDARD.encode(b)),
         SqlValue::Uuid(u) => Json::String(u.to_string()),
         SqlValue::Date(d) => Json::String(d.to_string()),
         SqlValue::Time(t) => Json::String(t.to_string()),
