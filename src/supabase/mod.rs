@@ -9,10 +9,13 @@
 //! Implemented end-to-end: **REST** (PostgREST-compatible), **Auth**
 //! (GoTrue-compatible), **Storage** (storage-api-compatible, bytes in a
 //! replicated `bytea` table), **postgres-meta** (what Supabase Studio talks
-//! to), **Realtime** (Phoenix-protocol websocket) and **GraphQL**
-//! (pg_graphql-compatible schema reflection over the `public` schema). The
-//! remaining Kong service (functions) returns a typed `501 Not Implemented`
-//! error — never a bare 404 and never fake success.
+//! to), **Realtime** (Phoenix-protocol websocket), **GraphQL**
+//! (pg_graphql-compatible schema reflection over the `public` schema), and
+//! **Functions** (Supabase Edge Functions-compatible, backed by the Guardian
+//! Compute WASM sandbox when the `compute` feature is on — otherwise the
+//! service returns a typed `SUPA_COMPAT_FUNCTION_BOOT_ERROR` on invocation
+//! and admin CRUD still works so functions can be deployed for a later
+//! runtime).
 //!
 //! ## Scouted seams (Stage 0)
 //!
@@ -51,6 +54,9 @@
 //! * Crypto: `bcrypt` (from the pgcrypto work) hashes/verifies passwords;
 //!   `hmac` + `sha2` + `base64` (already in-tree for `sql`) implement HS256 JWTs
 //!   from scratch in [`jwt`] — no `jsonwebtoken` dependency added.
+//! * When the `compute` feature is also on, [`crate::compute::WasmRuntime`]
+//!   backs the Supabase Functions runtime: deployed WebAssembly modules run
+//!   under the same sandbox as delegated Guardian Compute tasks.
 //!
 //! ## Architecture
 //!
@@ -70,7 +76,8 @@
 //!     ├─ /storage/v1/* → storage.rs  → Session(role) → storage.* tables (RLS)
 //!     ├─ /pg-meta/*    → pg_meta.rs  → catalog + pg_catalog views (service_role)
 //!     ├─ /realtime/v1/websocket → realtime.rs → Phoenix ws + change hook
-//!     └─ /functions    → 501 typed
+//!     └─ /functions/v1/* → functions.rs → WASM sandbox (invocation)
+//!                                          + service_role admin CRUD
 //! ```
 //!
 //! Each request opens a fresh [`Session`] bound to the resolved role. A single
@@ -79,6 +86,7 @@
 
 pub mod auth;
 pub mod error;
+pub mod functions;
 pub mod gateway;
 pub mod graphql;
 pub mod jwt;

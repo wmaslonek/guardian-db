@@ -36,6 +36,8 @@ pub struct AppState<S: RelationalStorage> {
     pub schema_ready: Arc<tokio::sync::OnceCell<()>>,
     /// One-shot guard so the `storage` schema is bootstrapped on first use.
     pub storage_ready: Arc<tokio::sync::OnceCell<()>>,
+    /// One-shot guard so the `functions` schema is bootstrapped on first use.
+    pub functions_ready: Arc<tokio::sync::OnceCell<()>>,
     /// Shared realtime state (the broadcast bus between websocket subscribers
     /// and the id generator for connections / bindings).
     pub realtime: Arc<crate::supabase::realtime::RealtimeShared>,
@@ -49,6 +51,7 @@ impl<S: RelationalStorage> Clone for AppState<S> {
             config: self.config.clone(),
             schema_ready: self.schema_ready.clone(),
             storage_ready: self.storage_ready.clone(),
+            functions_ready: self.functions_ready.clone(),
             realtime: self.realtime.clone(),
         }
     }
@@ -66,6 +69,7 @@ impl<S: RelationalStorage> AppState<S> {
             config: Arc::new(config),
             schema_ready: Arc::new(tokio::sync::OnceCell::new()),
             storage_ready: Arc::new(tokio::sync::OnceCell::new()),
+            functions_ready: Arc::new(tokio::sync::OnceCell::new()),
             realtime: Arc::new(crate::supabase::realtime::RealtimeShared::new()),
         }
     }
@@ -134,6 +138,9 @@ pub fn build_router<S: RelationalStorage + 'static>(state: AppState<S>) -> Route
         // the handlers.
         .nest("/pg-meta", crate::supabase::pg_meta::router::<S>())
         .nest("/platform/pg-meta", crate::supabase::pg_meta::router::<S>())
+        // Functions: invocation + admin CRUD, both apikey-verified. Admin
+        // handlers additionally require service_role.
+        .nest("/functions/v1", crate::supabase::functions::router::<S>())
         .layer(apikey_layer.clone());
 
     // Storage: authenticated routes behind the apikey layer, plus the
@@ -150,21 +157,9 @@ pub fn build_router<S: RelationalStorage + 'static>(state: AppState<S>) -> Route
         // Realtime: browsers cannot set headers on websocket connects, so the
         // apikey arrives as a query parameter, verified inside the handler.
         .nest("/realtime/v1", crate::supabase::realtime::router::<S>())
-        .merge(stub_router::<S>())
         .route("/health", any(health))
         .layer(axum::middleware::from_fn(request_id))
         .with_state(state)
-}
-
-/// The not-yet-implemented Kong services. Each returns a typed `501` (never a
-/// bare 404 and never fake success). These sit outside the apikey layer so the
-/// answer is a clear "not implemented" regardless of credentials.
-fn stub_router<S: RelationalStorage + 'static>() -> Router<AppState<S>> {
-    Router::new().route("/functions/v1/{*rest}", any(|| not_impl("FUNCTIONS")))
-}
-
-async fn not_impl(service: &'static str) -> Response {
-    SupaError::NotImplemented(service).into_response()
 }
 
 async fn health() -> Response {
